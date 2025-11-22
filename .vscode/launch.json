@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug sip_pcmu_bot",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/sip_pcmu_bot",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_LOG": "info",
+        "SIP_BIND_IP": "0.0.0.0",
+        "SIP_PORT": "5060",
+        "RTP_PORT": "40000",
+        "LOCAL_IP": "127.0.0.1"
+      },
+      "preLaunchTask": "cargo build"
+    }
+  ]
+}

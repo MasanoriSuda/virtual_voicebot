@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scenario name="UAC PCMU">
+  <send>
+    <![CDATA[
+        INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+        Via: SIP/2.0/UDP [local_ip]:[local_port];branch=[branch]
+        From: <sip:sipp@[local_ip]>;tag=[call_number]
+        To: <sip:[service]@[remote_ip]>
+        Call-ID: [call_id]
+        CSeq: 1 INVITE
+        Contact: <sip:sipp@[local_ip]:[local_port]>
+        Max-Forwards: 70
+        Content-Type: application/sdp
+        Content-Length: [len]
+
+        v=0
+        o=- 0 0 IN IP4 [local_ip]
+        s=PCMU test
+        c=IN IP4 [local_ip]
+        t=0 0
+        m=audio 4002 RTP/AVP 0
+        a=rtpmap:0 PCMU/8000
+    ]]>
+  </send>
+
+  <recv response="100" optional="true" />
+  <recv response="180" optional="true" />
+  <recv response="200" />
+
+  <send>
+    <![CDATA[
+        ACK sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+        Via: SIP/2.0/UDP [local_ip]:[local_port];branch=[branch]
+        From: <sip:sipp@[local_ip]>;tag=[call_number]
+        To: <sip:[service]@[remote_ip]>;tag=rustbot
+        Call-ID: [call_id]
+        CSeq: 1 ACK
+        Contact: <sip:sipp@[local_ip]:[local_port]>
+        Max-Forwards: 70
+        Content-Length: 0
+    ]]>
+  </send>
+
+  <pause milliseconds="4000" />
+
+  <!-- ここで wav を1回だけ再生 -->
+  <!-- play_pcap_audio は PCAP からRTPを流すが、wav を sipp 側で PCAP 化しておくのが一般的 -->
+  <!-- すでに "voice.pcap" を用意している前提 -->
+  <nop>
+    <action>
+      <exec play_pcap_audio="/home/msuda/workspace/virtual_voicebot/test/simpletest/audio/voice.pcap" />
+    </action>
+  </nop>
+
+  <!-- 再生が終わるまで少し待つ (例: 5秒) -->
+  <pause milliseconds="3000" />
+
+  <send>
+    <![CDATA[
+        BYE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+        Via: SIP/2.0/UDP [local_ip]:[local_port];branch=[branch]
+        From: <sip:sipp@[local_ip]>;tag=[call_number]
+        To: <sip:[service]@[remote_ip]>;tag=rustbot
+        Call-ID: [call_id]
+        CSeq: 2 BYE
+        Contact: <sip:sipp@[local_ip]:[local_port]>
+        Max-Forwards: 70
+        Content-Length: 0
+    ]]>
+  </send>
+
+  <recv response="200" />
+</scenario>
