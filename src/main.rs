@@ -6,6 +6,7 @@ use tokio::net::UdpSocket;
 use tokio::time::{sleep, timeout};
 use hound::WavWriter;
 use tokio::task;
+use tokio::process::Command;
 
 #[derive(Clone)]
 struct Config {
@@ -129,11 +130,28 @@ async fn handle_sip_message(
                 // 録音（相手のPCMUをWAVに保存）
                 let recv_port = cfg.rtp_port; // SDPで名乗ってるポートと揃える
                 let out_path = "test/simpletest/audio/input_from_peer.wav".to_string();
+                let recv_out_path = out_path.clone();
                 let recv_task = task::spawn(async move {
-                    if let Err(e) = recv_rtp_to_wav(recv_port, &out_path, 10).await {
+                    if let Err(e) = recv_rtp_to_wav(recv_port, &recv_out_path, 10).await {
                         log::error!("RTP recv error: {e:?}");
                     }
                 });
+
+                // 受信完了を待つ
+                if let Err(e) = recv_task.await {
+                    log::error!("recv_task join error: {e:?}");
+                }
+
+                // ここで Whisper にかける
+                match transcribe_with_whisper(&out_path).await {
+                    Ok(text) => {
+                        log::info!("Whisper ASR result: {}", text);
+                        // ここで Ollama や Voicevox に渡す流れにつなげられる
+                    }
+                    Err(e) => {
+                        log::error!("Whisper error: {e:?}");
+                    }
+                }
 
                 // 必要なら待つ（今は待たずにOK、終了ログ見たいなら join! してもいい）
                 // let _ = tokio::join!(send_task, recv_task);
@@ -165,6 +183,22 @@ async fn handle_sip_message(
     }
 
     Ok(())
+}
+
+async fn transcribe_with_whisper(audio_path: &str) -> anyhow::Result<String> {
+    let output = Command::new("python3")
+        .arg("/workspaces/virtual_voicebot/src/asr/whisper_transcribe.py")
+        .arg(audio_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow::anyhow!("whisper script failed: {stderr}"))
+    } else {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout.trim().to_string())
+    }
 }
 
 fn parse_basic_headers(msg: &str) -> Result<(String, String, String, String, String)> {

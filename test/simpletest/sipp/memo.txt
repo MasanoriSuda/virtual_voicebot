@@ -1,0 +1,1 @@
+sipp 127.0.0.1:5060 -sf test/simpletest/sipp/uac_pcmu.xml -m 1  -l 1  -r 1
