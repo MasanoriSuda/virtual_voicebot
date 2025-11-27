@@ -19,6 +19,11 @@ RUN apt-get update && apt-get install -y \
     sip-tester \
     && rm -rf /var/lib/apt/lists/*
 
+# Whisper 用 Python ライブラリ（開発用）
+RUN pip3 install --no-cache-dir \
+    faster-whisper \
+    && rm -rf /root/.cache/pip
+
 # Rust インストール
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain stable
