@@ -1,42 +1,65 @@
-##############################################
-# 1) Build Stage
-##############################################
-FROM rust:1.76-bullseye AS builder
+# === ビルドステージ ===
+FROM ubuntu:22.04 AS build
 
-# 依存キャッシュを効かせる（高速ビルドのコツ）
-WORKDIR /app
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=UTC \
+    RUST_BACKTRACE=1 \
+    PATH="/root/.cargo/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    git \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    python3 \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust インストール
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable
+
+# ★ ここがコンテナ内のプロジェクトルート
+WORKDIR /workspace
+
+# 依存キャッシュ用ダミービルド
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main(){}" > src/main.rs
-RUN cargo build --release
+RUN mkdir src && echo "fn main() { println!(\"dummy\") }" > src/main.rs \
+    && cargo build --release \
+    && rm -rf src
 
-# 本物のソースを入れて再ビルド
+# 本物のソースをコピー
 COPY . .
+
+# リリースビルド
 RUN cargo build --release
 
 
-##############################################
-# 2) Runtime Stage
-##############################################
-FROM debian:bullseye-slim
+# === 実行ステージ ===
+FROM ubuntu:22.04 AS runtime
 
-# 実行に必要最低限だけ入れる（証明書）
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=UTC \
+    RUST_BACKTRACE=1 \
+    PUBLIC_IP=127.0.0.1
 
-# 実行バイナリをコピー
-COPY --from=builder /app/target/release/sip_pcmu_bot /usr/local/bin/sip_pcmu_bot
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
 
-# デフォルト環境変数
-ENV RUST_LOG=info
-ENV SIP_BIND_IP=0.0.0.0
-ENV SIP_PORT=5060
-ENV RTP_PORT=40000
-ENV LOCAL_IP=127.0.0.1
+WORKDIR /workspace
 
-# UDP 5060(SIP), 40000(RTP)
+# Cargo.toml の [package].name が virtual_voicebot の場合
+COPY --from=build /workspace/target/release/virtual_voicebot /workspace/virtual_voicebot
+
 EXPOSE 5060/udp
-EXPOSE 40000/udp
+EXPOSE 10000-20000/udp
 
-# 実行コマンド
-CMD ["sip_pcmu_bot"]
+CMD ["/workspace/virtual_voicebot"]
