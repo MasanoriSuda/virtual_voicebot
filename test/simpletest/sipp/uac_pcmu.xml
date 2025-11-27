@@ -48,7 +48,7 @@
   <!-- すでに "voice.pcap" を用意している前提 -->
   <nop>
     <action>
-      <exec play_pcap_audio="/home/msuda/workspace/virtual_voicebot/test/simpletest/audio/voice.pcap" />
+      <exec play_pcap_audio="/workspaces/virtual_voicebot/test/simpletest/audio/voice.pcap" />
     </action>
   </nop>
 
