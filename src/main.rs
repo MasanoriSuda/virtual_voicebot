@@ -1,12 +1,18 @@
-use anyhow::Result;
-use log::{info};
+use anyhow::{anyhow, Result};
+use hound::WavWriter;
+use log::info;
+use reqwest::{multipart, Client};
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::time::{sleep, timeout};
-use hound::WavWriter;
-use tokio::task;
-use tokio::process::Command;
+use aws_config::meta::region::RegionProviderChain;
+use aws_config::{BehaviorVersion, SdkConfig};
+use aws_sdk_s3 as s3;
+use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_transcribe as transcribe;
+use serde_json::Value;
 
 #[derive(Clone)]
 struct Config {
@@ -37,6 +43,56 @@ impl Config {
             local_ip,
         })
     }
+}
+
+// Ollama /api/chat 用の型
+#[derive(Serialize)]
+struct OllamaChatRequest {
+    model: String,
+    messages: Vec<OllamaMessage>,
+    stream: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OllamaMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct OllamaChatResponse {
+    message: Option<OllamaMessage>,
+    done: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GeminiPart {
+    text: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GeminiContent {
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GeminiRequest {
+    contents: Vec<GeminiContent>,
+}
+
+#[derive(Deserialize)]
+struct GeminiResponse {
+    candidates: Option<Vec<GeminiCandidate>>,
+}
+
+#[derive(Deserialize)]
+struct GeminiCandidate {
+    content: GeminiContentOut,
+}
+
+#[derive(Deserialize)]
+struct GeminiContentOut {
+    parts: Vec<GeminiPart>,
 }
 
 #[tokio::main]
@@ -115,46 +171,36 @@ async fn handle_sip_message(
 
         match wait_result {
             Ok(Ok(())) => {
-                // ACK受信OK → 送信＆受信を並行タスクで動かす
-
-                let send_local = SocketAddr::new("0.0.0.0".parse().unwrap(), 0);
-                let send_remote = remote_rtp_addr;
-
-                // 再生（ずんだもんWAVをPCMUで送る）
-                let send_task = task::spawn(async move {
-                    if let Err(e) = send_fixed_pcmu(send_local, send_remote).await {
-                        log::error!("RTP send error: {e:?}");
-                    }
-                });
-
                 // 録音（相手のPCMUをWAVに保存）
                 let recv_port = cfg.rtp_port; // SDPで名乗ってるポートと揃える
                 let out_path = "test/simpletest/audio/input_from_peer.wav".to_string();
-                let recv_out_path = out_path.clone();
-                let recv_task = task::spawn(async move {
-                    if let Err(e) = recv_rtp_to_wav(recv_port, &recv_out_path, 10).await {
-                        log::error!("RTP recv error: {e:?}");
-                    }
-                });
-
-                // 受信完了を待つ
-                if let Err(e) = recv_task.await {
-                    log::error!("recv_task join error: {e:?}");
+                if let Err(e) = recv_rtp_to_wav(recv_port, &out_path, 10).await {
+                    log::error!("RTP recv error: {e:?}");
+                    return Ok(());
                 }
 
-                // ここで Whisper にかける
-                match transcribe_with_whisper(&out_path).await {
-                    Ok(text) => {
-                        log::info!("Whisper ASR result: {}", text);
-                        // ここで Ollama や Voicevox に渡す流れにつなげられる
-                    }
+                let transcribed_text = match transcribe_and_log(&out_path).await {
+                    Ok(text) => text,
                     Err(e) => {
-                        log::error!("Whisper error: {e:?}");
+                        log::error!("transcribe_and_log error: {e:?}");
+                        return Ok(());
                     }
-                }
+                };
 
-                // 必要なら待つ（今は待たずにOK、終了ログ見たいなら join! してもいい）
-                // let _ = tokio::join!(send_task, recv_task);
+                let answer_wav_path = match handle_user_question_from_whisper(&transcribed_text).await {
+                    Ok(path) => path,
+                    Err(e) => {
+                        log::error!("handle_user_question_from_whisper error: {e:?}");
+                        return Ok(());
+                    }
+                };
+
+                let send_local = SocketAddr::new("0.0.0.0".parse().unwrap(), 0);
+                if let Err(e) =
+                    send_fixed_pcmu(send_local, remote_rtp_addr, Some(&answer_wav_path)).await
+                {
+                    log::error!("RTP send error: {e:?}");
+                }
 
             }
             Ok(Err(e)) => {
@@ -183,22 +229,6 @@ async fn handle_sip_message(
     }
 
     Ok(())
-}
-
-async fn transcribe_with_whisper(audio_path: &str) -> anyhow::Result<String> {
-    let output = Command::new("python3")
-        .arg("/workspaces/virtual_voicebot/src/asr/whisper_transcribe.py")
-        .arg(audio_path)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(anyhow::anyhow!("whisper script failed: {stderr}"))
-    } else {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(stdout.trim().to_string())
-    }
 }
 
 fn parse_basic_headers(msg: &str) -> Result<(String, String, String, String, String)> {
@@ -485,10 +515,18 @@ fn load_wav_as_pcmu_frames(path: &str) -> Result<Vec<Vec<u8>>> {
 }
 
 /// WAVファイルをPCMUに変換してRTP送信する
-async fn send_fixed_pcmu(local: SocketAddr, remote: SocketAddr) -> Result<()> {
-    // 環境変数からWAVパスを取る（なければデフォルト）
-    let wav_path =
-        std::env::var("PCM_WAV_PATH").unwrap_or_else(|_| "test/simpletest/audio/test.wav".to_string());
+async fn send_fixed_pcmu(
+    local: SocketAddr,
+    remote: SocketAddr,
+    wav_override: Option<&str>,
+) -> Result<()> {
+    // WAVパスを指定できなければ環境変数から取る
+    let wav_path = wav_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            std::env::var("PCM_WAV_PATH")
+                .unwrap_or_else(|_| "test/simpletest/audio/test.wav".to_string())
+        });
 
     let frames = load_wav_as_pcmu_frames(&wav_path)?;
     if frames.is_empty() {
@@ -614,4 +652,329 @@ async fn recv_rtp_to_wav(
 
     log::info!("WAV written: {}", out_path);
     Ok(())
+}
+
+
+#[derive(Deserialize)]
+struct WhisperResponse {
+    text: String,
+}
+
+async fn transcribe_and_log(wav_path: &str) -> Result<String> {
+    if aws_transcribe_enabled() {
+        let text = transcribe_with_aws(wav_path).await?;
+        info!("User question (aws): {}", text);
+        return Ok(text);
+    }
+
+    let client = Client::new();
+
+    // ファイル読み込み
+    let bytes = tokio::fs::read(wav_path).await?;
+
+    let part = multipart::Part::bytes(bytes)
+        .file_name("question.wav")
+        .mime_str("audio/wav")?;
+
+    let form = multipart::Form::new().part("file", part);
+
+    // Whisperサーバに投げる
+    let resp = client
+        .post("http://localhost:9000/transcribe")
+        .multipart(form)
+        .send()
+        .await?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("whisper error: {} - {}", status, body);
+    }
+
+    let result: WhisperResponse = resp.json().await?;
+
+    // ★ ここで info で出す
+    let text = result.text;
+    info!("User question (whisper): {}", text);
+
+    Ok(text)
+}
+
+fn aws_transcribe_enabled() -> bool {
+    std::env::var("USE_AWS_TRANSCRIBE")
+        .map(|v| {
+            let lower = v.to_ascii_lowercase();
+            lower == "1" || lower == "true" || lower == "yes"
+        })
+        .unwrap_or(false)
+}
+
+// Whisperで文字起こしされたテキストを受け取って呼ぶ関数
+pub async fn handle_user_question_from_whisper(text: &str) -> Result<String> {
+    info!("User question (whisper): {}", text);
+
+    let answer = match call_gemini(text).await {
+        Ok(ans) => {
+            info!("LLM answer (gemini): {}", ans);
+            ans
+        }
+        Err(gemini_err) => {
+            log::error!("call_gemini failed: {gemini_err:?}, falling back to ollama");
+            match call_ollama(text).await {
+                Ok(fallback) => {
+                    info!("LLM answer (ollama fallback): {}", fallback);
+                    fallback
+                }
+                Err(ollama_err) => {
+                    log::error!(
+                        "call_ollama also failed: {ollama_err:?}. Using default apology message."
+                    );
+                    "すみません、うまく答えを用意できませんでした。".to_string()
+                }
+            }
+        }
+    };
+
+    let answer_wav = "test/simpletest/audio/ollama_answer.wav";
+    synth_zundamon_wav(&answer, answer_wav).await?;
+
+    // あとでここで TTS → RTP 送信とかにも繋げられる
+    Ok(answer_wav.to_string())
+}
+
+async fn call_ollama(question: &str) -> Result<String> {
+    let client = Client::new();
+
+    let req = OllamaChatRequest {
+        model: "gemma3:4b".to_string(), // ← ここだけ修正
+        messages: vec![OllamaMessage {
+            role: "user".to_string(),
+            content: question.to_string(),
+        }],
+        stream: false,
+    };
+
+    let resp = client
+        .post("http://localhost:11434/api/chat")
+        .json(&req)
+        .send()
+        .await?;
+
+    let status = resp.status();
+    let body_text = resp.text().await?;
+
+    // ★ まずは全部ログる
+    info!("Ollama status: {}", status);
+    info!("Ollama raw body: {}", body_text);
+
+    if !status.is_success() {
+        anyhow::bail!("Ollama HTTP error {}: {}", status, body_text);
+    }
+
+    // ここで初めて JSON としてパース
+    #[derive(Deserialize)]
+    struct ChatResponse {
+        message: Option<OllamaMessage>,
+        // 他のフィールドは無視してOK
+    }
+
+    let body: ChatResponse = serde_json::from_str(&body_text)?;
+
+    let answer = body
+        .message
+        .map(|m| m.content)
+        .unwrap_or_else(|| "<no response>".to_string());
+
+    Ok(answer)
+}
+
+pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
+    let client = Client::new();
+    let speaker_id = 3; // ずんだもん ノーマル
+
+    // 1. audio_query
+    let query_resp = client
+        .post("http://localhost:50021/audio_query")
+        .query(&[("text", text), ("speaker", &speaker_id.to_string())])
+        .send()
+        .await?;
+
+    let status = query_resp.status();
+    let query_body = query_resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("audio_query error {}: {}", status, query_body);
+    }
+
+    // 2. synthesis
+    let synth_resp = client
+        .post("http://localhost:50021/synthesis")
+        .query(&[("speaker", &speaker_id.to_string())])
+        .header("Content-Type", "application/json")
+        .body(query_body)
+        .send()
+        .await?;
+
+    let status = synth_resp.status();
+    let wav_bytes = synth_resp.bytes().await?;
+    if !status.is_success() {
+        anyhow::bail!("synthesis error {} ({} bytes)", status, wav_bytes.len());
+    }
+
+    // 3. WAV保存
+    tokio::fs::write(out_path, &wav_bytes).await?;
+    info!("Zundamon TTS written to {}", out_path);
+
+    Ok(())
+}
+
+async fn call_gemini(question: &str) -> Result<String> {
+    let client = Client::new();
+
+    // ★ APIキーは環境変数から読む
+    let api_key = std::env::var("GEMINI_API_KEY")
+        .expect("GEMINI_API_KEY must be set");
+
+    // 環境変数がなければ gemini-2.5-flash-lite を使う
+    let model = std::env::var("GEMINI_MODEL")
+        .unwrap_or_else(|_| "gemini-2.5-flash-lite".to_string());
+
+    // ★ v1 + /models/{model}:generateContent
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1/models/{}:generateContent?key={}",
+        model, api_key
+    );
+
+    let req_body = GeminiRequest {
+        contents: vec![GeminiContent {
+            parts: vec![GeminiPart {
+                text: question.to_string(),
+            }],
+        }],
+    };
+
+    let resp = client.post(&url).json(&req_body).send().await?;
+    let status = resp.status();
+    let body_text = resp.text().await?;
+
+    info!("Gemini status: {}", status);
+    info!("Gemini raw body: {}", body_text);
+
+    if !status.is_success() {
+        anyhow::bail!("Gemini HTTP error {}: {}", status, body_text);
+    }
+
+    let body: GeminiResponse = serde_json::from_str(&body_text)?;
+
+    let answer = body
+        .candidates
+        .as_ref()
+        .and_then(|cands| cands.get(0))
+        .and_then(|cand| cand.content.parts.get(0))
+        .map(|p| p.text.clone())
+        .unwrap_or_else(|| "<no response>".to_string());
+
+    Ok(answer)
+}
+
+async fn (wav_path: &str) -> Result<String> {
+    let bucket = std::env::var("AWS_TRANSCRIBE_BUCKET")
+        .map_err(|_| anyhow!("AWS_TRANSCRIBE_BUCKET must be set when USE_AWS_TRANSCRIBE=1"))?;
+    let prefix = std::env::var("AWS_TRANSCRIBE_PREFIX").unwrap_or_else(|_| "voicebot".to_string());
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis();
+    let job_name = format!("voicebot-{}", timestamp);
+
+    let normalized_prefix = if prefix.is_empty() {
+        String::new()
+    } else if prefix.ends_with('/') {
+        prefix
+    } else {
+        format!("{}/", prefix)
+    };
+    let object_key = format!("{}{}.wav", normalized_prefix, job_name);
+
+    let region_provider = RegionProviderChain::default_provider().or_default_provider();
+    let config = aws_config::defaults(BehaviorVersion::latest())
+        .region(region_provider)
+        .load()
+        .await;
+
+    let wav_bytes = tokio::fs::read(wav_path).await?;
+    let body_stream = ByteStream::from(wav_bytes);
+    let s3_client = s3::Client::new(&config);
+    info!("Uploading audio to s3://{}/{}", bucket, object_key);
+    s3_client
+        .put_object()
+        .bucket(&bucket)
+        .key(&object_key)
+        .body(body_stream)
+        .content_type("audio/wav")
+        .send()
+        .await?;
+
+    let s3_uri = format!("s3://{}/{}", bucket, object_key);
+    transcribe_with_aws_job(&config, &s3_uri, &job_name).await
+}
+
+async fn transcribe_with_aws_job(config: &SdkConfig, s3_uri: &str, job_name: &str) -> Result<String> {
+    let client = transcribe::Client::new(config);
+
+    let media = transcribe::types::Media::builder()
+        .media_file_uri(s3_uri)
+        .build();
+
+    client
+        .start_transcription_job()
+        .transcription_job_name(job_name)
+        .language_code(transcribe::types::LanguageCode::JaJp)
+        .media(media)
+        .media_format(transcribe::types::MediaFormat::Wav)
+        .send()
+        .await?;
+
+    loop {
+        let resp = client
+            .get_transcription_job()
+            .transcription_job_name(job_name)
+            .send()
+            .await?;
+
+        if let Some(job) = resp.transcription_job() {
+            use transcribe::types::TranscriptionJobStatus as Status;
+            match job.transcription_job_status() {
+                Some(Status::Completed) => {
+                    if let Some(uri) = job
+                        .transcript()
+                        .and_then(|t| t.transcript_file_uri())
+                    {
+                        let resp = reqwest::get(uri).await?;
+                        let body_text = resp.text().await?;
+                        let transcript = parse_aws_transcript(&body_text)?;
+                        return Ok(transcript);
+                    } else {
+                        anyhow::bail!("Transcribe job completed but transcript URI missing");
+                    }
+                }
+                Some(Status::Failed) => {
+                    anyhow::bail!("Transcribe job failed: {:?}", job.failure_reason());
+                }
+                _ => {
+                    sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
+    }
+}
+
+fn parse_aws_transcript(body_text: &str) -> Result<String> {
+    let value: Value = serde_json::from_str(body_text)?;
+    let transcript = value["results"]["transcripts"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|first| first.get("transcript"))
+        .and_then(|node| node.as_str())
+        .ok_or_else(|| anyhow!("Transcript JSON missing text"))?;
+    Ok(transcript.to_string())
 }
