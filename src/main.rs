@@ -3,6 +3,8 @@ use hound::WavWriter;
 use log::info;
 use reqwest::{multipart, Client};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io::Cursor;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
@@ -179,6 +181,7 @@ async fn handle_sip_message(
                     return Ok(());
                 }
 
+                //let out_path_tmp = "test/simpletest/audio/test_karaage.wav".to_string();
                 let transcribed_text = match transcribe_and_log(&out_path).await {
                     Ok(text) => text,
                     Err(e) => {
@@ -662,9 +665,21 @@ struct WhisperResponse {
 
 async fn transcribe_and_log(wav_path: &str) -> Result<String> {
     if aws_transcribe_enabled() {
-        let text = transcribe_with_aws(wav_path).await?;
-        info!("User question (aws): {}", text);
-        return Ok(text);
+        match transcribe_with_aws(wav_path).await {
+            Ok(text) => {
+                if text.trim().is_empty() {
+                    log::warn!(
+                        "AWS Transcribe returned empty text, falling back to local Whisper."
+                    );
+                } else {
+                    info!("User question (aws): {}", text);
+                    return Ok(text);
+                }
+            }
+            Err(e) => {
+                log::error!("AWS Transcribe failed: {e:?}. Falling back to local Whisper.");
+            }
+        }
     }
 
     let client = Client::new();
@@ -709,18 +724,78 @@ fn aws_transcribe_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn build_llm_prompt(user_text: &str) -> String {
+    format!(
+        "以下の質問に「はい」または「いいえ」で回答し、回答全体を30文字以内にまとめてください。質問: {}",
+        user_text
+    )
+}
+
+fn prepare_wav_for_transcribe(wav_path: &str) -> Result<Vec<u8>> {
+    const TARGET_RATE: u32 = 16_000;
+
+    let mut reader = hound::WavReader::open(wav_path)?;
+    let spec = reader.spec();
+    if spec.channels != 1 || spec.bits_per_sample != 16 {
+        anyhow::bail!(
+            "Expected mono 16-bit WAV for AWS Transcribe, got {} ch / {} bits",
+            spec.channels,
+            spec.bits_per_sample
+        );
+    }
+
+    if spec.sample_rate == TARGET_RATE {
+        return Ok(fs::read(wav_path)?);
+    }
+
+    let mut samples: Vec<i16> = Vec::new();
+    for s in reader.samples::<i16>() {
+        samples.push(s?);
+    }
+
+    let mut new_spec = spec;
+    new_spec.sample_rate = TARGET_RATE;
+
+    let mut output: Vec<i16> = Vec::new();
+    if spec.sample_rate == 8_000 {
+        output.reserve(samples.len() * 2);
+        for sample in samples {
+            output.push(sample);
+            output.push(sample);
+        }
+    } else {
+        log::warn!(
+            "Unexpected WAV sample rate {} Hz, sending original file to AWS Transcribe",
+            spec.sample_rate
+        );
+        drop(reader);
+        return Ok(fs::read(wav_path)?);
+    }
+
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut writer = hound::WavWriter::new(&mut cursor, new_spec)?;
+        for sample in output {
+            writer.write_sample(sample)?;
+        }
+        writer.finalize()?;
+    }
+    Ok(cursor.into_inner())
+}
+
 // Whisperで文字起こしされたテキストを受け取って呼ぶ関数
 pub async fn handle_user_question_from_whisper(text: &str) -> Result<String> {
     info!("User question (whisper): {}", text);
+    let llm_prompt = build_llm_prompt(text);
 
-    let answer = match call_gemini(text).await {
+    let answer = match call_gemini(&llm_prompt).await {
         Ok(ans) => {
             info!("LLM answer (gemini): {}", ans);
             ans
         }
         Err(gemini_err) => {
             log::error!("call_gemini failed: {gemini_err:?}, falling back to ollama");
-            match call_ollama(text).await {
+            match call_ollama(&llm_prompt).await {
                 Ok(fallback) => {
                     info!("LLM answer (ollama fallback): {}", fallback);
                     fallback
@@ -876,7 +951,7 @@ async fn call_gemini(question: &str) -> Result<String> {
     Ok(answer)
 }
 
-async fn (wav_path: &str) -> Result<String> {
+async fn transcribe_with_aws(wav_path: &str) -> Result<String> {
     let bucket = std::env::var("AWS_TRANSCRIBE_BUCKET")
         .map_err(|_| anyhow!("AWS_TRANSCRIBE_BUCKET must be set when USE_AWS_TRANSCRIBE=1"))?;
     let prefix = std::env::var("AWS_TRANSCRIBE_PREFIX").unwrap_or_else(|_| "voicebot".to_string());
@@ -901,7 +976,7 @@ async fn (wav_path: &str) -> Result<String> {
         .load()
         .await;
 
-    let wav_bytes = tokio::fs::read(wav_path).await?;
+    let wav_bytes = prepare_wav_for_transcribe(wav_path)?;
     let body_stream = ByteStream::from(wav_bytes);
     let s3_client = s3::Client::new(&config);
     info!("Uploading audio to s3://{}/{}", bucket, object_key);
@@ -951,6 +1026,10 @@ async fn transcribe_with_aws_job(config: &SdkConfig, s3_uri: &str, job_name: &st
                     {
                         let resp = reqwest::get(uri).await?;
                         let body_text = resp.text().await?;
+
+                        // ★ 追加：ここで AWS の JSON を全部ログに出す
+                        log::info!("AWS transcript raw JSON: {}", body_text);
+
                         let transcript = parse_aws_transcript(&body_text)?;
                         return Ok(transcript);
                     } else {
