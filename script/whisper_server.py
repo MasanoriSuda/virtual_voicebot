@@ -4,7 +4,7 @@ import tempfile
 import whisper
 
 app = FastAPI()
-model = whisper.load_model("base")  # 好きなモデルに
+model = whisper.load_model("large-v3-turbo")  # 好きなモデルに
 
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):

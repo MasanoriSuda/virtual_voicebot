@@ -142,13 +142,15 @@ async fn handle_sip_message(
 
         // 3) SDP 付き 200 OK
         let sdp = format!(
-            "v=0\r\n\
-            o=rustbot 1 1 IN IP4 {ip}\r\n\
-            s=Rust PCMU Bot\r\n\
-            c=IN IP4 {ip}\r\n\
-            t=0 0\r\n\
-            m=audio {rtp} RTP/AVP 0\r\n\
-            a=rtpmap:0 PCMU/8000\r\n",
+            concat!(
+                "v=0\r\n",
+                "o=rustbot 1 1 IN IP4 {ip}\r\n",
+                "s=Rust PCMU Bot\r\n",
+                "c=IN IP4 {ip}\r\n",
+                "t=0 0\r\n",
+                "m=audio {rtp} RTP/AVP 0\r\n",
+                "a=rtpmap:0 PCMU/8000\r\n",
+            ),
             ip = cfg.local_ip,
             rtp = cfg.rtp_port,
         );
@@ -163,9 +165,24 @@ async fn handle_sip_message(
             loop {
                 let (len, ack_src) = socket.recv_from(&mut buf).await?;
                 let ack_msg = String::from_utf8_lossy(&buf[..len]);
-                if ack_src == src && ack_msg.starts_with("ACK ") {
-                    info!("Received ACK, start RTP to {remote_rtp_addr}");
-                    return Ok::<(), std::io::Error>(());
+                if ack_msg.starts_with("ACK ") {
+                    // Zoiper などは REGISTER/INVITE で送信元ポートが変わることがあるので、
+                    // IP と Call-ID で ACK を判定する
+                    let same_peer = ack_src.ip() == src.ip();
+                    let same_call = ack_msg.contains(&call_id);
+                    if same_peer && same_call {
+                        info!("Received ACK from {ack_src}, start RTP to {remote_rtp_addr}");
+                        return Ok::<(), std::io::Error>(());
+                    } else {
+                        info!(
+                            "Ignored ACK from {ack_src} (same_peer={same_peer} same_call={same_call})"
+                        );
+                    }
+                } else {
+                    info!(
+                        "Non-ACK while waiting (from {ack_src}): {}",
+                        ack_msg.lines().next().unwrap_or_default()
+                    );
                 }
             }
         })
