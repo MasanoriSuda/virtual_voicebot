@@ -7,6 +7,9 @@ pub use message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
 
 pub use parse::parse_sip_message;
 
+#[allow(unused_imports)]
+pub use crate::sip::builder::{SipRequestBuilder, SipResponseBuilder};
+
 use crate::packet::SipInput;
 use crate::session::types::Sdp;
 
