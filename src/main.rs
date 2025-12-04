@@ -1,5 +1,6 @@
 mod sip;
 mod rtp;
+mod session;
 
 use anyhow::{anyhow, Result};
 use hound::WavWriter;
@@ -726,7 +727,7 @@ fn aws_transcribe_enabled() -> bool {
 
 fn build_llm_prompt(user_text: &str) -> String {
     format!(
-        "以下の質問に「はい」または「いいえ」で回答し、回答全体を30文字以内にまとめてください。質問: {}",
+        "{}",
         user_text
     )
 }
