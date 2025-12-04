@@ -30,3 +30,16 @@ pub fn spawn_call(call_id: String, media_cfg: MediaConfig) -> SessionHandle {
 
     handle
 }
+
+pub fn spawn_session(
+    call_id: String,
+    session_map: SessionMap,
+    media_cfg: MediaConfig,
+) -> tokio::sync::mpsc::UnboundedSender<SessionIn> {
+    let handle = spawn_call(call_id.clone(), media_cfg);
+    {
+        let mut map = session_map.lock().unwrap();
+        map.insert(call_id, handle.tx_in.clone());
+    }
+    handle.tx_in
+}

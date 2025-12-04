@@ -2,4 +2,4 @@
 
 pub mod packet;
 
-pub use packet::{run_packet_loop, RawPacket, RtpPortMap, SipInput};
+pub use packet::{run_packet_loop, RtpPortMap, SipInput};
