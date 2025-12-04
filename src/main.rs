@@ -2,6 +2,7 @@ mod packet;
 mod session;
 mod sip;
 mod rtp;
+mod bot;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

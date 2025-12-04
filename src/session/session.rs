@@ -1,8 +1,16 @@
 #![allow(dead_code)]
 // session.rs
+use std::net::SocketAddr;
+
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::time::{Duration, Instant};
 
 use crate::session::types::*;
+use crate::session::types::Sdp;
+
+use anyhow::Error;
+use crate::rtp::{build_rtp_packet, RtpPacket};
+use crate::bot;
 
 #[derive(Clone)]
 pub struct SessionHandle {
@@ -21,6 +29,8 @@ pub struct Session {
     rtp_ts: u32,
     // バッファ/タイマ
     speaking: bool,
+    capture_started: Option<Instant>,
+    capture_payloads: Vec<u8>,
 }
 
 impl Session {
@@ -40,6 +50,8 @@ impl Session {
             rtp_seq: 0,
             rtp_ts: 0,
             speaking: false,
+            capture_started: None,
+            capture_payloads: Vec::new(),
         };
         tokio::spawn(async move { s.run(rx_in).await; });
         SessionHandle { tx_in }
@@ -61,19 +73,28 @@ impl Session {
                     let (ip, port) = self.peer_rtp_dst();
                     let _ = self.tx_up.send(SessionOut::StartRtpTx { dst_ip: ip, dst_port: port, pt: 0 }); // PCMU
                     self.state = SessState::Established;
+                    self.capture_started = Some(Instant::now());
+                    self.capture_payloads.clear();
                     // 例: 最初の発話をキック（固定文でOK）
                     let _ = self.tx_up.send(SessionOut::BotSynthesize { text: "はじめまして、ずんだもんです。".into() });
                 }
                 (SessState::Established, SessionIn::RtpIn { payload, .. }) => {
-                    // 受信音声→VADで検出→Bot合成の割り込み制御など
-                    // （MVPはログだけ）
+                    if let Some(start) = self.capture_started {
+                        self.capture_payloads.extend_from_slice(&payload);
+                        if start.elapsed() >= Duration::from_secs(10) {
+                            if let Err(e) = self.handle_bot_pipeline().await {
+                                log::warn!("bot pipeline error: {e:?}");
+                            }
+                            self.capture_started = None;
+                            self.capture_payloads.clear();
+                        }
+                    }
                     let _ = self.tx_up.send(SessionOut::Metrics { name: "rtp_in", value: payload.len() as i64 });
                 }
                 (SessState::Established, SessionIn::BotAudio { pcm48k: _ }) => {
                     // 48k→8k→μ-law→RTPパケット化は下位メディア層に委譲してOK
                     // ここではTS/Seqの進行のみ示唆
                     self.rtp_ts = self.rtp_ts.wrapping_add(160);
-                    // 実際の送出はメディア層スレッドへ
                 }
                 (_, SessionIn::Bye) => {
                     let _ = self.tx_up.send(SessionOut::StopRtpTx);
@@ -102,4 +123,145 @@ impl Session {
             ("0.0.0.0".to_string(), 0)
         }
     }
+
+    async fn handle_bot_pipeline(&self) -> Result<(), Error> {
+        // 1) μ-law payload を WAV に保存
+        let wav_path = "/tmp/input_from_peer.wav";
+        write_mulaw_to_wav(&self.capture_payloads, wav_path)?;
+
+        // 2) ASR+LLM+TTS (main.txt 由来の処理を bot モジュールに集約)
+        let user_text = match bot::transcribe_and_log(wav_path).await {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("ASR failed: {e:?}");
+                "すみません、聞き取れませんでした。".to_string()
+            }
+        };
+
+        let bot_wav = match bot::handle_user_question_from_whisper(&user_text).await {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("LLM/TTS failed: {e:?}");
+                return Ok(());
+            }
+        };
+
+        // 5) RTP 送信
+        if let Some(peer) = &self.peer_sdp {
+            if let Err(e) = send_wav_as_rtp_pcmu(&bot_wav, (&peer.ip, peer.port)).await {
+                log::warn!("RTP send failed: {e:?}");
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn write_mulaw_to_wav(payloads: &[u8], path: &str) -> Result<(), Error> {
+    use hound::{SampleFormat, WavSpec, WavWriter};
+    let spec = WavSpec {
+        channels: 1,
+        sample_rate: 8000,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
+    };
+    let mut writer = WavWriter::create(path, spec)?;
+    for &b in payloads {
+        writer.write_sample(mulaw_to_linear16(b))?;
+    }
+    writer.finalize()?;
+    Ok(())
+}
+
+fn mulaw_to_linear16(mu: u8) -> i16 {
+    const BIAS: i16 = 0x84;
+    let mu = !mu;
+    let sign = (mu & 0x80) != 0;
+    let segment = (mu & 0x70) >> 4;
+    let mantissa = mu & 0x0F;
+
+    let mut value = ((mantissa as i16) << 4) + 0x08;
+    value <<= segment as i16;
+    value -= BIAS;
+    if sign { -value } else { value }
+}
+
+async fn send_wav_as_rtp_pcmu(
+    wav_path: &str,
+    dst: (&str, u16),
+) -> Result<(), Error> {
+    use tokio::time::sleep;
+    use tokio::net::UdpSocket;
+
+    let frames = load_wav_as_pcmu_frames(wav_path)?;
+    if frames.is_empty() {
+        anyhow::bail!("no frames");
+    }
+
+    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let remote: SocketAddr = format!("{}:{}", dst.0, dst.1).parse()?;
+    let mut seq = 0u16;
+    let mut ts = 0u32;
+    let ssrc = 0x12345678;
+
+    for frame in frames {
+        let pkt = RtpPacket::new(0, seq, ts, ssrc, frame);
+        let bytes = build_rtp_packet(&pkt);
+        socket.send_to(&bytes, remote).await?;
+        seq = seq.wrapping_add(1);
+        ts = ts.wrapping_add(160);
+        sleep(Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
+fn load_wav_as_pcmu_frames(path: &str) -> Result<Vec<Vec<u8>>, Error> {
+    use hound::WavReader;
+    let mut reader = WavReader::open(path)?;
+    let spec = reader.spec();
+    if spec.channels != 1 || spec.bits_per_sample != 16 {
+        anyhow::bail!("expected mono 16bit wav");
+    }
+    let mut samples: Vec<i16> = Vec::new();
+    for s in reader.samples::<i16>() {
+        samples.push(s?);
+    }
+    let base_samples: Vec<i16> = match spec.sample_rate {
+        8000 => samples,
+        24000 => samples.iter().step_by(3).copied().collect(),
+        other => anyhow::bail!("unsupported sample rate {other}"),
+    };
+    let mut frames = Vec::new();
+    let mut cur = Vec::with_capacity(160);
+    for s in base_samples {
+        cur.push(linear16_to_mulaw(s));
+        if cur.len() == 160 {
+            frames.push(cur.clone());
+            cur.clear();
+        }
+    }
+    if !cur.is_empty() {
+        while cur.len() < 160 { cur.push(0xFF); }
+        frames.push(cur);
+    }
+    Ok(frames)
+}
+
+fn linear16_to_mulaw(sample: i16) -> u8 {
+    const BIAS: i16 = 0x84;
+    const CLIP: i16 = 32635;
+    let mut s = sample;
+    let mut sign = 0u8;
+    if s < 0 { s = -s; sign = 0x80; }
+    if s > CLIP { s = CLIP; }
+    s += BIAS;
+    let mut segment: u8 = 0;
+    let mut value = (s as u16) >> 7;
+    while value > 0 {
+        segment += 1;
+        value >>= 1;
+        if segment >= 8 { break; }
+    }
+    let mantissa = ((s >> (segment + 3)) & 0x0F) as u8;
+    !(sign | (segment << 4) | mantissa)
 }
