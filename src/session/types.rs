@@ -60,3 +60,9 @@ pub enum SessionOut {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessState { Idle, Early, Established, Terminating, Terminated }
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc::UnboundedSender;
+
+pub type SessionMap = Arc<Mutex<HashMap<String, UnboundedSender<SessionIn>>>>;
