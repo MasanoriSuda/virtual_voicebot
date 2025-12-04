@@ -1,3 +1,6 @@
+mod sip;
+mod rtp;
+
 use anyhow::{anyhow, Result};
 use hound::WavWriter;
 use log::info;
@@ -15,6 +18,11 @@ use aws_sdk_s3 as s3;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_transcribe as transcribe;
 use serde_json::Value;
+use sip::{
+    build_response as sip_build_response, parse_sip_message, SipHeader, SipMessage, SipMethod,
+    SipRequest, SipResponse,
+};
+use rtp::{build_rtp_packet, parse_rtp_packet, RtpPacket};
 
 #[derive(Clone)]
 struct Config {
@@ -59,12 +67,6 @@ struct OllamaChatRequest {
 struct OllamaMessage {
     role: String,
     content: String,
-}
-
-#[derive(Deserialize)]
-struct OllamaChatResponse {
-    message: Option<OllamaMessage>,
-    done: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -125,167 +127,242 @@ async fn handle_sip_message(
     src: SocketAddr,
     msg: String,
 ) -> Result<()> {
-    if msg.starts_with("INVITE ") {
-        info!("Received INVITE from {src}");
-        let (via, from, to, call_id, cseq) = parse_basic_headers(&msg)?;
-        let (remote_rtp_addr, _remote_payload_type) = parse_sdp_remote_rtp(&msg)?;
-
-        // 1) 100 Trying
-        let trying = build_100_trying(&via, &from, &to, &call_id, &cseq);
-        socket.send_to(trying.as_bytes(), src).await?;
-        info!("Sent 100 Trying to {src}");
-
-        // 2) 180 Ringing
-        let ringing = build_180_ringing(&via, &from, &to, &call_id, &cseq);
-        socket.send_to(ringing.as_bytes(), src).await?;
-        info!("Sent 180 Ringing to {src}");
-
-        // 3) SDP 付き 200 OK
-        let sdp = format!(
-            concat!(
-                "v=0\r\n",
-                "o=rustbot 1 1 IN IP4 {ip}\r\n",
-                "s=Rust PCMU Bot\r\n",
-                "c=IN IP4 {ip}\r\n",
-                "t=0 0\r\n",
-                "m=audio {rtp} RTP/AVP 0\r\n",
-                "a=rtpmap:0 PCMU/8000\r\n",
-            ),
-            ip = cfg.local_ip,
-            rtp = cfg.rtp_port,
-        );
-
-        let resp = build_200_ok(&via, &from, &to, &call_id, &cseq, cfg, &sdp);
-        socket.send_to(resp.as_bytes(), src).await?;
-        info!("Sent 200 OK to {src}");
-
-        // ACK を待つ（この間は次のパケットを受け付けない＝単一通話前提）
-        let wait_result = timeout(Duration::from_secs(5), async {
-            let mut buf = [0u8; 2048];
-            loop {
-                let (len, ack_src) = socket.recv_from(&mut buf).await?;
-                let ack_msg = String::from_utf8_lossy(&buf[..len]);
-                if ack_msg.starts_with("ACK ") {
-                    // Zoiper などは REGISTER/INVITE で送信元ポートが変わることがあるので、
-                    // IP と Call-ID で ACK を判定する
-                    let same_peer = ack_src.ip() == src.ip();
-                    let same_call = ack_msg.contains(&call_id);
-                    if same_peer && same_call {
-                        info!("Received ACK from {ack_src}, start RTP to {remote_rtp_addr}");
-                        return Ok::<(), std::io::Error>(());
-                    } else {
-                        info!(
-                            "Ignored ACK from {ack_src} (same_peer={same_peer} same_call={same_call})"
-                        );
-                    }
-                } else {
-                    info!(
-                        "Non-ACK while waiting (from {ack_src}): {}",
-                        ack_msg.lines().next().unwrap_or_default()
-                    );
-                }
-            }
-        })
-        .await;
-
-        match wait_result {
-            Ok(Ok(())) => {
-                // 録音（相手のPCMUをWAVに保存）
-                let recv_port = cfg.rtp_port; // SDPで名乗ってるポートと揃える
-                let out_path = "test/simpletest/audio/input_from_peer.wav".to_string();
-                if let Err(e) = recv_rtp_to_wav(recv_port, &out_path, 10).await {
-                    log::error!("RTP recv error: {e:?}");
-                    return Ok(());
-                }
-
-                //let out_path_tmp = "test/simpletest/audio/test_karaage.wav".to_string();
-                let transcribed_text = match transcribe_and_log(&out_path).await {
-                    Ok(text) => text,
-                    Err(e) => {
-                        log::error!("transcribe_and_log error: {e:?}");
-                        return Ok(());
-                    }
-                };
-
-                let answer_wav_path = match handle_user_question_from_whisper(&transcribed_text).await {
-                    Ok(path) => path,
-                    Err(e) => {
-                        log::error!("handle_user_question_from_whisper error: {e:?}");
-                        return Ok(());
-                    }
-                };
-
-                let send_local = SocketAddr::new("0.0.0.0".parse().unwrap(), 0);
-                if let Err(e) =
-                    send_fixed_pcmu(send_local, remote_rtp_addr, Some(&answer_wav_path)).await
-                {
-                    log::error!("RTP send error: {e:?}");
-                }
-
-            }
-            Ok(Err(e)) => {
-                eprintln!("Error while waiting ACK: {e:?}");
-            }
-            Err(_) => {
-                eprintln!("ACK timeout from {src}, won't send RTP");
-            }
-            
+    let parsed = match parse_sip_message(&msg) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to parse SIP from {src}: {e:?}");
+            return Ok(());
         }
-        
-    } else if msg.starts_with("BYE ") {
-        info!("Received BYE from {src}");
+    };
 
-        let (via, from, to, call_id, cseq) = parse_basic_headers(&msg)?;
-        let resp = build_200_ok_simple(&via, &from, &to, &call_id, &cseq);
-
-        socket.send_to(resp.as_bytes(), src).await?;
-        info!("Sent 200 OK for BYE to {src}");
-    } else {
-
-        info!(
-            "Received non-INVITE: first line = {}",
-            msg.lines().next().unwrap_or("")
-        );
+    match parsed {
+        SipMessage::Request(req) => match req.method {
+            SipMethod::Invite => {
+                handle_invite_request(cfg, socket, src, req).await?;
+            }
+            SipMethod::Bye => {
+                handle_bye_request(socket, src, req).await?;
+            }
+            other => {
+                info!(
+                    "Received unsupported SIP request {:?} from {}: {}",
+                    other, src, req.uri
+                );
+            }
+        },
+        SipMessage::Response(resp) => {
+            info!(
+                "Received SIP response {} {} from {}",
+                resp.status_code, resp.reason_phrase, src
+            );
+        }
     }
 
     Ok(())
 }
 
-fn parse_basic_headers(msg: &str) -> Result<(String, String, String, String, String)> {
-    let mut via = String::new();
-    let mut from = String::new();
-    let mut to = String::new();
-    let mut call_id = String::new();
-    let mut cseq = String::new();
+async fn handle_invite_request(
+    cfg: &Config,
+    socket: &UdpSocket,
+    src: SocketAddr,
+    req: SipRequest,
+) -> Result<()> {
+    info!("Received INVITE from {src}");
+    let core = extract_core_headers(&req)?;
+    let (remote_rtp_addr, _remote_payload_type) = parse_sdp_remote_rtp(&req)?;
 
-    for line in msg.lines() {
-        let line = line.trim_end();
-        if line.starts_with("Via:") {
-            via = line.to_string();
-        } else if line.starts_with("From:") {
-            from = line.to_string();
-        } else if line.starts_with("To:") {
-            to = line.to_string();
-        } else if line.starts_with("Call-ID:") {
-            call_id = line.to_string();
-        } else if line.starts_with("CSeq:") {
-            cseq = line.to_string();
+    // 1) 100 Trying
+    let trying = build_100_trying(&core).to_bytes();
+    socket.send_to(&trying, src).await?;
+    info!("Sent 100 Trying to {src}");
+
+    // 2) 180 Ringing
+    let ringing = build_180_ringing(&core).to_bytes();
+    socket.send_to(&ringing, src).await?;
+    info!("Sent 180 Ringing to {src}");
+
+    // 3) SDP 付き 200 OK
+    let sdp = format!(
+        concat!(
+            "v=0\r\n",
+            "o=rustbot 1 1 IN IP4 {ip}\r\n",
+            "s=Rust PCMU Bot\r\n",
+            "c=IN IP4 {ip}\r\n",
+            "t=0 0\r\n",
+            "m=audio {rtp} RTP/AVP 0\r\n",
+            "a=rtpmap:0 PCMU/8000\r\n",
+        ),
+        ip = cfg.local_ip,
+        rtp = cfg.rtp_port,
+    );
+
+    let ok_resp = build_200_ok(&core, cfg, &sdp).to_bytes();
+    socket.send_to(&ok_resp, src).await?;
+    info!("Sent 200 OK to {src}");
+
+    // ACK を待つ（この間は次のパケットを受け付けない＝単一通話前提）
+    let wait_result = timeout(Duration::from_secs(5), async {
+        let mut buf = [0u8; 2048];
+        loop {
+            let (len, ack_src) = socket.recv_from(&mut buf).await?;
+            let ack_msg = String::from_utf8_lossy(&buf[..len]).to_string();
+            match parse_sip_message(&ack_msg) {
+                Ok(SipMessage::Request(ack_req)) if matches!(ack_req.method, SipMethod::Ack) => {
+                    // Zoiper などは REGISTER/INVITE で送信元ポートが変わることがあるので、
+                    // Call-ID で ACK を判定する（IP が変わるケースも許容）
+                    let same_call = ack_req
+                        .header_value("Call-ID")
+                        .map(|v| v == core.call_id.as_str())
+                        .unwrap_or(false);
+                    if same_call {
+                        if ack_src.ip() != src.ip() {
+                            info!(
+                                "Accepting ACK with different peer: orig_ip={} ack_ip={}",
+                                src.ip(),
+                                ack_src.ip()
+                            );
+                        }
+                        info!("Received ACK from {ack_src}, start RTP to {remote_rtp_addr}");
+                        return Ok::<(), std::io::Error>(());
+                    } else {
+                        info!(
+                            "Ignored ACK from {ack_src} (same_call={same_call})"
+                        );
+                    }
+                }
+                Ok(SipMessage::Request(other_req)) => {
+                    info!(
+                        "Non-ACK request while waiting (from {ack_src}): method={:?}",
+                        other_req.method
+                    );
+                }
+                Ok(_) => {
+                    info!(
+                        "Non-request while waiting (from {ack_src}): {}",
+                        ack_msg.lines().next().unwrap_or_default()
+                    );
+                }
+                Err(e) => {
+                    log::warn!("Failed to parse SIP while waiting for ACK: {e:?}");
+                }
+            }
+        }
+    })
+    .await;
+
+    match wait_result {
+        Ok(Ok(())) => {
+            // 録音（相手のPCMUをWAVに保存）
+            let recv_port = cfg.rtp_port; // SDPで名乗ってるポートと揃える
+            let out_path = "test/simpletest/audio/input_from_peer.wav".to_string();
+            if let Err(e) = recv_rtp_to_wav(recv_port, &out_path, 10).await {
+                log::error!("RTP recv error: {e:?}");
+                return Ok(());
+            }
+
+            let transcribed_text = match transcribe_and_log(&out_path).await {
+                Ok(text) => text,
+                Err(e) => {
+                    log::error!("transcribe_and_log error: {e:?}");
+                    return Ok(());
+                }
+            };
+
+            let answer_wav_path = match handle_user_question_from_whisper(&transcribed_text).await {
+                Ok(path) => path,
+                Err(e) => {
+                    log::error!("handle_user_question_from_whisper error: {e:?}");
+                    return Ok(());
+                }
+            };
+
+            let send_local = SocketAddr::new("0.0.0.0".parse().unwrap(), 0);
+            if let Err(e) =
+                send_fixed_pcmu(send_local, remote_rtp_addr, Some(&answer_wav_path)).await
+            {
+                log::error!("RTP send error: {e:?}");
+            }
+        }
+        Ok(Err(e)) => {
+            eprintln!("Error while waiting ACK: {e:?}");
+        }
+        Err(_) => {
+            eprintln!("ACK timeout from {src}, won't send RTP");
         }
     }
 
-    if via.is_empty() || from.is_empty() || to.is_empty() || call_id.is_empty() || cseq.is_empty()
-    {
-        anyhow::bail!("missing SIP headers");
-    }
-    Ok((via, from, to, call_id, cseq))
+    Ok(())
 }
 
-fn parse_sdp_remote_rtp(msg: &str) -> Result<(SocketAddr, u8)> {
-    let parts: Vec<&str> = msg.split("\r\n\r\n").collect();
-    if parts.len() < 2 {
+async fn handle_bye_request(socket: &UdpSocket, src: SocketAddr, req: SipRequest) -> Result<()> {
+    info!("Received BYE from {src}");
+    let core = extract_core_headers(&req)?;
+    let resp = build_200_ok_simple(&core).to_bytes();
+    socket.send_to(&resp, src).await?;
+    info!("Sent 200 OK for BYE to {src}");
+    Ok(())
+}
+
+struct SipCoreHeaders {
+    via: String,
+    from: String,
+    to: String,
+    call_id: String,
+    cseq: String,
+}
+
+impl SipCoreHeaders {
+    fn base_headers(&self) -> Vec<SipHeader> {
+        self.headers_with_to(self.to.clone())
+    }
+
+    fn headers_with_to(&self, to_value: String) -> Vec<SipHeader> {
+        vec![
+            SipHeader::new("Via", &self.via),
+            SipHeader::new("From", &self.from),
+            SipHeader::new("To", to_value),
+            SipHeader::new("Call-ID", &self.call_id),
+            SipHeader::new("CSeq", &self.cseq),
+        ]
+    }
+}
+
+fn extract_core_headers(req: &SipRequest) -> Result<SipCoreHeaders> {
+    let via = req
+        .header_value("Via")
+        .ok_or_else(|| anyhow!("missing Via header"))?
+        .to_string();
+    let from = req
+        .header_value("From")
+        .ok_or_else(|| anyhow!("missing From header"))?
+        .to_string();
+    let to = req
+        .header_value("To")
+        .ok_or_else(|| anyhow!("missing To header"))?
+        .to_string();
+    let call_id = req
+        .header_value("Call-ID")
+        .ok_or_else(|| anyhow!("missing Call-ID header"))?
+        .to_string();
+    let cseq = req
+        .header_value("CSeq")
+        .ok_or_else(|| anyhow!("missing CSeq header"))?
+        .to_string();
+
+    Ok(SipCoreHeaders {
+        via,
+        from,
+        to,
+        call_id,
+        cseq,
+    })
+}
+
+fn parse_sdp_remote_rtp(req: &SipRequest) -> Result<(SocketAddr, u8)> {
+    if req.body.is_empty() {
         anyhow::bail!("no SDP body");
     }
-    let sdp = parts[1];
+    let sdp = std::str::from_utf8(&req.body)?;
     let mut ip = None;
     let mut port = None;
     let mut pt = 0u8;
@@ -311,133 +388,37 @@ fn parse_sdp_remote_rtp(msg: &str) -> Result<(SocketAddr, u8)> {
     Ok((addr, pt))
 }
 
-fn build_100_trying(
-    via: &str,
-    from: &str,
-    to: &str,
-    call_id: &str,
-    cseq: &str,
-) -> String {
-    format!(
-        "SIP/2.0 100 Trying\r\n\
-{via}\r\n\
-{from}\r\n\
-{to}\r\n\
-{call_id}\r\n\
-{cseq}\r\n\
-Content-Length: 0\r\n\
-\r\n",
-        via = via,
-        from = from,
-        to = to,
-        call_id = call_id,
-        cseq = cseq,
-    )
+fn build_100_trying(core: &SipCoreHeaders) -> SipResponse {
+    sip_build_response(100, "Trying", core.base_headers(), Vec::new())
 }
 
-fn build_180_ringing(
-    via: &str,
-    from: &str,
-    to: &str,
-    call_id: &str,
-    cseq: &str,
-) -> String {
-    format!(
-        "SIP/2.0 180 Ringing\r\n\
-{via}\r\n\
-{from}\r\n\
-{to}\r\n\
-{call_id}\r\n\
-{cseq}\r\n\
-Content-Length: 0\r\n\
-\r\n",
-        via = via,
-        from = from,
-        to = to,
-        call_id = call_id,
-        cseq = cseq,
-    )
+fn build_180_ringing(core: &SipCoreHeaders) -> SipResponse {
+    sip_build_response(180, "Ringing", core.base_headers(), Vec::new())
 }
 
+fn build_200_ok(core: &SipCoreHeaders, cfg: &Config, sdp: &str) -> SipResponse {
+    let mut headers = core.headers_with_to(to_with_tag(&core.to, "rustbot"));
+    headers.push(SipHeader::new(
+        "Contact",
+        format!("<sip:rustbot@{}:{}>", cfg.local_ip, cfg.sip_port),
+    ));
+    headers.push(SipHeader::new("Content-Type", "application/sdp"));
 
-fn build_200_ok(
-    via: &str,
-    from: &str,
-    to: &str,
-    call_id: &str,
-    cseq: &str,
-    cfg: &Config,
-    sdp: &str,
-) -> String {
-    let content_length = sdp.as_bytes().len();
-    format!(
-        "SIP/2.0 200 OK\r\n\
-{via}\r\n\
-{from}\r\n\
-{to};tag=rustbot\r\n\
-{call_id}\r\n\
-{cseq}\r\n\
-Contact: <sip:rustbot@{ip}:{port}>\r\n\
-Content-Type: application/sdp\r\n\
-Content-Length: {len}\r\n\
-\r\n\
-{sdp}",
-        via = via,
-        from = from,
-        to = to,
-        call_id = call_id,
-        cseq = cseq,
-        ip = cfg.local_ip,
-        port = cfg.sip_port,
-        len = content_length,
-        sdp = sdp
-    )
+    sip_build_response(200, "OK", headers, sdp.as_bytes().to_vec())
 }
 
-fn build_200_ok_simple(
-    via: &str,
-    from: &str,
-    to: &str,
-    call_id: &str,
-    cseq: &str,
-) -> String {
-    format!(
-        "SIP/2.0 200 OK\r\n\
-{via}\r\n\
-{from}\r\n\
-{to}\r\n\
-{call_id}\r\n\
-{cseq}\r\n\
-Content-Length: 0\r\n\
-\r\n",
-        via = via,
-        from = from,
-        to = to,
-        call_id = call_id,
-        cseq = cseq,
-    )
+fn build_200_ok_simple(core: &SipCoreHeaders) -> SipResponse {
+    sip_build_response(200, "OK", core.base_headers(), Vec::new())
 }
 
-
-/// 超雑なRTPパケット。PCMU(payload_type=0)専用。
-fn build_rtp_packet(seq: u16, ts: u32, ssrc: u32, payload: &[u8]) -> Vec<u8> {
-    let mut buf = vec![0u8; 12 + payload.len()];
-    // Header
-    buf[0] = (2u8 << 6) | 0; // V=2, P=0, X=0, CC=0
-    buf[1] = 0; // M=0, PT=0(PCMU)
-    buf[2] = (seq >> 8) as u8;
-    buf[3] = (seq & 0xff) as u8;
-    buf[4] = (ts >> 24) as u8;
-    buf[5] = (ts >> 16) as u8;
-    buf[6] = (ts >> 8) as u8;
-    buf[7] = (ts & 0xff) as u8;
-    buf[8] = (ssrc >> 24) as u8;
-    buf[9] = (ssrc >> 16) as u8;
-    buf[10] = (ssrc >> 8) as u8;
-    buf[11] = (ssrc & 0xff) as u8;
-    buf[12..].copy_from_slice(payload);
-    buf
+fn to_with_tag(to: &str, tag: &str) -> String {
+    if to.to_ascii_lowercase().contains("tag=") {
+        to.to_string()
+    } else {
+        format!("{to};tag={tag}")
+    }
 }
+
 
 /// 16bit PCM (リトルエンディアン, -32768..32767) を μ-law(PCMU) 1byte に変換
 fn linear16_to_mulaw(sample: i16) -> u8 {
@@ -569,7 +550,8 @@ async fn send_fixed_pcmu(
     // 今はとりあえず1回分だけ再生（ループしたければ for _ in 0..N とかにしてもOK）
     for frame in &frames {
         // frame.len() は 160 のはず（最後のフレームもパディング済み）
-        let pkt = build_rtp_packet(seq, ts, ssrc, frame);
+        let pkt_struct = RtpPacket::new(0, seq, ts, ssrc, frame.clone());
+        let pkt = build_rtp_packet(&pkt_struct);
         socket.send_to(&pkt, remote).await?;
 
         seq = seq.wrapping_add(1);
@@ -637,14 +619,15 @@ async fn recv_rtp_to_wav(
             }
         };
 
-        if len <= 12 {
-            continue; // RTPヘッダだけ/壊れたパケット
-        }
+        let payload = match parse_rtp_packet(&buf[..len]) {
+            Ok(pkt) => pkt.payload,
+            Err(e) => {
+                log::warn!("Failed to parse RTP packet: {:?}", e);
+                continue;
+            }
+        };
 
-        // RTPヘッダ(12byte)を飛ばしてペイロードだけ見る
-        let payload = &buf[12..len];
-
-        for &b in payload {
+        for b in payload {
             let s = mulaw_to_linear16(b);
             samples.push(s);
         }
