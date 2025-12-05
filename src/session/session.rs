@@ -23,6 +23,7 @@ pub struct Session {
     call_id: String,
     peer_sdp: Option<Sdp>,
     local_sdp: Option<Sdp>,
+    peer_rtp_override: Option<SocketAddr>,
     tx_up: UnboundedSender<SessionOut>,
     media_cfg: MediaConfig,
     // RTP送出用
@@ -46,6 +47,7 @@ impl Session {
             call_id,
             peer_sdp: None,
             local_sdp: None,
+            peer_rtp_override: None,
             tx_up,
             media_cfg,
             rtp_seq: 0,
@@ -79,7 +81,14 @@ impl Session {
                     // 例: 最初の発話をキック（固定文でOK）
                     let _ = self.tx_up.send(SessionOut::BotSynthesize { text: "はじめまして、ずんだもんです。".into() });
                 }
-                (SessState::Established, SessionIn::RtpIn { payload, .. }) => {
+                (SessState::Established, SessionIn::RtpIn { payload, src, .. }) => {
+                    if self.peer_rtp_override.is_none() {
+                        self.peer_rtp_override = Some(src);
+                        info!(
+                            "[session {}] learned RTP peer from incoming packet: {}",
+                            self.call_id, src
+                        );
+                    }
                     debug!(
                         "[session {}] RTP payload received len={}",
                         self.call_id,
@@ -128,6 +137,9 @@ impl Session {
     }
 
     fn peer_rtp_dst(&self) -> (String, u16) {
+        if let Some(addr) = self.peer_rtp_override {
+            return (addr.ip().to_string(), addr.port());
+        }
         if let Some(sdp) = &self.peer_sdp {
             (sdp.ip.clone(), sdp.port)
         } else {
@@ -158,10 +170,13 @@ impl Session {
         };
 
         // 5) RTP 送信
-        if let Some(peer) = &self.peer_sdp {
-            if let Err(e) = send_wav_as_rtp_pcmu(&bot_wav, (&peer.ip, peer.port)).await {
+        let (dst_ip, dst_port) = self.peer_rtp_dst();
+        if dst_ip != "0.0.0.0" && dst_port != 0 {
+            if let Err(e) = send_wav_as_rtp_pcmu(&bot_wav, (&dst_ip, dst_port)).await {
                 log::warn!("RTP send failed: {e:?}");
             }
+        } else {
+            log::warn!("RTP send skipped: unknown peer");
         }
 
         Ok(())

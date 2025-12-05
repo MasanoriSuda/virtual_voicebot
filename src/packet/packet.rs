@@ -267,6 +267,7 @@ async fn run_rtp_udp_loop(
                         let _ = sess_tx.send(SessionIn::RtpIn {
                             ts: pkt.timestamp,
                             payload: pkt.payload,
+                            src: raw.src,
                         });
                     }
                     Err(e) => {
