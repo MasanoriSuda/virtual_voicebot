@@ -215,9 +215,23 @@ async fn send_wav_as_rtp_pcmu(
     let mut ts = 0u32;
     let ssrc = 0x12345678;
 
+    log::info!(
+        "[rtp tx] sending {} frames ({} samples) to {}",
+        frames.len(),
+        frames.len() * 160,
+        remote
+    );
+
     for frame in frames {
         let pkt = RtpPacket::new(0, seq, ts, ssrc, frame);
         let bytes = build_rtp_packet(&pkt);
+        log::debug!(
+            "[rtp tx] seq={} ts={} len={} first_bytes={:02x?}",
+            seq,
+            ts,
+            bytes.len(),
+            &bytes[..bytes.len().min(16)]
+        );
         socket.send_to(&bytes, remote).await?;
         seq = seq.wrapping_add(1);
         ts = ts.wrapping_add(160);
