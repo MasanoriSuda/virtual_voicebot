@@ -8,6 +8,7 @@ use log::{debug, warn, info};
 
 use crate::session::{SessionIn, SessionMap};
 use crate::sip::{parse_sip_message, SipMessage, SipMethod};
+use crate::rtp::parse_rtp_packet;
 
 /// UDPで受けた「生パケット」
 #[derive(Debug, Clone)]
@@ -257,15 +258,24 @@ async fn run_rtp_udp_loop(
             };
 
             if let Some(sess_tx) = sess_tx_opt {
-                debug!(
-                    "[packet] RTP len={} from {} mapped to call_id={}",
-                    len, raw.src, call_id
-                );
-                // ここではヘッダをパースせず、生データを丸ごと渡すだけ
-                let _ = sess_tx.send(SessionIn::RtpIn {
-                    ts: 0,
-                    payload: raw.data.clone(),
-                });
+                match parse_rtp_packet(&raw.data) {
+                    Ok(pkt) => {
+                        debug!(
+                            "[packet] RTP len={} from {} mapped to call_id={} pt={} seq={}",
+                            len, raw.src, call_id, pkt.payload_type, pkt.sequence_number
+                        );
+                        let _ = sess_tx.send(SessionIn::RtpIn {
+                            ts: pkt.timestamp,
+                            payload: pkt.payload,
+                        });
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[packet] RTP parse error for call_id={} from {}: {:?}",
+                            call_id, raw.src, e
+                        );
+                    }
+                }
             } else {
                 warn!("[packet] RTP for unknown session (call_id={}), from {}", call_id, raw.src);
             }
