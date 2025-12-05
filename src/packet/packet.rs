@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
+use log::{debug, warn, info};
 
 use crate::session::{SessionIn, SessionMap};
 use crate::sip::{parse_sip_message, SipMessage, SipMethod};
@@ -96,6 +97,7 @@ async fn run_sip_udp_loop(
                     if let Some(resp) =
                         build_final_response(&req, 200, "OK", &sdp_ip, sip_port, advertised_rtp_port)
                     {
+                        info!("[packet] Sending 200 OK with SDP:\n{}", resp);
                         let _ = sock.send_to(resp.as_bytes(), src).await.ok();
                     }
                 } else if matches!(req.method, SipMethod::Bye) {
@@ -255,20 +257,21 @@ async fn run_rtp_udp_loop(
             };
 
             if let Some(sess_tx) = sess_tx_opt {
+                debug!(
+                    "[packet] RTP len={} from {} mapped to call_id={}",
+                    len, raw.src, call_id
+                );
                 // ここではヘッダをパースせず、生データを丸ごと渡すだけ
                 let _ = sess_tx.send(SessionIn::RtpIn {
                     ts: 0,
                     payload: raw.data.clone(),
                 });
             } else {
-                eprintln!(
-                    "[packet] RTP for unknown session (call_id={}), from {}",
-                    call_id, raw.src
-                );
+                warn!("[packet] RTP for unknown session (call_id={}), from {}", call_id, raw.src);
             }
         } else {
             // 未登録ポート → いまはログだけ
-            eprintln!(
+            warn!(
                 "[packet] RTP on port {} without call_id mapping, from {}",
                 raw.dst_port, raw.src
             );
