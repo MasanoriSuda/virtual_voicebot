@@ -116,3 +116,45 @@ fn parse_cseq(raw: &str) -> anyhow::Result<(u32, String)> {
         .map_err(|_| anyhow::anyhow!("invalid CSeq number"))?;
     Ok((num, method.to_string()))
 }
+
+#[derive(Debug, Clone)]
+pub struct SipUri {
+    pub scheme: String,
+    pub user: Option<String>,
+    pub host: String,
+    pub port: Option<u16>,
+    pub params: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NameAddr {
+    pub display: Option<String>,
+    pub uri: SipUri,
+    pub params: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Via {
+    pub sent_protocol: String,
+    pub sent_by: String,
+    pub params: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CSeq {
+    pub num: u32,
+    pub method: String,
+}
+
+/// よく使う共通ヘッダを構造化して持つ（最初に出現したもののみ）
+#[derive(Debug, Clone, Default)]
+pub struct CommonHeaders {
+    pub via: Option<Via>,
+    pub from: Option<NameAddr>,
+    pub to: Option<NameAddr>,
+    pub contact: Option<NameAddr>,
+    pub call_id: Option<String>,
+    pub cseq: Option<CSeq>,
+    pub max_forwards: Option<u32>,
+    pub content_length: Option<usize>,
+}

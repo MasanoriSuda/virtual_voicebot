@@ -30,7 +30,12 @@ async fn main() -> anyhow::Result<()> {
     let rtp_sock = UdpSocket::bind("0.0.0.0:40000").await?;
     let rtp_port = rtp_sock.local_addr()?.port();
     let local_ip = std::env::var("LOCAL_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let local_ip_for_packet = local_ip.clone();
+    let advertised_ip = std::env::var("ADVERTISED_IP").unwrap_or_else(|_| local_ip.clone());
+    let advertised_rtp_port = std::env::var("ADVERTISED_RTP_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(rtp_port);
+    let local_ip_for_packet = advertised_ip.clone();
 
     println!(
         "Listening SIP on {}, RTP on {}",
@@ -50,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
                 session_map_for_packet,
                 rtp_port_map_for_packet,
                 local_ip_for_packet,
+                advertised_rtp_port,
             )
             .await
             {

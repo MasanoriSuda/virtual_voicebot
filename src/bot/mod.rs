@@ -62,7 +62,6 @@ struct WhisperResponse {
     text: String,
 }
 
-/// Whisper サーバ（ローカル）経由で ASR。AWS Transcribe が有効なら先に AWS を試す。
 pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
     if aws_transcribe_enabled() {
         match transcribe_with_aws(wav_path).await {
