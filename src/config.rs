@@ -19,7 +19,7 @@ impl Config {
         let rtp_port = std::env::var("RTP_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(40000);
+            .unwrap_or(10000);
         let local_ip = std::env::var("LOCAL_IP").unwrap_or_else(|_| "127.0.0.1".to_string());
 
         Ok(Self {
