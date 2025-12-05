@@ -17,4 +17,4 @@ export USE_AWS_TRANSCRIBE=0
 # export AWS_TRANSCRIBE_PREFIX="voicebot"
 # AWSの認証情報/リージョンは usual AWS env か IAM ロールで
 
-cargo run
+RUST_LOG=info cargo run
