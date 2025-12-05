@@ -12,6 +12,7 @@ use anyhow::Error;
 use crate::rtp::{build_rtp_packet, RtpPacket};
 use crate::bot;
 use log::{debug, info};
+use tokio::time::sleep;
 
 #[derive(Clone)]
 pub struct SessionHandle {
@@ -74,10 +75,14 @@ impl Session {
                 (SessState::Early, SessionIn::Ack) => {
                     // 相手SDPからRTP宛先を確定して送信開始
                     let (ip, port) = self.peer_rtp_dst();
-                    let _ = self.tx_up.send(SessionOut::StartRtpTx { dst_ip: ip, dst_port: port, pt: 0 }); // PCMU
+                    let _ = self.tx_up.send(SessionOut::StartRtpTx { dst_ip: ip.clone(), dst_port: port, pt: 0 }); // PCMU
                     self.state = SessState::Established;
                     self.capture_started = Some(Instant::now());
                     self.capture_payloads.clear();
+                    // ダミーRTPを数フレーム送ってメディア経路を確認
+                    if port != 0 && ip != "0.0.0.0" {
+                        tokio::spawn(send_dummy_rtp((ip, port)));
+                    }
                     // 例: 最初の発話をキック（固定文でOK）
                     let _ = self.tx_up.send(SessionOut::BotSynthesize { text: "はじめまして、ずんだもんです。".into() });
                 }
@@ -216,15 +221,12 @@ async fn send_wav_as_rtp_pcmu(
     wav_path: &str,
     dst: (&str, u16),
 ) -> Result<(), Error> {
-    use tokio::time::sleep;
-    use tokio::net::UdpSocket;
-
     let frames = load_wav_as_pcmu_frames(wav_path)?;
     if frames.is_empty() {
         anyhow::bail!("no frames");
     }
 
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
     let remote: SocketAddr = format!("{}:{}", dst.0, dst.1).parse()?;
     let mut seq = 0u16;
     let mut ts = 0u32;
@@ -253,6 +255,42 @@ async fn send_wav_as_rtp_pcmu(
         sleep(Duration::from_millis(20)).await;
     }
     Ok(())
+}
+
+/// ACK直後に疎通確認用のダミーRTPを少量送る
+async fn send_dummy_rtp(dst: (String, u16)) {
+    use tokio::net::UdpSocket;
+
+    let (ip, port) = dst;
+    let remote: SocketAddr = match format!("{}:{}", ip, port).parse() {
+        Ok(a) => a,
+        Err(e) => {
+            log::warn!("[rtp tx] invalid dummy dst: {e:?}");
+            return;
+        }
+    };
+
+    let socket = match UdpSocket::bind("0.0.0.0:0").await {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("[rtp tx] failed to bind dummy socket: {e:?}");
+            return;
+        }
+    };
+
+    let payload = vec![0xFFu8; 160]; // μ-law静音相当
+    let ssrc = 0x87654321;
+    for i in 0..10u16 {
+        let ts = i as u32 * 160;
+        let pkt = RtpPacket::new(0, i, ts, ssrc, payload.clone());
+        let bytes = build_rtp_packet(&pkt);
+        if let Err(e) = socket.send_to(&bytes, remote).await {
+            log::warn!("[rtp tx] dummy send failed: {e:?}");
+            break;
+        }
+        log::info!("[rtp tx] dummy seq={} ts={} dst={}", i, ts, remote);
+        sleep(Duration::from_millis(20)).await;
+    }
 }
 
 fn load_wav_as_pcmu_frames(path: &str) -> Result<Vec<Vec<u8>>, Error> {
