@@ -77,6 +77,7 @@ async fn run_sip_udp_loop(
 
         // INVITE を受信したら 100/180 を即返信する（main側の処理とは独立）
         if let Ok(text) = String::from_utf8(data.clone()) {
+            info!("[sip recv] from {} len={}:\n{}", src, len, text);
             if let Ok(SipMessage::Request(req)) = parse_sip_message(&text) {
                 if matches!(req.method, SipMethod::Invite) {
                     let sdp_ip = if local_ip == "0.0.0.0" {
