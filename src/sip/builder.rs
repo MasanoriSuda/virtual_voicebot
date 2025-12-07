@@ -2,6 +2,103 @@ use std::fmt::Write;
 
 use crate::sip::message::{SipHeader, SipMethod, SipRequest, SipResponse};
 
+/// 追加で使いやすい Builder スタイル
+pub struct SipResponseBuilder {
+    status_code: u16,
+    reason_phrase: String,
+    headers: Vec<SipHeader>,
+    body: Vec<u8>,
+}
+
+pub struct SipRequestBuilder {
+    method: SipMethod,
+    uri: String,
+    headers: Vec<SipHeader>,
+    body: Vec<u8>,
+}
+
+impl SipResponseBuilder {
+    pub fn new(code: u16, reason: impl Into<String>) -> Self {
+        Self {
+            status_code: code,
+            reason_phrase: reason.into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push(SipHeader::new(name, value));
+        self
+    }
+
+    pub fn body(mut self, body: impl Into<Vec<u8>>, content_type: Option<&str>) -> Self {
+        self.body = body.into();
+        if let Some(ct) = content_type {
+            let has_ct = self
+                .headers
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case("Content-Type"));
+            if !has_ct {
+                self.headers.push(SipHeader::new("Content-Type", ct));
+            }
+        }
+        self
+    }
+
+    pub fn build(mut self) -> SipResponse {
+        ensure_content_length(&mut self.headers, self.body.len());
+        SipResponse {
+            version: "SIP/2.0".to_string(),
+            status_code: self.status_code,
+            reason_phrase: self.reason_phrase,
+            headers: self.headers,
+            body: self.body,
+        }
+    }
+}
+
+impl SipRequestBuilder {
+    pub fn new(method: SipMethod, uri: impl Into<String>) -> Self {
+        Self {
+            method,
+            uri: uri.into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push(SipHeader::new(name, value));
+        self
+    }
+
+    pub fn body(mut self, body: impl Into<Vec<u8>>, content_type: Option<&str>) -> Self {
+        self.body = body.into();
+        if let Some(ct) = content_type {
+            let has_ct = self
+                .headers
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case("Content-Type"));
+            if !has_ct {
+                self.headers.push(SipHeader::new("Content-Type", ct));
+            }
+        }
+        self
+    }
+
+    pub fn build(mut self) -> SipRequest {
+        ensure_content_length(&mut self.headers, self.body.len());
+        SipRequest {
+            method: self.method,
+            uri: self.uri,
+            version: "SIP/2.0".to_string(),
+            headers: self.headers,
+            body: self.body,
+        }
+    }
+}
+
 fn ensure_content_length(headers: &mut Vec<SipHeader>, body_len: usize) {
     let has_len = headers
         .iter()

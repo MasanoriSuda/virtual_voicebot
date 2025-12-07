@@ -11,6 +11,7 @@ use crate::session::types::Sdp;
 use anyhow::Error;
 use crate::rtp::{build_rtp_packet, RtpPacket};
 use crate::bot;
+use log::{debug, info};
 
 #[derive(Clone)]
 pub struct SessionHandle {
@@ -79,9 +80,19 @@ impl Session {
                     let _ = self.tx_up.send(SessionOut::BotSynthesize { text: "はじめまして、ずんだもんです。".into() });
                 }
                 (SessState::Established, SessionIn::RtpIn { payload, .. }) => {
+                    debug!(
+                        "[session {}] RTP payload received len={}",
+                        self.call_id,
+                        payload.len()
+                    );
                     if let Some(start) = self.capture_started {
                         self.capture_payloads.extend_from_slice(&payload);
                         if start.elapsed() >= Duration::from_secs(10) {
+                            info!(
+                                "[session {}] Starting bot pipeline ({} bytes buffered)",
+                                self.call_id,
+                                self.capture_payloads.len()
+                            );
                             if let Err(e) = self.handle_bot_pipeline().await {
                                 log::warn!("bot pipeline error: {e:?}");
                             }
@@ -204,9 +215,23 @@ async fn send_wav_as_rtp_pcmu(
     let mut ts = 0u32;
     let ssrc = 0x12345678;
 
+    log::info!(
+        "[rtp tx] sending {} frames ({} samples) to {}",
+        frames.len(),
+        frames.len() * 160,
+        remote
+    );
+
     for frame in frames {
         let pkt = RtpPacket::new(0, seq, ts, ssrc, frame);
         let bytes = build_rtp_packet(&pkt);
+        log::debug!(
+            "[rtp tx] seq={} ts={} len={} first_bytes={:02x?}",
+            seq,
+            ts,
+            bytes.len(),
+            &bytes[..bytes.len().min(16)]
+        );
         socket.send_to(&bytes, remote).await?;
         seq = seq.wrapping_add(1);
         ts = ts.wrapping_add(160);

@@ -8,7 +8,8 @@ use nom::{
     IResult,
 };
 
-use crate::sip::message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
+use crate::sip::message::{CSeq, CommonHeaders, SipHeader, SipMessage, SipMethod, SipRequest, SipResponse, SipUri, NameAddr, Via};
+use crate::sip::protocols::{CSeqHeader, NameAddrHeader, ViaHeader, ContentLengthHeader, MaxForwardsHeader, HeaderCodec};
 
 enum StartLine {
     Request {
@@ -187,4 +188,97 @@ fn parse_method(token: &str) -> SipMethod {
         "REGISTER" => SipMethod::Register,
         other => SipMethod::Unknown(other.to_string()),
     }
+}
+
+/// 以下は個別ヘッダの構造化パーサ
+pub fn parse_via_header(value: &str) -> Result<ViaHeader> {
+    ViaHeader::parse(value)
+}
+
+pub fn parse_name_addr(value: &str) -> Result<NameAddrHeader> {
+    NameAddrHeader::parse(value)
+}
+
+pub fn parse_cseq(value: &str) -> Result<CSeqHeader> {
+    CSeqHeader::parse(value)
+}
+
+pub fn parse_uri(input: &str) -> Result<SipUri> {
+    super::protocols::name_addr::parse_uri(input)
+}
+
+fn parse_params(input: &str) -> Vec<(String, String)> {
+    super::protocols::name_addr::parse_params(input)
+}
+
+/// 生ヘッダ配列から、よく使うヘッダを構造化でまとめて返す
+pub fn collect_common_headers(headers: &[SipHeader]) -> CommonHeaders {
+    let mut common = CommonHeaders::default();
+
+    for h in headers {
+        match h.name.to_ascii_lowercase().as_str() {
+            "via" => {
+                if common.via.is_none() {
+                    common.via = parse_via_header(&h.value).ok().map(|v| Via {
+                        sent_protocol: v.sent_protocol,
+                        sent_by: v.sent_by,
+                        params: v.params,
+                    });
+                }
+            }
+            "from" => {
+                if common.from.is_none() {
+                    common.from = parse_name_addr(&h.value).ok().map(|n| NameAddr {
+                        display: n.display,
+                        uri: n.uri,
+                        params: n.params,
+                    });
+                }
+            }
+            "to" => {
+                if common.to.is_none() {
+                    common.to = parse_name_addr(&h.value).ok().map(|n| NameAddr {
+                        display: n.display,
+                        uri: n.uri,
+                        params: n.params,
+                    });
+                }
+            }
+            "contact" => {
+                if common.contact.is_none() {
+                    common.contact = parse_name_addr(&h.value).ok().map(|n| NameAddr {
+                        display: n.display,
+                        uri: n.uri,
+                        params: n.params,
+                    });
+                }
+            }
+            "call-id" => {
+                if common.call_id.is_none() {
+                    common.call_id = Some(h.value.clone());
+                }
+            }
+            "cseq" => {
+                if common.cseq.is_none() {
+                    common.cseq = parse_cseq(&h.value).ok().map(|c| CSeq {
+                        num: c.num,
+                        method: c.method,
+                    });
+                }
+            }
+            "max-forwards" => {
+                if common.max_forwards.is_none() {
+                    common.max_forwards = MaxForwardsHeader::parse(&h.value).ok().map(|m| m.hops);
+                }
+            }
+            "content-length" => {
+                if common.content_length.is_none() {
+                    common.content_length = ContentLengthHeader::parse(&h.value).ok().map(|c| c.length);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    common
 }

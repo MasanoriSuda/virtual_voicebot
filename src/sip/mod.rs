@@ -1,11 +1,24 @@
 pub mod message;
 pub mod parse;
 pub mod builder;
+pub mod protocols;
 
 #[allow(unused_imports)]
 pub use message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
 
 pub use parse::parse_sip_message;
+
+#[allow(unused_imports)]
+pub use crate::sip::builder::{SipRequestBuilder, SipResponseBuilder};
+
+#[allow(unused_imports)]
+pub use crate::sip::parse::{
+    collect_common_headers, parse_cseq as parse_cseq_header, parse_name_addr, parse_uri,
+    parse_via_header,
+};
+
+#[allow(unused_imports)]
+pub use protocols::*;
 
 use crate::packet::SipInput;
 use crate::session::types::Sdp;

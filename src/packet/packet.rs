@@ -4,9 +4,11 @@ use std::sync::{Arc, Mutex};
 
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
+use log::{debug, warn, info};
 
 use crate::session::{SessionIn, SessionMap};
 use crate::sip::{parse_sip_message, SipMessage, SipMethod};
+use crate::rtp::parse_rtp_packet;
 
 /// UDPで受けた「生パケット」
 #[derive(Debug, Clone)]
@@ -37,16 +39,17 @@ pub async fn run_packet_loop(
     session_map: SessionMap,
     rtp_port_map: RtpPortMap,
     local_ip: String,
+    advertised_rtp_port: u16,
 ) -> std::io::Result<()> {
     let sip_port = sip_sock.local_addr()?.port();
-    let rtp_port = rtp_sock.local_addr()?.port();
+    let _rtp_port = rtp_sock.local_addr()?.port();
 
     let sip_task = tokio::spawn(run_sip_udp_loop(
         sip_sock,
         sip_tx,
         local_ip,
         sip_port,
-        rtp_port,
+        advertised_rtp_port,
     ));
     let rtp_task = tokio::spawn(run_rtp_udp_loop(
         rtp_sock,
@@ -64,7 +67,7 @@ async fn run_sip_udp_loop(
     sip_tx: UnboundedSender<SipInput>,
     local_ip: String,
     sip_port: u16,
-    rtp_port: u16,
+    advertised_rtp_port: u16,
 ) -> std::io::Result<()> {
     let mut buf = vec![0u8; 2048];
 
@@ -93,8 +96,9 @@ async fn run_sip_udp_loop(
                         let _ = sock.send_to(resp.as_bytes(), src).await.ok();
                     }
                     if let Some(resp) =
-                        build_final_response(&req, 200, "OK", &sdp_ip, sip_port, rtp_port)
+                        build_final_response(&req, 200, "OK", &sdp_ip, sip_port, advertised_rtp_port)
                     {
+                        info!("[packet] Sending 200 OK with SDP:\n{}", resp);
                         let _ = sock.send_to(resp.as_bytes(), src).await.ok();
                     }
                 } else if matches!(req.method, SipMethod::Bye) {
@@ -254,20 +258,30 @@ async fn run_rtp_udp_loop(
             };
 
             if let Some(sess_tx) = sess_tx_opt {
-                // ここではヘッダをパースせず、生データを丸ごと渡すだけ
-                let _ = sess_tx.send(SessionIn::RtpIn {
-                    ts: 0,
-                    payload: raw.data.clone(),
-                });
+                match parse_rtp_packet(&raw.data) {
+                    Ok(pkt) => {
+                        debug!(
+                            "[packet] RTP len={} from {} mapped to call_id={} pt={} seq={}",
+                            len, raw.src, call_id, pkt.payload_type, pkt.sequence_number
+                        );
+                        let _ = sess_tx.send(SessionIn::RtpIn {
+                            ts: pkt.timestamp,
+                            payload: pkt.payload,
+                        });
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[packet] RTP parse error for call_id={} from {}: {:?}",
+                            call_id, raw.src, e
+                        );
+                    }
+                }
             } else {
-                eprintln!(
-                    "[packet] RTP for unknown session (call_id={}), from {}",
-                    call_id, raw.src
-                );
+                warn!("[packet] RTP for unknown session (call_id={}), from {}", call_id, raw.src);
             }
         } else {
             // 未登録ポート → いまはログだけ
-            eprintln!(
+            warn!(
                 "[packet] RTP on port {} without call_id mapping, from {}",
                 raw.dst_port, raw.src
             );

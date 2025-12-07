@@ -18,6 +18,17 @@ use crate::sip::{process_sip_datagram, SipEvent};
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
+    let sip_bind_ip =
+        std::env::var("SIP_BIND_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let sip_port = std::env::var("SIP_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5060);
+    let rtp_port_cfg = std::env::var("RTP_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10000);
+
     // --- セッションとRTPポート管理の共有マップ ---
     let session_map: SessionMap = Arc::new(Mutex::new(HashMap::new()));
     let rtp_port_map: RtpPortMap = Arc::new(Mutex::new(HashMap::new()));
@@ -25,12 +36,17 @@ async fn main() -> anyhow::Result<()> {
     // packet層 → SIP処理ループ へのチャネル
     let (sip_tx, mut sip_rx) = unbounded_channel::<SipInput>();
 
-    // --- ソケット準備 (とりあえず SIP:5060, RTP:40000) ---
-    let sip_sock = UdpSocket::bind("0.0.0.0:5060").await?;
-    let rtp_sock = UdpSocket::bind("0.0.0.0:40000").await?;
+    // --- ソケット準備 (SIP/RTPポートは環境変数で指定) ---
+    let sip_sock = UdpSocket::bind((sip_bind_ip.as_str(), sip_port)).await?;
+    let rtp_sock = UdpSocket::bind(("0.0.0.0", rtp_port_cfg)).await?;
     let rtp_port = rtp_sock.local_addr()?.port();
     let local_ip = std::env::var("LOCAL_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let local_ip_for_packet = local_ip.clone();
+    let advertised_ip = std::env::var("ADVERTISED_IP").unwrap_or_else(|_| local_ip.clone());
+    let advertised_rtp_port = std::env::var("ADVERTISED_RTP_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(rtp_port);
+    let local_ip_for_packet = advertised_ip.clone();
 
     println!(
         "Listening SIP on {}, RTP on {}",
@@ -50,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
                 session_map_for_packet,
                 rtp_port_map_for_packet,
                 local_ip_for_packet,
+                advertised_rtp_port,
             )
             .await
             {
