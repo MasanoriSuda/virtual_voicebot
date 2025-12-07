@@ -106,6 +106,11 @@ async fn run_sip_udp_loop(
                     if let Some(resp) = build_simple_response(&req, 200, "OK") {
                         let _ = sock.send_to(resp.as_bytes(), src).await.ok();
                     }
+                } else if matches!(req.method, SipMethod::Register) {
+                    if let Some(resp) = build_simple_response(&req, 200, "OK") {
+                        info!("[packet] Sending 200 OK for REGISTER to {}", src);
+                        let _ = sock.send_to(resp.as_bytes(), src).await.ok();
+                    }
                 }
             }
         }
