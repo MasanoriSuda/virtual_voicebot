@@ -46,7 +46,7 @@
 プロジェクト全体の構成は以下とする。
 
 ```text
-uas-voice-bot/
+virtual_voicebot/
 ├─ Cargo.toml
 ├─ README.md              # 概要・ビルド/実行方法
 ├─ docs/
