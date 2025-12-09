@@ -36,14 +36,12 @@ impl MediaConfig {
     }
 }
 
-use std::net::SocketAddr;
-
 #[derive(Debug)]
 pub enum SessionIn {
     Invite { call_id: String, from: String, to: String, offer: Sdp },
     Ack,
     Bye,
-    RtpIn { ts: u32, payload: Vec<u8>, src: SocketAddr },
+    RtpIn { ts: u32, payload: Vec<u8> },
     BotAudio { pcm48k: Vec<i16> },
     TimerTick,
     Abort(anyhow::Error),
