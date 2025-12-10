@@ -370,6 +370,11 @@ app → session
 
 ユーザ発話の内容に応じた業務ロジックの判断（これは app の仕事）
 
+補足（session 詳細の要約、詳細は docs/session.md）：
+- manager が call_id をキーにセッション生成/破棄/検索を一元管理し、タイマハンドルや rtp 設定を保持する。
+- Session Timer/keepalive を保持し、発火時に app へ `SessionTimeout` を通知。必要に応じて `SessionOut::StopRtpTx` / `SendSipBye200` を発火する。
+- rtp には送信開始/停止と送信先設定のみ伝え、AI/対話ロジックは持たない。
+
 ### 5.5 app モジュール（対話アプリケーション）
 
 目的：
