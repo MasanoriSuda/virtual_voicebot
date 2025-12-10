@@ -11,6 +11,9 @@ on:
 jobs:
   rust-ci:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: virtual-voicebot-backend
 
     steps:
       - name: Checkout repository
@@ -25,7 +28,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+            virtual-voicebot-backend/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-

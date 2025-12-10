@@ -62,9 +62,9 @@ RUN apt-get update && \
 
 WORKDIR /workspace
 
-COPY --from=build /workspace/target/release/virtual_voicebot /workspace/virtual_voicebot
+COPY --from=build /workspace/target/release/virtual-voicebot-backend /workspace/virtual-voicebot-backend
 
 EXPOSE 5060/udp
 EXPOSE 10000-20000/udp
 
-CMD ["/workspace/virtual_voicebot"]
+CMD ["/workspace/virtual-voicebot-backend"]

@@ -5,10 +5,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: virtual_voicebot-app
+    container_name: virtual-voicebot-backend-app
     # DevContainer が入るサービス
     volumes:
-      - .:/workspaces/virtual_voicebot
+      - .:/workspaces/virtual-voicebot-backend
     environment:
       PUBLIC_IP: 127.0.0.1
       OLLAMA_URL: http://ollama:11434
@@ -27,7 +27,7 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    container_name: virtual_voicebot-ollama
+    container_name: virtual-voicebot-backend-ollama
     restart: unless-stopped
     ports:
       - "11434:11434"
@@ -36,7 +36,7 @@ services:
 
   voicevox:
     image: voicevox/voicevox_engine:cpu-latest  # ここは実際に使うタグに合わせて
-    container_name: virtual_voicebot-voicevox
+    container_name: virtual-voicebot-backend-voicevox
     restart: unless-stopped
     ports:
       - "50021:50021"

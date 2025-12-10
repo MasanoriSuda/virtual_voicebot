@@ -2,10 +2,10 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug sip_pcmu_bot",
+      "name": "Debug virtual-voicebot-backend",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/target/debug/sip_pcmu_bot",
+      "program": "${workspaceFolder}/target/debug/virtual-voicebot-backend",
       "args": [],
       "cwd": "${workspaceFolder}",
       "env": {
