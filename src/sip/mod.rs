@@ -20,7 +20,7 @@ pub use crate::sip::parse::{
 #[allow(unused_imports)]
 pub use protocols::*;
 
-use crate::packet::SipInput;
+use crate::transport::SipInput;
 use crate::session::types::Sdp;
 
 #[derive(Debug)]
