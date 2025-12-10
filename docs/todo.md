@@ -6,14 +6,14 @@
 - 設計タスクと実装タスクを分けて管理する（設計を先に完了させる）。
 
 # 設計タスク
-- [ ] [設計][レイヤ配線] transportは入出力＋配送のみ、SIP応答はsip/sessionで組み立てる流れを明文化・図示。
-- [ ] [設計][イベント設計] SessionIn/SessionOut と app↔ai のイベント種別・チャネル方向を確定。
-- [ ] [設計][エラーポリシー] SIPトランザクションタイマ、RTP無着信、AI失敗時の動作（再送/謝罪/終了）を決定。
-- [ ] [設計][sipトランザクション詳細] 状態遷移表と Timer A/B/E/F… の扱い、送信キューI/Fを具体化。
-- [ ] [設計][rtpストリーム詳細] SSRC/Seq/Timestamp管理と簡易ジッタポリシー、RTCP送受のシグネチャ定義。
-- [ ] [設計][session詳細] manager API、Session Timerの状態持ち、keepalive/タイムアウト時の SessionOut 定義。
-- [ ] [設計][app/ai I/F] asr/llm/tts のAPI型（チャネルor Future）、ストリーミングI/O形を決める。
-- [ ] [設計][テスト計画] INVITE→ACK→RTP往復、トランザクションタイマ、AI失敗フォールバック等のケース列挙。
+- [x] [設計][レイヤ配線] transportは入出力＋配送のみ、SIP応答はsip/sessionで組み立てる流れを明文化・図示。
+- [x] [設計][イベント設計] SessionIn/SessionOut と app↔ai のイベント種別・チャネル方向を確定。
+- [x] [設計][エラーポリシー] SIPトランザクションタイマ、RTP無着信、AI失敗時の動作（再送/謝罪/終了）を決定。
+- [x] [設計][sipトランザクション詳細] 状態遷移表と Timer A/B/E/F… の扱い、送信キューI/Fを具体化。
+- [x] [設計][rtpストリーム詳細] SSRC/Seq/Timestamp管理と簡易ジッタポリシー、RTCP送受のシグネチャ定義。
+- [x] [設計][session詳細] manager API、Session Timerの状態持ち、keepalive/タイムアウト時の SessionOut 定義。
+- [x] [設計][app/ai I/F] asr/llm/tts のAPI型（チャネルor Future）、ストリーミングI/O形を決める。
+- [x] [設計][テスト計画] INVITE→ACK→RTP往復、トランザクションタイマ、AI失敗フォールバック等のケース列挙。
 
 # 実装タスク
 

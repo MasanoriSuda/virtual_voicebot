@@ -1,8 +1,8 @@
-mod packet;
+mod transport;
 mod session;
 mod sip;
 mod rtp;
-mod bot;
+mod ai;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
