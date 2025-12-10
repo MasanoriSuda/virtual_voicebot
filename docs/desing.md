@@ -167,6 +167,24 @@ session から ai への直接依存（必ず app を経由）
 
 モジュール間は基本的に「イベント/メッセージ」とチャンネルで接続する
 
+#### 4.2.1 依存関係（上下方向と禁止事項の明文化）
+
+- 下方向のみ参照可: app → ai / session → (sip, rtp) → transport。逆方向の直接参照は禁止。
+- app から transport/sip/rtp への直接依存は禁止（必ず session を経由）。
+- ai から sip/rtp/transport への直接依存は禁止（必ず app を経由）。
+- session から ai への直接依存は禁止（必ず app を経由）。
+
+#### 4.2.2 依存関係の簡易図
+
+```text
+app  ──→ session ──→ sip ──→ transport
+  │         │         │
+  │         └─→ rtp ──┘
+  └─→ ai (asr/llm/tts)
+```
+
+※矢印は「知ってよい方向（依存の向き）」を示す。逆方向はイベント/メッセージでのみ疎結合に通知する。
+
 ## 5. 各モジュールの責務
 
 ### 5.1 transport モジュール (transport::packet)
@@ -467,6 +485,55 @@ SessionAction（応答コード、SDP 付き応答指示、BYE 指示など）
 
 ※具体的な型名/フィールドは実装時に調整するが、このレベルの分解を維持する。
 
+### 6.2 イベント一覧と向き・役割（今回の設計タスク対象）
+
+```text
+[transport → sip]   RawPacketEvent (src/dst, bytes)     : SIPポートで受信した生データを渡す
+[transport → rtp]   RawRtpPacket (src/dst, bytes)       : RTPポートで受信した生データを渡す
+
+[sip → session]     IncomingInvite/IncomingAck/IncomingBye/IncomingUpdate,
+                    TransactionTimeout                  : SIP受信/タイマをセッションへ通知
+[session → sip]     SendProvisionalResponse (100/180等), SendFinalResponse (200/4xx/5xx),
+                    SendPrack, SendUpdate               : 応答/再送/UPDATE送信の指示（構造体ベース）
+
+[rtp → session]     RtpIn (ts, payload, ssrc/pt/seq)    : RTP受信のペイロード通知
+[session → rtp]     StartRtpTx/StopRtpTx, RtpOutFrame   : 送信開始/停止とPCM→RTP化の指示
+
+[app → session]     SessionAction (例: 180/200+SDP/Bye) : 高レベルなコール制御指示
+[session → app]     CallStarted/CallEnded/Error, MediaReady : 通話状態/エラーの通知
+
+[rtp → ai::asr]     PcmInputChunk                       : PCM入力をASRへ
+[ai::asr → app]     AsrResult                           : 認識結果をappへ
+[app → ai::llm]     LlmRequest                          : コンテキスト付き質問をLLMへ
+[ai::llm → app]     LlmResponse                         : 応答テキスト/アクションをappへ
+[app → ai::tts]     TtsRequest                          : 読み上げテキストをTTSへ
+[ai::tts → rtp]     PcmOutputChunk                      : 生成PCMをrtp送信側へ
+```
+
+### 6.3 イベント方向の簡易図
+
+```text
+Network
+  │
+  │ RawPacketEvent / RawRtpPacket
+  ▼
+transport
+  │            ┌──────────────┐
+  │            │              │
+  │        sip │              │ rtp
+  │            │              │
+  ▼            ▼              ▼
+ session  ←────┴──────────────┘
+  ▲   ▲                │
+  │   │                │PcmInputChunk / PcmOutputChunk
+  │   │                ▼
+  │   │               ai (asr/llm/tts)
+  │   │
+  │ SessionAction / Call events
+  ▼
+ app
+```
+
 ## 7. 並行処理モデル（Tokio）
 
 Tokio を用いた非同期/並行実行の基本方針：
@@ -550,6 +617,29 @@ API エラー・タイムアウト：
 リトライポリシー（回数、間隔）は ai モジュール内で処理
 
 一定回数失敗した場合は app にエラーイベントを通知し、app がユーザ向けの応答（「ただいま混み合っています」など）や通話終了判断を行う
+
+### 8.5 エラー・タイムアウトポリシー（詳細）
+
+SIP / RTP / AI の代表的なエラー検知からユーザ影響までを明文化する。
+
+- SIP トランザクションタイマ発火時
+  - 検知レイヤ: sip（トランザクション状態機械が Timer A/B/E/F… を管理）
+  - 通知イベント: `sip → session` に `TransactionTimeout(call_id, tx_type, method)`
+  - 最終判断レイヤ: session（通話維持/再送終了/切断を決定。UASとしては再送を諦め終了へ寄せる）
+  - UAC への振る舞い: 200 送信前の INVITE なら応答なしでタイムアウト終了（UAC 側が再INVITEを期待）。確立後の再送失敗は session が BYE を送出し切断。
+
+- RTP 無着信（一定時間メディアが来ない）
+  - 検知レイヤ: rtp（ストリーム単位の無着信タイマ）
+  - 通知イベント: `rtp → session` に `RtpTimeout(call_id, stream_id, elapsed_ms)`
+  - 最終判断レイヤ: session（MVP ポリシー: 1回目は警告ログで継続、連続発生または一定回数超過で BYE 送出）
+  - UAC への振る舞い: BYE 時は即切断。警告のみの段階では応答なしで通話継続。
+
+- AI 失敗（ASR / LLM / TTS エラー）
+  - 検知レイヤ: ai::asr / ai::llm / ai::tts（各クライアントがリトライ後に失敗判定）
+  - 通知イベント: `ai::asr → app` に `AsrError`、`ai::llm → app` に `LlmError`、`ai::tts → app` に `TtsError`（call_id/理由付き）
+  - 最終判断レイヤ: app（フォールバック方針を決める）
+    - 基本方針: 初回失敗は謝罪定型を生成し `app → ai::tts → rtp` で返して継続。同一フェーズで連続失敗（例: 2回）で `app → session` に `SessionAction::Bye` を送り終了。
+  - UAC への振る舞い: 初回は謝罪音声を返して継続。連続失敗時は謝罪音声の後に BYE（もしくは即 BYE）で切断。
 
 ## 9. 音声対話フロー（概要）
 
