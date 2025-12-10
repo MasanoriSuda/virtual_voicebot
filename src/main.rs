@@ -1,8 +1,8 @@
-mod transport;
+mod ai;
+mod rtp;
 mod session;
 mod sip;
-mod rtp;
-mod ai;
+mod transport;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -10,16 +10,15 @@ use std::sync::{Arc, Mutex};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::unbounded_channel;
 
-use crate::transport::{run_packet_loop, RtpPortMap, SipInput};
 use crate::session::{spawn_session, MediaConfig, SessionIn, SessionMap};
 use crate::sip::{process_sip_datagram, SipEvent};
+use crate::transport::{run_packet_loop, RtpPortMap, SipInput};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    let sip_bind_ip =
-        std::env::var("SIP_BIND_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let sip_bind_ip = std::env::var("SIP_BIND_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
     let sip_port = std::env::var("SIP_PORT")
         .ok()
         .and_then(|v| v.parse().ok())

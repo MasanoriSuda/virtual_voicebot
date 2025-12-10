@@ -230,11 +230,10 @@ pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
 async fn call_gemini(question: &str) -> Result<String> {
     let client = Client::new();
 
-    let api_key = std::env::var("GEMINI_API_KEY")
-        .expect("GEMINI_API_KEY must be set");
+    let api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
 
-    let model = std::env::var("GEMINI_MODEL")
-        .unwrap_or_else(|_| "gemini-2.5-flash-lite".to_string());
+    let model =
+        std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash-lite".to_string());
 
     let url = format!(
         "https://generativelanguage.googleapis.com/v1/models/{}:generateContent?key={}",
@@ -265,8 +264,8 @@ async fn call_gemini(question: &str) -> Result<String> {
     let answer = body
         .candidates
         .as_ref()
-        .and_then(|cands| cands.get(0))
-        .and_then(|cand| cand.content.parts.get(0))
+        .and_then(|cands| cands.first())
+        .and_then(|cand| cand.content.parts.first())
         .map(|p| p.text.clone())
         .unwrap_or_else(|| "<no response>".to_string());
 
@@ -287,9 +286,7 @@ async fn transcribe_with_aws(wav_path: &str) -> Result<String> {
         .map_err(|_| anyhow!("AWS_TRANSCRIBE_BUCKET must be set when USE_AWS_TRANSCRIBE=1"))?;
     let prefix = std::env::var("AWS_TRANSCRIBE_PREFIX").unwrap_or_else(|_| "voicebot".to_string());
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_millis();
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
     let job_name = format!("voicebot-{}", timestamp);
 
     let normalized_prefix = if prefix.is_empty() {
@@ -324,7 +321,11 @@ async fn transcribe_with_aws(wav_path: &str) -> Result<String> {
     transcribe_with_aws_job(&config, &s3_uri, &job_name).await
 }
 
-async fn transcribe_with_aws_job(config: &SdkConfig, s3_uri: &str, job_name: &str) -> Result<String> {
+async fn transcribe_with_aws_job(
+    config: &SdkConfig,
+    s3_uri: &str,
+    job_name: &str,
+) -> Result<String> {
     let client = transcribe::Client::new(config);
 
     let media = transcribe::types::Media::builder()
@@ -351,10 +352,7 @@ async fn transcribe_with_aws_job(config: &SdkConfig, s3_uri: &str, job_name: &st
             use transcribe::types::TranscriptionJobStatus as Status;
             match job.transcription_job_status() {
                 Some(Status::Completed) => {
-                    if let Some(uri) = job
-                        .transcript()
-                        .and_then(|t| t.transcript_file_uri())
-                    {
+                    if let Some(uri) = job.transcript().and_then(|t| t.transcript_file_uri()) {
                         let resp = reqwest::get(uri).await?;
                         let body_text = resp.text().await?;
 

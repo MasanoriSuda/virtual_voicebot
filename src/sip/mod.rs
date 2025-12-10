@@ -1,6 +1,6 @@
+pub mod builder;
 pub mod message;
 pub mod parse;
-pub mod builder;
 pub mod protocols;
 
 #[allow(unused_imports)]
@@ -20,8 +20,8 @@ pub use crate::sip::parse::{
 #[allow(unused_imports)]
 pub use protocols::*;
 
-use crate::transport::SipInput;
 use crate::session::types::Sdp;
+use crate::transport::SipInput;
 
 #[derive(Debug)]
 pub enum SipEvent {
@@ -31,8 +31,12 @@ pub enum SipEvent {
         to: String,
         offer: Sdp,
     },
-    Ack { call_id: String },
-    Bye { call_id: String },
+    Ack {
+        call_id: String,
+    },
+    Bye {
+        call_id: String,
+    },
     Unknown,
 }
 
@@ -50,10 +54,7 @@ pub fn process_sip_datagram(input: &SipInput) -> Vec<SipEvent> {
     match msg {
         SipMessage::Request(req) => match req.method {
             SipMethod::Invite => {
-                let call_id = req
-                    .header_value("Call-ID")
-                    .unwrap_or("")
-                    .to_string();
+                let call_id = req.header_value("Call-ID").unwrap_or("").to_string();
                 let from = req.header_value("From").unwrap_or("").to_string();
                 let to = req.header_value("To").unwrap_or("").to_string();
                 let offer = parse_offer_sdp(&req.body).unwrap_or_else(|| Sdp::pcmu("0.0.0.0", 0));
@@ -65,17 +66,11 @@ pub fn process_sip_datagram(input: &SipInput) -> Vec<SipEvent> {
                 }]
             }
             SipMethod::Ack => {
-                let call_id = req
-                    .header_value("Call-ID")
-                    .unwrap_or("")
-                    .to_string();
+                let call_id = req.header_value("Call-ID").unwrap_or("").to_string();
                 vec![SipEvent::Ack { call_id }]
             }
             SipMethod::Bye => {
-                let call_id = req
-                    .header_value("Call-ID")
-                    .unwrap_or("")
-                    .to_string();
+                let call_id = req.header_value("Call-ID").unwrap_or("").to_string();
                 vec![SipEvent::Bye { call_id }]
             }
             _ => vec![SipEvent::Unknown],

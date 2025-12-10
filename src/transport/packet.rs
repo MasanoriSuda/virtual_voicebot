@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
+use log::{debug, info, warn};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
-use log::{debug, warn, info};
 
+use crate::rtp::parse_rtp_packet;
 use crate::session::{SessionIn, SessionMap};
 use crate::sip::{parse_sip_message, SipMessage, SipMethod};
-use crate::rtp::parse_rtp_packet;
 
 /// UDPで受けた「生パケット」
 #[derive(Debug, Clone)]
@@ -51,11 +51,7 @@ pub async fn run_packet_loop(
         sip_port,
         advertised_rtp_port,
     ));
-    let rtp_task = tokio::spawn(run_rtp_udp_loop(
-        rtp_sock,
-        session_map,
-        rtp_port_map,
-    ));
+    let rtp_task = tokio::spawn(run_rtp_udp_loop(rtp_sock, session_map, rtp_port_map));
 
     let (_r1, _r2) = tokio::join!(sip_task, rtp_task);
     Ok(())
@@ -112,14 +108,10 @@ async fn maybe_send_immediate_sip_response(
                     local_ip.to_string()
                 };
 
-                if let Some(resp) =
-                    build_provisional_response(&req, 100, "Trying")
-                {
+                if let Some(resp) = build_provisional_response(&req, 100, "Trying") {
                     let _ = sock.send_to(resp.as_bytes(), src).await.ok();
                 }
-                if let Some(resp) =
-                    build_provisional_response(&req, 180, "Ringing")
-                {
+                if let Some(resp) = build_provisional_response(&req, 180, "Ringing") {
                     let _ = sock.send_to(resp.as_bytes(), src).await.ok();
                 }
                 if let Some(resp) =
@@ -202,7 +194,7 @@ fn build_final_response(
         rtp = rtp_port
     );
 
-    let content_length = sdp.as_bytes().len();
+    let content_length = sdp.len();
 
     Some(format!(
         "SIP/2.0 {code} {reason}\r\n\
@@ -222,11 +214,7 @@ Content-Length: {len}\r\n\r\n\
     ))
 }
 
-fn build_simple_response(
-    req: &crate::sip::SipRequest,
-    code: u16,
-    reason: &str,
-) -> Option<String> {
+fn build_simple_response(req: &crate::sip::SipRequest, code: u16, reason: &str) -> Option<String> {
     let via = req.header_value("Via")?;
     let from = req.header_value("From")?;
     let mut to = req.header_value("To")?.to_string();
@@ -302,7 +290,10 @@ async fn run_rtp_udp_loop(
                     }
                 }
             } else {
-                warn!("[packet] RTP for unknown session (call_id={}), from {}", call_id, raw.src);
+                warn!(
+                    "[packet] RTP for unknown session (call_id={}), from {}",
+                    call_id, raw.src
+                );
             }
         } else {
             // 未登録ポート → いまはログだけ

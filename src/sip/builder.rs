@@ -1,4 +1,5 @@
-use std::fmt::Write;
+#![allow(dead_code)]
+use std::fmt::{self, Write};
 
 use crate::sip::message::{SipHeader, SipMethod, SipRequest, SipResponse};
 
@@ -116,7 +117,7 @@ fn render_headers(headers: &[SipHeader], out: &mut String) {
 }
 
 #[allow(dead_code)]
-fn method_to_str<'a>(method: &'a SipMethod) -> &'a str {
+fn method_to_str(method: &SipMethod) -> &str {
     match method {
         SipMethod::Invite => "INVITE",
         SipMethod::Ack => "ACK",
@@ -161,9 +162,8 @@ pub fn build_response(
     }
 }
 
-impl SipRequest {
-    #[allow(dead_code)]
-    pub fn to_string(&self) -> String {
+impl fmt::Display for SipRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut out = String::new();
         let mut headers = self.headers.clone();
         ensure_content_length(&mut headers, self.body.len());
@@ -177,10 +177,12 @@ impl SipRequest {
         );
         render_headers(&headers, &mut out);
         out.push_str("\r\n");
-        out
-    }
 
-    #[allow(dead_code)]
+        f.write_str(&out)
+    }
+}
+
+impl SipRequest {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = self.to_string().into_bytes();
         buf.extend_from_slice(&self.body);
@@ -188,8 +190,8 @@ impl SipRequest {
     }
 }
 
-impl SipResponse {
-    pub fn to_string(&self) -> String {
+impl fmt::Display for SipResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut out = String::new();
         let mut headers = self.headers.clone();
         ensure_content_length(&mut headers, self.body.len());
@@ -197,15 +199,16 @@ impl SipResponse {
         let _ = writeln!(
             out,
             "{} {} {}\r",
-            self.version,
-            self.status_code,
-            self.reason_phrase
+            self.version, self.status_code, self.reason_phrase
         );
         render_headers(&headers, &mut out);
         out.push_str("\r\n");
-        out
-    }
 
+        f.write_str(&out)
+    }
+}
+
+impl SipResponse {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = self.to_string().into_bytes();
         buf.extend_from_slice(&self.body);

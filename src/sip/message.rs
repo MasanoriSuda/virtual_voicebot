@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[derive(Debug, Clone)]
 // Request or Response の種別
 pub enum SipMessage {
@@ -8,7 +10,7 @@ pub enum SipMessage {
 #[derive(Debug, Clone)]
 pub struct SipRequest {
     pub method: SipMethod,
-    pub uri: String,   // とりあえず String, 後で構造化しても良い
+    pub uri: String, // とりあえず String, 後で構造化しても良い
     #[allow(dead_code)]
     pub version: String,
     pub headers: Vec<SipHeader>,

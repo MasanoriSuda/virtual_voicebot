@@ -1,14 +1,16 @@
-pub mod via;
-pub mod name_addr;
-pub mod cseq;
-pub mod content_length;
-pub mod max_forwards;
+#![allow(dead_code, unused_imports)]
 
-pub use via::ViaHeader;
-pub use name_addr::{NameAddrHeader, ContactHeader, FromHeader, ToHeader};
-pub use cseq::CSeqHeader;
+pub mod content_length;
+pub mod cseq;
+pub mod max_forwards;
+pub mod name_addr;
+pub mod via;
+
 pub use content_length::ContentLengthHeader;
+pub use cseq::CSeqHeader;
 pub use max_forwards::MaxForwardsHeader;
+pub use name_addr::{ContactHeader, FromHeader, NameAddrHeader, ToHeader};
+pub use via::ViaHeader;
 
 /// ヘッダを構造化/文字列化するための共通トレイト
 pub trait HeaderCodec: Sized {

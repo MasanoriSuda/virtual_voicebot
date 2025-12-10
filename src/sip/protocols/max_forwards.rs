@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
 use crate::sip::message::SipHeader;
 use crate::sip::protocols::HeaderCodec;
+use anyhow::{anyhow, Result};
 
 #[derive(Debug, Clone)]
 pub struct MaxForwardsHeader {

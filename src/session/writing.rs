@@ -7,7 +7,7 @@ use crate::session::{Session, SessionHandle};
 
 pub fn spawn_call(call_id: String, media_cfg: MediaConfig) -> SessionHandle {
     let (tx_up, rx_out) = unbounded_channel::<SessionOut>();
-    let handle = Session::new(call_id.clone(), tx_up, media_cfg);
+    let handle = Session::spawn(call_id.clone(), tx_up, media_cfg);
 
     // SIP受信側でINVITE→セッションに投げる
     // tx_in.send(SessionIn::Invite{...}).unwrap();
@@ -19,10 +19,15 @@ pub fn spawn_call(call_id: String, media_cfg: MediaConfig) -> SessionHandle {
             match out {
                 SessionOut::SendSip180 => { /* 180 Ringing 送出 */ }
                 SessionOut::SendSip200 { answer: _ } => { /* 200 OK + SDP 送出 */ }
-                SessionOut::StartRtpTx { dst_ip: _, dst_port: _, pt: _ } => { /* RTP送信タスク起動 */ }
+                SessionOut::StartRtpTx {
+                    dst_ip: _,
+                    dst_port: _,
+                    pt: _,
+                } => { /* RTP送信タスク起動 */ }
                 SessionOut::StopRtpTx => { /* 停止 */ }
                 SessionOut::SendSipBye200 => { /* BYEに対する200 OK送出 */ }
-                SessionOut::BotSynthesize { text: _ } => { /* VOICEVOX叩いて BotAudio を返送 */ }
+                SessionOut::BotSynthesize { text: _ } => { /* VOICEVOX叩いて BotAudio を返送 */
+                }
                 SessionOut::Metrics { name: _, value: _ } => { /* メトリクス集計 */ }
             }
         }

@@ -38,11 +38,21 @@ impl MediaConfig {
 
 #[derive(Debug)]
 pub enum SessionIn {
-    Invite { call_id: String, from: String, to: String, offer: Sdp },
+    Invite {
+        call_id: String,
+        from: String,
+        to: String,
+        offer: Sdp,
+    },
     Ack,
     Bye,
-    RtpIn { ts: u32, payload: Vec<u8> },
-    BotAudio { pcm48k: Vec<i16> },
+    RtpIn {
+        ts: u32,
+        payload: Vec<u8>,
+    },
+    BotAudio {
+        pcm48k: Vec<i16>,
+    },
     TimerTick,
     Abort(anyhow::Error),
 }
@@ -50,16 +60,33 @@ pub enum SessionIn {
 #[derive(Debug)]
 pub enum SessionOut {
     SendSip180,
-    SendSip200 { answer: Sdp },
+    SendSip200 {
+        answer: Sdp,
+    },
     SendSipBye200,
-    StartRtpTx { dst_ip: String, dst_port: u16, pt: u8 },
+    StartRtpTx {
+        dst_ip: String,
+        dst_port: u16,
+        pt: u8,
+    },
     StopRtpTx,
-    BotSynthesize { text: String }, // → VOICEVOXへ
-    Metrics { name: &'static str, value: i64 },
+    BotSynthesize {
+        text: String,
+    }, // → VOICEVOXへ
+    Metrics {
+        name: &'static str,
+        value: i64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SessState { Idle, Early, Established, Terminating, Terminated }
+pub(crate) enum SessState {
+    Idle,
+    Early,
+    Established,
+    Terminating,
+    Terminated,
+}
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

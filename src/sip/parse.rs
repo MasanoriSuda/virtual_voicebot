@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Result};
 use nom::{
     branch::alt,
@@ -8,8 +10,13 @@ use nom::{
     IResult,
 };
 
-use crate::sip::message::{CSeq, CommonHeaders, SipHeader, SipMessage, SipMethod, SipRequest, SipResponse, SipUri, NameAddr, Via};
-use crate::sip::protocols::{CSeqHeader, NameAddrHeader, ViaHeader, ContentLengthHeader, MaxForwardsHeader, HeaderCodec};
+use crate::sip::message::{
+    CSeq, CommonHeaders, NameAddr, SipHeader, SipMessage, SipMethod, SipRequest, SipResponse,
+    SipUri, Via,
+};
+use crate::sip::protocols::{
+    CSeqHeader, ContentLengthHeader, HeaderCodec, MaxForwardsHeader, NameAddrHeader, ViaHeader,
+};
 
 enum StartLine {
     Request {
@@ -67,11 +74,11 @@ fn split_head_and_body(input: &str) -> (&str, &str) {
 }
 
 fn parse_head(input: &str) -> Result<(StartLine, Vec<SipHeader>)> {
-    let (rest, start) = parse_start_line(input)
-        .map_err(|e| anyhow!("failed to parse start line: {:?}", e))?;
+    let (rest, start) =
+        parse_start_line(input).map_err(|e| anyhow!("failed to parse start line: {:?}", e))?;
 
-    let headers = parse_headers_block(rest)
-        .map_err(|e| anyhow!("failed to parse headers: {:?}", e))?;
+    let headers =
+        parse_headers_block(rest).map_err(|e| anyhow!("failed to parse headers: {:?}", e))?;
 
     Ok((start, headers))
 }
@@ -165,8 +172,8 @@ fn parse_header_line_nom(input: &str) -> Result<SipHeader> {
         not_line_ending,
     ))(input);
 
-    let (_, (name, _, _, value)) = res
-        .map_err(|e: NomErr| anyhow!("invalid SIP header line {:?}: {:?}", input, e))?;
+    let (_, (name, _, _, value)) =
+        res.map_err(|e: NomErr| anyhow!("invalid SIP header line {:?}: {:?}", input, e))?;
 
     Ok(SipHeader {
         name: name.trim().to_string(),
@@ -273,7 +280,8 @@ pub fn collect_common_headers(headers: &[SipHeader]) -> CommonHeaders {
             }
             "content-length" => {
                 if common.content_length.is_none() {
-                    common.content_length = ContentLengthHeader::parse(&h.value).ok().map(|c| c.length);
+                    common.content_length =
+                        ContentLengthHeader::parse(&h.value).ok().map(|c| c.length);
                 }
             }
             _ => {}

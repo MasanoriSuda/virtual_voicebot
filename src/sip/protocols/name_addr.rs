@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Result};
 
 use crate::sip::message::{SipHeader, SipUri};
@@ -44,11 +46,20 @@ impl HeaderCodec for NameAddrHeader {
 pub fn parse_name_addr(value: &str) -> Result<NameAddrHeader> {
     let value = value.trim();
     let (display, uri_and_params) = if let Some(start) = value.find('<') {
-        let end = value.find('>').ok_or_else(|| anyhow!("invalid name-addr"))?;
+        let end = value
+            .find('>')
+            .ok_or_else(|| anyhow!("invalid name-addr"))?;
         let display = value[..start].trim().trim_matches('"');
         let uri = &value[start + 1..end];
         let after = value[end + 1..].trim();
-        (if display.is_empty() { None } else { Some(display.to_string()) }, (uri, after))
+        (
+            if display.is_empty() {
+                None
+            } else {
+                Some(display.to_string())
+            },
+            (uri, after),
+        )
     } else {
         (None, (value, ""))
     };
@@ -56,7 +67,11 @@ pub fn parse_name_addr(value: &str) -> Result<NameAddrHeader> {
     let uri = parse_uri(uri_and_params.0)?;
     let params = parse_params(uri_and_params.1);
 
-    Ok(NameAddrHeader { display, uri, params })
+    Ok(NameAddrHeader {
+        display,
+        uri,
+        params,
+    })
 }
 
 pub fn parse_uri(input: &str) -> Result<SipUri> {
