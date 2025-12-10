@@ -47,7 +47,7 @@ pub async fn run_packet_loop(
     let sip_task = tokio::spawn(run_sip_udp_loop(
         sip_sock,
         sip_tx,
-        local_ip,
+        local_ip, // used for SIPレスポンスのSDP/Contact生成。将来的にsip側へ移譲予定。
         sip_port,
         advertised_rtp_port,
     ));
@@ -75,50 +75,69 @@ async fn run_sip_udp_loop(
         let (len, src) = sock.recv_from(&mut buf).await?;
         let data = buf[..len].to_vec();
 
-        // INVITE を受信したら 100/180 を即返信する（main側の処理とは独立）
-        if let Ok(text) = String::from_utf8(data.clone()) {
-            info!("[sip recv] from {} len={}:\n{}", src, len, text);
-            if let Ok(SipMessage::Request(req)) = parse_sip_message(&text) {
-                if matches!(req.method, SipMethod::Invite) {
-                    let sdp_ip = if local_ip == "0.0.0.0" {
-                        src.ip().to_string()
-                    } else {
-                        local_ip.clone()
-                    };
-
-                    if let Some(resp) =
-                        build_provisional_response(&req, 100, "Trying")
-                    {
-                        let _ = sock.send_to(resp.as_bytes(), src).await.ok();
-                    }
-                    if let Some(resp) =
-                        build_provisional_response(&req, 180, "Ringing")
-                    {
-                        let _ = sock.send_to(resp.as_bytes(), src).await.ok();
-                    }
-                    if let Some(resp) =
-                        build_final_response(&req, 200, "OK", &sdp_ip, sip_port, advertised_rtp_port)
-                    {
-                        info!("[packet] Sending 200 OK with SDP:\n{}", resp);
-                        let _ = sock.send_to(resp.as_bytes(), src).await.ok();
-                    }
-                } else if matches!(req.method, SipMethod::Bye) {
-                    if let Some(resp) = build_simple_response(&req, 200, "OK") {
-                        let _ = sock.send_to(resp.as_bytes(), src).await.ok();
-                    }
-                } else if matches!(req.method, SipMethod::Register) {
-                    if let Some(resp) = build_simple_response(&req, 200, "OK") {
-                        info!("[packet] Sending 200 OK for REGISTER to {}", src);
-                        let _ = sock.send_to(resp.as_bytes(), src).await.ok();
-                    }
-                }
-            }
-        }
+        maybe_send_immediate_sip_response(
+            &sock,
+            src,
+            &data,
+            &local_ip,
+            sip_port,
+            advertised_rtp_port,
+        )
+        .await;
 
         // ここではSIP判定をせず「SIPポートで受けたUDP=全てSIP」とする
         let input = SipInput { src, data };
         if let Err(e) = sip_tx.send(input) {
             eprintln!("[packet] failed to send to SIP handler: {:?}", e);
+        }
+    }
+}
+
+// 現状の即時返信処理をまとめたヘルパ（後で sip/session へ移譲予定）
+async fn maybe_send_immediate_sip_response(
+    sock: &UdpSocket,
+    src: SocketAddr,
+    data: &[u8],
+    local_ip: &str,
+    sip_port: u16,
+    advertised_rtp_port: u16,
+) {
+    if let Ok(text) = String::from_utf8(data.to_vec()) {
+        info!("[sip recv] from {} len={}:\n{}", src, data.len(), text);
+        if let Ok(SipMessage::Request(req)) = parse_sip_message(&text) {
+            if matches!(req.method, SipMethod::Invite) {
+                let sdp_ip = if local_ip == "0.0.0.0" {
+                    src.ip().to_string()
+                } else {
+                    local_ip.to_string()
+                };
+
+                if let Some(resp) =
+                    build_provisional_response(&req, 100, "Trying")
+                {
+                    let _ = sock.send_to(resp.as_bytes(), src).await.ok();
+                }
+                if let Some(resp) =
+                    build_provisional_response(&req, 180, "Ringing")
+                {
+                    let _ = sock.send_to(resp.as_bytes(), src).await.ok();
+                }
+                if let Some(resp) =
+                    build_final_response(&req, 200, "OK", &sdp_ip, sip_port, advertised_rtp_port)
+                {
+                    info!("[packet] Sending 200 OK with SDP:\n{}", resp);
+                    let _ = sock.send_to(resp.as_bytes(), src).await.ok();
+                }
+            } else if matches!(req.method, SipMethod::Bye) {
+                if let Some(resp) = build_simple_response(&req, 200, "OK") {
+                    let _ = sock.send_to(resp.as_bytes(), src).await.ok();
+                }
+            } else if matches!(req.method, SipMethod::Register) {
+                if let Some(resp) = build_simple_response(&req, 200, "OK") {
+                    info!("[packet] Sending 200 OK for REGISTER to {}", src);
+                    let _ = sock.send_to(resp.as_bytes(), src).await.ok();
+                }
+            }
         }
     }
 }
