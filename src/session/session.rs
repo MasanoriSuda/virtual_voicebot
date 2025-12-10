@@ -11,7 +11,7 @@ use crate::session::types::Sdp;
 
 use anyhow::Error;
 use crate::rtp::{build_rtp_packet, RtpPacket};
-use crate::bot;
+use crate::ai;
 use log::{debug, info, warn};
 
 const INTRO_WAV_PATH: &str =
@@ -279,7 +279,7 @@ impl Session {
         write_mulaw_to_wav(&self.capture_payloads, wav_path)?;
 
         // 2) ASR+LLM+TTS (main.txt 由来の処理を bot モジュールに集約)
-        let user_text = match bot::transcribe_and_log(wav_path).await {
+        let user_text = match ai::transcribe_and_log(wav_path).await {
             Ok(t) => t,
             Err(e) => {
                 log::warn!("ASR failed: {e:?}");
@@ -287,7 +287,7 @@ impl Session {
             }
         };
 
-        let bot_wav = match bot::handle_user_question_from_whisper(&user_text).await {
+        let bot_wav = match ai::handle_user_question_from_whisper(&user_text).await {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("LLM/TTS failed: {e:?}");
