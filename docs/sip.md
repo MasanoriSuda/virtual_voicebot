@@ -46,33 +46,46 @@
    - 3311: UPDATE メソッドの扱い（トランザクションとして）
    - 4028: Session-Expires/Min-SE/refresher の解析・ヘッダ組み立て
 
-## 4. 状態機械
+## 4. トランザクション詳細設計（UAS）
 
 ### 4.1 INVITE サーバトランザクション
+- RFC 範囲: RFC 3261 17.2.1（UDP/UAS）。MVP は UDP のみ、100rel/PRACK/UPDATE は無効。
+- 状態: `Proceeding` / `Completed` / `Confirmed` / `Terminated`
+- 主なイベント:
+  - 受信: `INVITE`（新規/再送）、`ACK`
+  - 送信: 1xx（100/180/183）、2xx、3xx–6xx
+  - タイマ: Timer G/H/I 発火
+- 状態 × イベント → 次状態/アクション（MVP で扱う経路に絞る）
 
-- 状態:
-  - `Proceeding`
-  - `Completed`
-  - `Confirmed`
-  - `Terminated`
-- イベント例:
-  - 受信: `INVITE`, `ACK`
-  - 送信: 1xx, 2xx, 3xx–6xx
-  - タイマ: Timer G/H/I の発火
-- 状態遷移表:
-  - 後で「イベント × 現在状態 → 次状態/アクション」を表にする（TODO）
-
-※ここは簡単な表でも、箇条書きでも OK。  
-　実装前に「どのパターンをサポートするか（MVP範囲）」を書いておく。
+| 現在 | イベント | 次状態 | アクション |
+| --- | --- | --- | --- |
+| (新規) | INVITE 受信 | Proceeding | 100/180 を送信（任意） |
+| Proceeding | 再送 INVITE | Proceeding | 最新の 1xx を再送 |
+| Proceeding | 2xx 送信 | Terminated | 2xx 送信。2xx はダイアログ層で ACK 管理（トランザクションは即終了） |
+| Proceeding | 3xx–6xx 送信 | Completed | 3xx–6xx 送信、Timer G/H 開始 |
+| Completed | 再送 INVITE | Completed | 直近の最終応答を再送 |
+| Completed | Timer G 発火 | Completed | 最終応答を再送（T1 倍増、上限 T2） |
+| Completed | Timer H 発火 | Terminated | TransactionTimeout を session へ通知 |
+| Completed | ACK 受信 | Confirmed | Timer I 開始、Timer G/H 停止 |
+| Confirmed | Timer I 発火 | Terminated | 終了 |
 
 ### 4.2 非 INVITE サーバトランザクション
+- RFC 範囲: RFC 3261 17.2.2（UDP/UAS）。
+- 状態: `Trying` / `Proceeding` / `Completed` / `Terminated`
+- 主なイベント:
+  - 受信: 非 INVITE リクエスト（BYE/CANCEL/OPTIONS 等）、再送リクエスト
+  - 送信: 1xx、最終応答（2xx–6xx）
+  - タイマ: Timer J 発火
+- 状態 × イベント → 次状態/アクション（MVP パターン）
 
-- 状態:
-  - `Trying`
-  - `Proceeding`
-  - `Completed`
-  - `Terminated`
-- 同様にイベントと遷移を整理する。
+| 現在 | イベント | 次状態 | アクション |
+| --- | --- | --- | --- |
+| (新規) | 非 INVITE 受信 | Trying | 100 Trying（任意） |
+| Trying | 1xx 送信 | Proceeding | 1xx 送信 |
+| Proceeding | 再送リクエスト | Proceeding | 最新の 1xx を再送 |
+| Trying/Proceeding | 最終応答 2xx–6xx 送信 | Completed | 最終応答送信、Timer J 開始 |
+| Completed | 再送リクエスト | Completed | 最終応答を再送 |
+| Completed | Timer J 発火 | Terminated | 終了 |
 
 ## 5. session モジュールとのインタフェース
 
@@ -101,14 +114,30 @@
 
 各アクションで必要な情報（ステータスコード、理由句、ヘッダ、SDP 等）を箇条書きにしておく。
 
-## 6. タイマとエラー処理
+## 6. タイマと送信キュー
 
-- 管理するタイマ:
-  - INVITE トランザクション用 Timer A/B/D/E/F/G/H/I/J
-  - 100rel 関連の再送タイマ（必要なら）
-- エラー時の扱い:
-  - パース不能メッセージ → ログ + 400 Bad Request or 破棄（ポリシーを書く）
-  - タイムアウト → `TransactionTimeout` イベントで session に通知（その後どうするかは session 側）
+### 6.1 トランザクションタイマ（UAS で使うもの）
+- 使用するもの: Timer G/H/I（INVITE）と Timer J（非 INVITE）。
+- 使用しないもの（MVP/UAS）: A/B/E/F/D（UAC 側）、100rel 再送タイマ（PRACK 未対応のため）。
+- セット/開始:
+  - Timer G/H: INVITE で 3xx–6xx を送信したとき `sip` トランザクションが開始。
+  - Timer I: INVITE の ACK 受信で Confirmed 遷移時に開始。
+  - Timer J: 非 INVITE の最終応答送信時に開始。
+- 停止:
+  - Timer G/H: ACK 受信で停止。
+  - Timer I/J: 発火で Terminated へ遷移し停止。
+- 発火時の通知:
+  - Timer H/J 発火時に `TransactionTimeout(call_id, tx_type, method)` を `sip → session` へ通知（セッション側で通話維持/終了を判断）。
+
+### 6.2 送信キュー I/F（sip → transport）
+- 目的: トランザクションロジックは「構造化メッセージ＋宛先」をキューへ渡すだけとし、テキスト生成と送信は transport に委譲する。
+- キューに載せる情報案:
+  - 宛先: 受信元アドレスを逆向きに使うか、明示的な送信先 SocketAddr
+  - 識別子: transaction ID（Via branch + CSeq）、dialog 情報（Call-ID + From/To tag）
+  - 種別: レスポンスコード＋理由句、またはリクエストメソッド
+  - ヘッダ: 必須ヘッダ（Via/To/From/Call-ID/CSeq/Contact/Content-Type 等）、必要に応じて Require/Supported/Record-Route
+  - ボディ: SDP などの payload（長さ情報含む）
+- sip 側アクション: session からの `SendProvisionalResponse`/`SendFinalResponse` 等を構造体で受け取り、送信キューへ push。再送もキュー経由で transport に依頼する。
 
 ## 7. MVP と拡張範囲
 
