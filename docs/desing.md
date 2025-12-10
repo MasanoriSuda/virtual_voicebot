@@ -314,6 +314,12 @@ PCM ⇔ RTP ペイロード変換
 - RTCP は SR/RR のインタフェースのみ定義（実装は後続スプリント）。品質通知は将来的にイベント化。
 - 上位（session/app/ai）は SSRC/Seq/Timestamp/ジッタを意識せず、PCMイベントだけ扱う。
 
+補足（app/ai I/F の要約、詳細は docs/voice_bot_flow.md）：
+
+- ASR/TTS はチャネルベースのストリーミング、LLM は 1リクエスト1レスポンスの Future を基本とするハイブリッド。
+- app→ai: AsrInputPcm / LlmRequest / TtsRequest、ai→app: AsrResult/AsrError / LlmResponse/LlmError / TtsPcmChunk/TtsError。
+- 必須フィールドは session_id/stream_id とテキスト/PCM、終端フラグや理由（エラー）を含め、エラーポリシーに従い謝罪継続・連続失敗で終了が判断できる。
+
 ### 5.4 session モジュール
 
 目的：
