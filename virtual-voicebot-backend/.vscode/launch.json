@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug virtual-voicebot-backend",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/virtual-voicebot-backend",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_LOG": "info",
+        "SIP_BIND_IP": "0.0.0.0",
+        "SIP_PORT": "5060",
+        "RTP_PORT": "40000",
+        "LOCAL_IP": "127.0.0.1"
+      },
+      "preLaunchTask": "cargo build"
+    }
+  ]
+}

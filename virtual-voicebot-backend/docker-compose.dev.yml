@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: virtual-voicebot-backend-app
+    # DevContainer が入るサービス
+    volumes:
+      - .:/workspaces/virtual-voicebot-backend
+    environment:
+      PUBLIC_IP: 127.0.0.1
+      OLLAMA_URL: http://ollama:11434
+      VOICEVOX_URL: http://voicevox:50021
+
+      ASR_PROVIDER: whisper       # dev: whisper / gemini / aws 切り替え想定
+      LLM_PROVIDER: ollama        # dev: ollama / gemini
+      TTS_PROVIDER: voicevox      # 本番も voicevox を想定
+
+    ports:
+      - "5060:5060/udp"
+      - "10000-20000:10000-20000/udp"
+    depends_on:
+      - ollama
+      - voicevox
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: virtual-voicebot-backend-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
+  voicevox:
+    image: voicevox/voicevox_engine:cpu-latest  # ここは実際に使うタグに合わせて
+    container_name: virtual-voicebot-backend-voicevox
+    restart: unless-stopped
+    ports:
+      - "50021:50021"
+
+volumes:
+  ollama-data:
