@@ -23,3 +23,13 @@
 - app→ai のリクエスト型一覧
 - ai→app のレスポンス/イベント型一覧
 - キャンセル（通話終了時に ASR/TTS ストリームをどう閉じるか）
+
+### イベント/リクエスト名ドラフト（voice_bot_flow 連携）
+- ASR: `AsrRequest` → `AsrResultPartial` / `AsrResultFinal`
+- LLM: `LlmRequest` → `LlmResponse`
+- TTS: `TtsRequest` → `TtsAudioChunk`
+
+## 6. 現状の実装と差分メモ
+- 現状: WAV 一時ファイルを経由し、HTTP (`/transcribe`, `/audio_query`, `/synthesis`) や AWS SDK を直接呼び出している。
+- 予定: app↔ai のチャネル経由で PCM/テキストを渡す形に置き換える（I/F 変更は別タスク）。
+- ポリシー（タイムアウト/リトライ/フォールバック）は現状のまま維持し、移行後も踏襲する想定。

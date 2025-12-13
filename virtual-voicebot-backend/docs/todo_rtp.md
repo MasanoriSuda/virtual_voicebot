@@ -1,10 +1,10 @@
 # docs/todo_rtp.md
 
 ## 挙動を変えないリファクタ
-- [ ] `transport::packet::run_rtp_udp_loop` 内のRTP処理と session 直行部分にコメントを追加し、rtpモジュールへの移行前提を明示する（挙動は維持）。
-- [ ] `session.rs` 内のRTP送信処理（RtpPacket生成・build・UdpSocket送信）を関数に分離し、将来rtpに移すフックを用意する（挙動は維持）。
-- [ ] rtpモジュールにストリーム管理用の構造体/インタフェースの枠だけ定義（SSRC/Seq/Timestamp管理のプレースホルダ）、現状ロジックは呼ばずに温存する。
-- [ ] RTCP用のI/F（受信通知/送信要求のスタブ）を定義し、未実装であることを明記したドキュメント/コメントを追加する。
+- [x] `transport::packet::run_rtp_udp_loop` 内のRTP処理と session 直行部分にコメントを追加し、rtpモジュールへの移行前提を明示する（挙動は維持）。
+- [x] `session.rs` 内のRTP送信処理（RtpPacket生成・build・UdpSocket送信）を関数に分離し、将来rtpに移すフックを用意する（挙動は維持）。
+- [x] rtpモジュールにストリーム管理用の構造体/インタフェースの枠だけ定義（SSRC/Seq/Timestamp管理のプレースホルダ）、現状ロジックは呼ばずに温存する。
+- [x] RTCP用のI/F（受信通知/送信要求のスタブ）を定義し、未実装であることを明記したドキュメント/コメントを追加する。
 
 ## 挙動を変えるリファクタ（経路統一・ストリーム管理・RTCP入口）
 - [ ] 受信経路を transport→rtp→session/app に切り替え、SessionIn::RtpIn を rtp 経由で発火するよう変更する（直接parse→session送信を廃止）。

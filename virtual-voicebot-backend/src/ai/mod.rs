@@ -1,3 +1,8 @@
+//! ai モジュール: ASR/LLM/TTS の外部サービスクライアント。
+//! - 外部 I/O（HTTP/AWS SDK、ローカル WAV 一時ファイル）をここに閉じ込める。
+//! - app/session にはテキスト/PCM 抽象のみ渡す想定だが、現状は直接関数を呼ぶ。
+//! - ポリシー（タイムアウト/リトライ/フォールバック）は既存のまま。
+
 use anyhow::{anyhow, Result};
 use log::info;
 use reqwest::{multipart, Client};
@@ -62,6 +67,11 @@ struct WhisperResponse {
     text: String,
 }
 
+pub mod asr;
+pub mod llm;
+pub mod tts;
+
+/// ASR 実行（現行実装: AWS Transcribe→Whisper fallback）。呼び出し順・ポリシーはそのまま。
 pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
     if aws_transcribe_enabled() {
         match transcribe_with_aws(wav_path).await {
@@ -109,6 +119,8 @@ pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
     Ok(text)
 }
 
+/// LLM + TTS 実行（現行実装: Gemini→Ollama fallback→ずんだもんTTS）。挙動は変更なし。
+/// I/F はテキスト入力→WAVパス出力（将来はチャネル/PCM化予定、現状は一時ファイルのまま）。
 pub async fn handle_user_question_from_whisper(text: &str) -> Result<String> {
     info!("User question (whisper): {}", text);
     let llm_prompt = build_llm_prompt(text);
@@ -135,6 +147,7 @@ pub async fn handle_user_question_from_whisper(text: &str) -> Result<String> {
         }
     };
 
+    // 一時WAVファイル経由のまま（責務は ai モジュール内に閉じ込める）
     let answer_wav = "/tmp/ollama_answer.wav";
     synth_zundamon_wav(&answer, answer_wav).await?;
 
@@ -191,6 +204,7 @@ async fn call_ollama(question: &str) -> Result<String> {
     Ok(answer)
 }
 
+/// ずんだもん TTS の呼び出し。I/F はテキストと出力 WAV パス（従来どおり）。
 pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
     let client = Client::new();
     let speaker_id = 3; // ずんだもん ノーマル

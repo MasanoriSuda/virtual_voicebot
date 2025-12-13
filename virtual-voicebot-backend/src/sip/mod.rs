@@ -2,6 +2,7 @@ pub mod builder;
 pub mod message;
 pub mod parse;
 pub mod protocols;
+pub mod tx;
 
 #[allow(unused_imports)]
 pub use message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
@@ -20,28 +21,35 @@ pub use crate::sip::parse::{
 #[allow(unused_imports)]
 pub use protocols::*;
 
-use crate::session::types::Sdp;
+use crate::session::types::{CallId, Sdp};
 use crate::transport::SipInput;
 
+/// sip 層から session 層へ渡すイベント（設計ドキュメントの「sip→session 通知」と対応）
 #[derive(Debug)]
 pub enum SipEvent {
+    /// INVITE を受けたときの session への通知（call_id/from/to/offer を引き渡す）
     IncomingInvite {
-        call_id: String,
+        call_id: CallId,
         from: String,
         to: String,
         offer: Sdp,
     },
+    /// 既存ダイアログに対する ACK
     Ack {
-        call_id: String,
+        call_id: CallId,
     },
+    /// 既存ダイアログに対する BYE
     Bye {
-        call_id: String,
+        call_id: CallId,
     },
     Unknown,
 }
 
+/// SIP ソケットで受けた datagram（transport 層から渡される生バイト列）を
+/// 「構造化メッセージ → session へのイベント」に変換する。
+/// 責務: 入力バイトのデコード・簡易パース・イベント化のみ（送信やトランザクションは扱わない）。
 pub fn process_sip_datagram(input: &SipInput) -> Vec<SipEvent> {
-    let text = match String::from_utf8(input.data.clone()) {
+    let text = match decode_sip_text(&input.data) {
         Ok(t) => t,
         Err(_) => return vec![SipEvent::Unknown],
     };
@@ -52,29 +60,7 @@ pub fn process_sip_datagram(input: &SipInput) -> Vec<SipEvent> {
     };
 
     match msg {
-        SipMessage::Request(req) => match req.method {
-            SipMethod::Invite => {
-                let call_id = req.header_value("Call-ID").unwrap_or("").to_string();
-                let from = req.header_value("From").unwrap_or("").to_string();
-                let to = req.header_value("To").unwrap_or("").to_string();
-                let offer = parse_offer_sdp(&req.body).unwrap_or_else(|| Sdp::pcmu("0.0.0.0", 0));
-                vec![SipEvent::IncomingInvite {
-                    call_id,
-                    from,
-                    to,
-                    offer,
-                }]
-            }
-            SipMethod::Ack => {
-                let call_id = req.header_value("Call-ID").unwrap_or("").to_string();
-                vec![SipEvent::Ack { call_id }]
-            }
-            SipMethod::Bye => {
-                let call_id = req.header_value("Call-ID").unwrap_or("").to_string();
-                vec![SipEvent::Bye { call_id }]
-            }
-            _ => vec![SipEvent::Unknown],
-        },
+        SipMessage::Request(req) => vec![sip_request_to_event(req)],
         SipMessage::Response(_) => vec![SipEvent::Unknown],
     }
 }
@@ -103,4 +89,53 @@ fn parse_offer_sdp(body: &[u8]) -> Option<Sdp> {
         payload_type: pt.unwrap_or(0),
         codec: "PCMU/8000".to_string(),
     })
+}
+
+fn decode_sip_text(data: &[u8]) -> Result<String, ()> {
+    String::from_utf8(data.to_vec()).map_err(|_| ())
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+struct CoreHeaderSnapshot {
+    // トランザクション導入時に再利用するためのコアヘッダ（現状は挙動維持のまま取り出す）
+    via: String,
+    from: String,
+    to: String,
+    call_id: String,
+    cseq: String,
+}
+
+impl CoreHeaderSnapshot {
+    fn from_request(req: &SipRequest) -> Self {
+        Self {
+            via: req.header_value("Via").unwrap_or("").to_string(),
+            from: req.header_value("From").unwrap_or("").to_string(),
+            to: req.header_value("To").unwrap_or("").to_string(),
+            call_id: req.header_value("Call-ID").unwrap_or("").to_string(),
+            cseq: req.header_value("CSeq").unwrap_or("").to_string(),
+        }
+    }
+}
+
+fn sip_request_to_event(req: SipRequest) -> SipEvent {
+    let headers = CoreHeaderSnapshot::from_request(&req);
+    match req.method {
+        SipMethod::Invite => {
+            let offer = parse_offer_sdp(&req.body).unwrap_or_else(|| Sdp::pcmu("0.0.0.0", 0));
+            SipEvent::IncomingInvite {
+                call_id: headers.call_id,
+                from: headers.from,
+                to: headers.to,
+                offer,
+            }
+        }
+        SipMethod::Ack => SipEvent::Ack {
+            call_id: headers.call_id,
+        },
+        SipMethod::Bye => SipEvent::Bye {
+            call_id: headers.call_id,
+        },
+        _ => SipEvent::Unknown,
+    }
 }

@@ -1,6 +1,8 @@
 pub mod builder;
 pub mod packet;
 pub mod parser;
+pub mod rtcp;
+pub mod stream;
 
 #[allow(unused_imports)]
 pub use builder::build_rtp_packet;

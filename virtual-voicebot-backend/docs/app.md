@@ -22,3 +22,8 @@
 - session が知らなくてよいこと
 - ai が知らなくてよいこと
 - app だけが知っているべきこと
+
+## 6. イベント名ドラフト（voice_bot_flow に沿ったもの）
+- session→app: `CallStarted`, `AudioBuffered`, `CallEnded`
+- app→ai: `AsrRequest`, `LlmRequest`, `TtsRequest`
+- app→session: `BotAudioReady`, `HangupRequested`
