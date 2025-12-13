@@ -213,6 +213,9 @@ impl Session {
                     let _ = self.tx_up.send(SessionOut::SendSipBye200);
                     self.state = SessState::Terminated;
                 }
+                (_, SessionIn::TransactionTimeout { call_id: _ }) => {
+                    warn!("[session {}] transaction timeout notified", self.call_id);
+                }
                 (_, SessionIn::Abort(e)) => {
                     eprintln!("call {} abort: {e:?}", self.call_id);
                     self.stop_keepalive_timer();

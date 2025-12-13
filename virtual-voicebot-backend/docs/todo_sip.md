@@ -9,11 +9,11 @@
 - [x] sip→transport の送信キュー I/F のスタブを定義し、依存方向を明示する（まだ transport 側の即時返信は残したまま）。
 
 ### 挙動を変えるリファクタ（トランザクション導入・委譲）
-- [ ] INVITE サーバトランザクションの状態機械とタイマ（G/H/I）を実装し、受信入口を `process_sip_datagram` から新フローへ切り替える。
-- [ ] 非 INVITE サーバトランザクション（Trying/Proceeding/Completed/Terminated）と Timer J を実装し、再送対応を含める。
-- [ ] `SessionOut::SendSip180/SendSip200/SendSipBye200` などを sip で受け、該当トランザクションに紐付けてレスポンスを組み立てる経路を実装する。
-- [ ] レスポンス組み立てヘルパ（ステータスコード、理由句、必須ヘッダ、SDP 等）を整備し、SessionOut/トランザクション情報から生成するよう置き換える。
-- [ ] sip→transport の送信キューを実装し、再送・タイマ発火時も含めてここ経由で送信するようにする。
-- [ ] transport 側の即時返信（100/180/200/BYE/REGISTER）を削除し、sip 経由での送信に一本化する。
-- [ ] トランザクションタイムアウト発生時の session 通知（TransactionTimeout）を実装し、受け側配線を整える。
-- [ ] 新トランザクション経路で INVITE→180→200→ACK/BYE のスモークを通し、E2E を確認する。
+- [x] INVITE サーバトランザクションの状態機械とタイマ（G/H/I）を実装し、受信入口を `process_sip_datagram` から新フローへ切り替える。
+- [x] 非 INVITE サーバトランザクション（Trying/Proceeding/Completed/Terminated）と Timer J を実装し、再送対応を含める。
+- [x] `SessionOut::SendSip180/SendSip200/SendSipBye200` などを sip で受け、該当トランザクションに紐付けてレスポンスを組み立てる経路を実装する。
+- [x] レスポンス組み立てヘルパ（ステータスコード、理由句、必須ヘッダ、SDP 等）を整備し、SessionOut/トランザクション情報から生成するよう置き換える。
+- [x] sip→transport の送信キューを実装し、再送・タイマ発火時も含めてここ経由で送信するようにする。
+- [x] transport 側の即時返信（100/180/200/BYE/REGISTER）を削除し、sip 経由での送信に一本化する。
+- [x] トランザクションタイムアウト発生時の session 通知（TransactionTimeout）を実装し、受け側配線を整える。
+- [x] 新トランザクション経路で INVITE→180→200→ACK/BYE のスモークを通し、E2E を確認する。

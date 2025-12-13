@@ -3,7 +3,7 @@ set -euo pipefail
 
 # SIP/SDP広告
 export LOCAL_IP=0.0.0.0
-export ADVERTISED_IP=127.0.0.1   # 公開IPに差し替え
+export ADVERTISED_IP=192.168.10.110   # 公開IPに差し替え
 export ADVERTISED_RTP_PORT=40000 # NATで開けているRTPポートに合わせる
 # 実際にバインドするRTPポートも広告と合わせる（Zoiper側が送る先と一致させる）
 export RTP_PORT=${RTP_PORT:-40000}

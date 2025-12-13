@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use std::fmt::{self, Write};
 
+use crate::session::types::Sdp;
 use crate::sip::message::{SipHeader, SipMethod, SipRequest, SipResponse};
 
 /// 追加で使いやすい Builder スタイル
@@ -188,6 +189,109 @@ impl SipRequest {
         buf.extend_from_slice(&self.body);
         buf
     }
+}
+
+/// リクエストヘッダから 1xx/空ボディレスポンスを組み立てる（To-tag を付与）。
+pub fn response_provisional_from_request(
+    req: &SipRequest,
+    code: u16,
+    reason: &str,
+) -> Option<SipResponse> {
+    let via = req.header_value("Via")?;
+    let from = req.header_value("From")?;
+    let mut to = req.header_value("To")?.to_string();
+    let call_id = req.header_value("Call-ID")?;
+    let cseq = req.header_value("CSeq")?;
+
+    if !to.to_ascii_lowercase().contains("tag=") {
+        to = format!("{to};tag=rustbot");
+    }
+
+    Some(
+        SipResponseBuilder::new(code, reason)
+            .header("Via", via)
+            .header("From", from)
+            .header("To", to)
+            .header("Call-ID", call_id)
+            .header("CSeq", cseq)
+            .build(),
+    )
+}
+
+/// リクエストヘッダ＋SDPから 2xx 応答を組み立てる。
+pub fn response_final_with_sdp(
+    req: &SipRequest,
+    code: u16,
+    reason: &str,
+    contact_ip: &str,
+    sip_port: u16,
+    answer: &Sdp,
+) -> Option<SipResponse> {
+    let via = req.header_value("Via")?;
+    let from = req.header_value("From")?;
+    let mut to = req.header_value("To")?.to_string();
+    let call_id = req.header_value("Call-ID")?;
+    let cseq = req.header_value("CSeq")?;
+
+    if !to.to_ascii_lowercase().contains("tag=") {
+        to = format!("{to};tag=rustbot");
+    }
+
+    let sdp = format!(
+        concat!(
+            "v=0\r\n",
+            "o=rustbot 1 1 IN IP4 {ip}\r\n",
+            "s=Rust PCMU Bot\r\n",
+            "c=IN IP4 {ip}\r\n",
+            "t=0 0\r\n",
+            "m=audio {rtp} RTP/AVP {pt}\r\n",
+            "a=rtpmap:{pt} {codec}\r\n",
+            "a=sendrecv\r\n",
+        ),
+        ip = answer.ip,
+        rtp = answer.port,
+        pt = answer.payload_type,
+        codec = answer.codec
+    );
+
+    Some(
+        SipResponseBuilder::new(code, reason)
+            .header("Via", via)
+            .header("From", from)
+            .header("To", to)
+            .header("Call-ID", call_id)
+            .header("CSeq", cseq)
+            .header("Contact", format!("sip:rustbot@{contact_ip}:{sip_port}"))
+            .body(sdp.as_bytes(), Some("application/sdp"))
+            .build(),
+    )
+}
+
+/// BYE/REGISTER など 2xx 空ボディ応答。
+pub fn response_simple_from_request(
+    req: &SipRequest,
+    code: u16,
+    reason: &str,
+) -> Option<SipResponse> {
+    let via = req.header_value("Via")?;
+    let from = req.header_value("From")?;
+    let mut to = req.header_value("To")?.to_string();
+    let call_id = req.header_value("Call-ID")?;
+    let cseq = req.header_value("CSeq")?;
+
+    if !to.to_ascii_lowercase().contains("tag=") {
+        to = format!("{to};tag=rustbot");
+    }
+
+    Some(
+        SipResponseBuilder::new(code, reason)
+            .header("Via", via)
+            .header("From", from)
+            .header("To", to)
+            .header("Call-ID", call_id)
+            .header("CSeq", cseq)
+            .build(),
+    )
 }
 
 impl fmt::Display for SipResponse {

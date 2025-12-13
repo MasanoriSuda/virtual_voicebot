@@ -50,6 +50,9 @@ pub enum SessionIn {
     },
     Ack,
     Bye,
+    TransactionTimeout {
+        call_id: CallId,
+    },
     RtpIn {
         ts: u32,
         payload: Vec<u8>,
