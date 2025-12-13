@@ -1,4 +1,5 @@
 /virtual-voicebot-backend/target
+/virtual-voicebot-backend/storage/recordings
 
 # Node / Next.js
 node_modules/

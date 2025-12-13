@@ -524,6 +524,7 @@ Frontend 向けに通話履歴・会話ログ・録音再生を提供するた�
 - `storage/recordings/<callId>/` 配下に録音実体を保存する（例: mixed.wav）
 - 録音メタデータ（meta.json）を生成・更新する
 - 録音の 0秒基準（recording timeline）を確立し、将来 `Utterance.startSec/endSec` と同期できるようにする
+- 将来拡張: mixed/caller/bot の複数トラック、mp3/opus などへのエンコード、外部ストレージ（S3 等）へのアップロード
 
 非責務：
 - HTTP 配信をしない（http の責務）

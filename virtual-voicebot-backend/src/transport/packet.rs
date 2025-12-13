@@ -62,7 +62,7 @@ async fn run_sip_udp_loop(
                 let (len, src) = recv_res?;
                 let data = buf[..len].to_vec();
 
-                info!("[sip recv] from {} len={}", src, data.len());
+                info!("[sip <-] from {} len={}", src, data.len());
 
                 // ここではSIP判定をせず「SIPポートで受けたUDP=全てSIP」とする
                 let input = SipInput { src, data };

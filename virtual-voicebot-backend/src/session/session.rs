@@ -12,6 +12,7 @@ use crate::session::types::Sdp;
 use crate::session::types::*;
 
 use crate::app::{self, AppEvent};
+use crate::media::Recorder;
 use crate::rtp::tx::RtpTxHandle;
 use anyhow::Error;
 use log::{debug, info, warn};
@@ -40,6 +41,7 @@ pub struct Session {
     app_tx: UnboundedSender<AppEvent>,
     media_cfg: MediaConfig,
     rtp_tx: RtpTxHandle,
+    recorder: Recorder,
     rtp_last_sent: Option<Instant>,
     keepalive_stop: Option<oneshot::Sender<()>>,
     session_timer_stop: Option<oneshot::Sender<()>>,
@@ -60,6 +62,7 @@ impl Session {
         rtp_tx: RtpTxHandle,
     ) -> SessionHandle {
         let (tx_in, rx_in) = tokio::sync::mpsc::unbounded_channel();
+        let call_id_clone = call_id.clone();
         let (app_tx, app_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
         let mut s = Self {
             state: SessState::Idle,
@@ -71,6 +74,7 @@ impl Session {
             app_tx,
             media_cfg,
             rtp_tx,
+            recorder: Recorder::new(call_id_clone.clone()),
             rtp_last_sent: None,
             keepalive_stop: None,
             session_timer_stop: None,
@@ -103,6 +107,12 @@ impl Session {
                     // 相手SDPからRTP宛先を確定して送信開始
                     if self.intro_sent {
                         continue;
+                    }
+                    if let Err(e) = self.recorder.start() {
+                        warn!(
+                            "[session {}] failed to start recorder: {:?}",
+                            self.call_id, e
+                        );
                     }
 
                     let (ip, port) = self.peer_rtp_dst();
@@ -144,6 +154,7 @@ impl Session {
                         dst_addr,
                         &self.rtp_tx,
                         &self.call_id,
+                        &mut self.recorder,
                     )
                     .await
                     {
@@ -179,6 +190,7 @@ impl Session {
                         self.call_id,
                         payload.len()
                     );
+                    self.recorder.push_rx_mulaw(&payload);
                     if let Some(start) = self.capture_started {
                         self.capture_payloads.extend_from_slice(&payload);
                         if start.elapsed() >= Duration::from_secs(10) {
@@ -208,6 +220,12 @@ impl Session {
                 (_, SessionIn::SipBye) => {
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
+                    if let Err(e) = self.recorder.stop() {
+                        warn!(
+                            "[session {}] failed to finalize recording: {:?}",
+                            self.call_id, e
+                        );
+                    }
                     self.rtp_tx.stop(&self.call_id);
                     let _ = self.tx_up.send(SessionOut::RtpStopTx);
                     let _ = self.tx_up.send(SessionOut::SipSendBye200);
@@ -233,7 +251,15 @@ impl Session {
                             }
                         };
                         self.sending_audio = true;
-                        match send_wav_as_rtp_pcmu(&path, dst, &self.rtp_tx, &self.call_id).await {
+                        match send_wav_as_rtp_pcmu(
+                            &path,
+                            dst,
+                            &self.rtp_tx,
+                            &self.call_id,
+                            &mut self.recorder,
+                        )
+                        .await
+                        {
                             Ok(()) => {
                                 self.rtp_last_sent = Some(Instant::now());
                             }
@@ -251,6 +277,12 @@ impl Session {
                     warn!("[session {}] app requested hangup", self.call_id);
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
+                    if let Err(e) = self.recorder.stop() {
+                        warn!(
+                            "[session {}] failed to finalize recording: {:?}",
+                            self.call_id, e
+                        );
+                    }
                     self.rtp_tx.stop(&self.call_id);
                     let _ = self.tx_up.send(SessionOut::RtpStopTx);
                     let _ = self.tx_up.send(SessionOut::SipSendBye200);
@@ -263,6 +295,12 @@ impl Session {
                     warn!("[session {}] session timer fired", self.call_id);
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
+                    if let Err(e) = self.recorder.stop() {
+                        warn!(
+                            "[session {}] failed to finalize recording: {:?}",
+                            self.call_id, e
+                        );
+                    }
                     let _ = self.tx_up.send(SessionOut::RtpStopTx);
                     let _ = self.tx_up.send(SessionOut::AppSessionTimeout);
                     let _ = self.app_tx.send(AppEvent::CallEnded {
@@ -274,6 +312,12 @@ impl Session {
                     eprintln!("call {} abort: {e:?}", self.call_id);
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
+                    if let Err(e) = self.recorder.stop() {
+                        warn!(
+                            "[session {}] failed to finalize recording: {:?}",
+                            self.call_id, e
+                        );
+                    }
                     self.rtp_tx.stop(&self.call_id);
                     let _ = self.tx_up.send(SessionOut::RtpStopTx);
                     let _ = self.app_tx.send(AppEvent::CallEnded {
@@ -283,6 +327,12 @@ impl Session {
                 }
                 _ => { /* それ以外は無視 or ログ */ }
             }
+        }
+        if let Err(e) = self.recorder.stop() {
+            warn!(
+                "[session {}] failed to finalize recording on shutdown: {:?}",
+                self.call_id, e
+            );
         }
     }
 
@@ -370,6 +420,7 @@ impl Session {
         self.align_rtp_clock();
 
         let frame = vec![0xFFu8; 160]; // μ-law silence
+        self.recorder.push_tx_mulaw(&frame);
         self.rtp_tx.send_payload(&self.call_id, frame);
         self.rtp_last_sent = Some(Instant::now());
         Ok(())
@@ -381,6 +432,7 @@ async fn send_wav_as_rtp_pcmu(
     dst: SocketAddr,
     tx: &RtpTxHandle,
     key: &str,
+    recorder: &mut Recorder,
 ) -> Result<(), Error> {
     use tokio::time::sleep;
 
@@ -397,6 +449,7 @@ async fn send_wav_as_rtp_pcmu(
     );
 
     for frame in frames {
+        recorder.push_tx_mulaw(&frame);
         tx.send_payload(key, frame);
         sleep(Duration::from_millis(20)).await;
     }

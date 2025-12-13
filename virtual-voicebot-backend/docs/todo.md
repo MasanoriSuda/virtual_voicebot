@@ -19,11 +19,11 @@
 # 実装タスク
 
 ## [MVP]
-- [ ] [MVP][transport] SIP応答生成をsip/sessionに委譲し、UDPの受信/配送に専念（100/180/200/BYE/REGISTER即時返信を撤去）。
-- [ ] [MVP][sip] レスポンス組み立て＋送信指示の経路を用意し、INVITE/非INVITEトランザクション状態機械とタイマを実装。SessionOutを受けて送信まで繋ぐ。
-- [ ] [MVP][session] SessionOutの実配線（SIP送出、RTP開始/停止）を実装し、managerでセッション生成/破棄を一元化。Session Timerの基本処理を追加し、ASR/LLM/TTS処理はapp/aiに移す。
-- [ ] [MVP][rtp] 送受信をrtpモジュール経由に統一し、簡易ストリーム管理とpayload type別処理を追加。RTCP用の入口を用意。
-- [ ] [MVP][app/ai] appレイヤを新設して対話状態・イベント分配を担当。botロジックをai::{asr,llm,tts}に分割し、チャネル経由でsession↔app↔aiを接続。
+- [x] [MVP][transport] SIP応答生成をsip/sessionに委譲し、UDPの受信/配送に専念（100/180/200/BYE/REGISTER即時返信を撤去）。
+- [x] [MVP][sip] レスポンス組み立て＋送信指示の経路を用意し、INVITE/非INVITEトランザクション状態機械とタイマを実装。SessionOutを受けて送信まで繋ぐ。
+- [x] [MVP][session] SessionOutの実配線（SIP送出、RTP開始/停止）を実装し、managerでセッション生成/破棄を一元化。Session Timerの基本処理を追加し、ASR/LLM/TTS処理はapp/aiに移す。
+- [x] [MVP][rtp] 送受信をrtpモジュール経由に統一し、簡易ストリーム管理とpayload type別処理を追加。RTCP用の入口を用意。
+- [x] [MVP][app/ai] appレイヤを新設して対話状態・イベント分配を担当。botロジックをai::{asr,llm,tts}に分割し、チャネル経由でsession↔app↔aiを接続。
 - [ ] [MVP][tests/ops] 簡易E2E（INVITE→ACK→RTP往復）のスモークを追加し、基本ログ/メトリクス出力を整備。
 - [ ] [MVP][media] 録音パイプラインを新設（RTP受信PCM→録音ファイル保存）。storage/recordings/<callId>/mixed.wav と meta.json を生成。
 - [ ] [MVP][http] Frontend向け REST/SSE を実装（/api/calls, /api/calls/{callId}, /api/calls/{callId}/utterances, /api/events）。docs/contract.md に準拠。

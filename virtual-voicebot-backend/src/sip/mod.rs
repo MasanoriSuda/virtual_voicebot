@@ -346,6 +346,16 @@ impl SipCore {
     }
 
     fn send_payload(&self, dst: std::net::SocketAddr, payload: Vec<u8>) {
+        if let Some(first_line) = payload
+            .split(|b| *b == b'\n')
+            .next()
+            .and_then(|line| std::str::from_utf8(line).ok())
+        {
+            log::info!("[sip ->] to {} {}", dst, first_line.trim());
+        } else {
+            log::info!("[sip ->] to {} len={}", dst, payload.len());
+        }
+
         let _ = self.transport_tx.send(SipTransportRequest {
             dst,
             src_port: self.cfg.sip_port,
