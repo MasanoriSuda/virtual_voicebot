@@ -17,16 +17,25 @@
 - 発火時の通知: `SessionTimeout` を `session → app` に送る。必要に応じて `SessionAction::Bye` を自動生成して `session → sip` へ送る（ポリシー次第）。
 - 簡略化（MVP）: Session-Expires/Min-SE は無効化可。keepaliveのみでタイムアウト検知、失効後は警告→BYE など単純ルールを適用。
 
-## 4. keepalive / タイムアウト時の SessionOut
+-## 4. keepalive / タイムアウト時の SessionOut
 - keepalive運用: 20〜30ms 程度の周期 tick で無音フレーム送出やメトリクス更新を行う。送出失敗が連続する場合は `SessionOut::StopRtpTx` と `SessionOut::SendSipBye200` をトリガ。
 - タイムアウト時のアクション: 原則 app に `SessionTimeout` を通知し方針を仰ぐ。即切断が必要な場合のみ直接 `SessionOut::StopRtpTx` / `SendSipBye200` を発火。
 - 任意メトリクス: `SessionOut::Metrics { name: "session_timeout", value: 1 }` などを発行しても良い。
 
+## 4. イベントと責務（RTP/PCM とコール制御の分離）
+- SIP起点入力: `SessionIn::SipInvite` / `SipAck` / `SipBye` / `SipTransactionTimeout`
+- メディア入力: `SessionIn::MediaRtpIn`（payloadのみを受け、パースは transport/rtp）、keepalive tick は `MediaTimerTick`
+- app入力: `SessionIn::AppBotAudioFile` / `AppHangup`
+- SIP出力: `SessionOut::SipSend180` / `SipSend200` / `SipSendBye200`
+- RTP出力: `SessionOut::RtpStartTx` / `RtpStopTx`
+- app出力: `SessionOut::AppSessionTimeout`（タイマ失効通知）、将来のTTS依頼 `AppRequestTts`
+- メトリクス: `SessionOut::Metrics`
+
 ## 5. 他モジュールとの責務境界
-- sip: 受信 SIP を `SessionIn::Invite/Ack/Bye/...` で通知。応答送信は `SessionOut::SendProvisionalResponse/SendFinalResponse` で依頼。
-- rtp: I/O と SSRC/Seq 管理・簡易ジッタは rtp。session は開始/停止と送信先設定だけ伝える。
-- app/ai: 対話・ASR/LLM/TTS は app/ai で完結。session はコール制御と PCM 経路制御のみ。
+- sip: 受信 SIP を `SessionIn::SipInvite/Ack/Bye/...` で通知。応答送信は `SessionOut::SipSend*` で依頼。
+- rtp: I/O と SSRC/Seq 管理・簡易ジッタは rtp。session は開始/停止と送信先設定だけ伝える（`RtpStartTx/RtpStopTx`）。`MediaRtpIn` は transport/rtp からの通知を受けるだけ。
+- app/ai: 対話・ASR/LLM/TTS は app/ai で完結。session はコール制御と PCM 経路制御のみ。音声バッファは `AppEvent::AudioBuffered` として受け渡す。
 
 ## 6. MVP と拡張
-- MVP: keepaliveタイマを簡易 Session Timer として運用（失効で警告→BYE）。Session-Expires/Min-SE はオフでも可。
+- MVP: keepaliveタイマを簡易 Session Timer として運用（失効で `SessionOut::AppSessionTimeout` を通知し、必要に応じて app が切断判断を行う）。Session-Expires/Min-SE はオフでも可。
 - NEXT: 4028 準拠の refresher 管理、再INVITE/UPDATE 送受、無音監視ポリシーの高度化。

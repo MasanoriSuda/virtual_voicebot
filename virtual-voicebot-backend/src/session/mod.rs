@@ -6,6 +6,7 @@ pub mod writing;
 
 #[allow(unused_imports)]
 pub use session::{Session, SessionHandle};
+pub use types::SessionRegistry;
 #[allow(unused_imports)]
 pub use types::{MediaConfig, Sdp, SessionIn, SessionMap, SessionOut};
 #[allow(unused_imports)]

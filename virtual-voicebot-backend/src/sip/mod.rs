@@ -258,7 +258,7 @@ impl SipCore {
             };
         }
 
-        // 最終応答は SessionOut::SendSipBye200 等から送るため、ここでは送信しない
+        // 最終応答は SessionOut::SipSendBye200 等から送るため、ここでは送信しない
         tx.last_request = Some(req);
 
         if emit_bye_event {
@@ -279,7 +279,7 @@ impl SipCore {
 
     pub fn handle_session_out(&mut self, call_id: &CallId, out: SessionOut) {
         match out {
-            SessionOut::SendSip180 => {
+            SessionOut::SipSend180 => {
                 if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(resp) = response_provisional_from_request(&ctx.req, 180, "Ringing")
                     {
@@ -290,7 +290,7 @@ impl SipCore {
                     }
                 }
             }
-            SessionOut::SendSip200 { answer } => {
+            SessionOut::SipSend200 { answer } => {
                 if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(resp) = response_final_with_sdp(
                         &ctx.req,
@@ -307,7 +307,7 @@ impl SipCore {
                     }
                 }
             }
-            SessionOut::SendSipBye200 => {
+            SessionOut::SipSendBye200 => {
                 if let Some(tx) = self.non_invites.get_mut(call_id) {
                     if let Some(req) = tx.last_request.clone() {
                         if let Some(resp) = response_simple_from_request(&req, 200, "OK") {

@@ -1,4 +1,5 @@
 mod ai;
+mod app;
 mod rtp;
 mod session;
 mod sip;
@@ -10,7 +11,10 @@ use std::sync::{Arc, Mutex};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::unbounded_channel;
 
-use crate::session::{spawn_session, MediaConfig, SessionIn, SessionMap, SessionOut};
+use crate::rtp::tx::RtpTxHandle;
+use crate::session::{
+    spawn_session, MediaConfig, SessionIn, SessionMap, SessionOut, SessionRegistry,
+};
 use crate::sip::{SipConfig, SipCore, SipEvent};
 use crate::transport::{run_packet_loop, RtpPortMap, SipInput};
 
@@ -30,7 +34,9 @@ async fn main() -> anyhow::Result<()> {
 
     // --- セッションとRTPポート管理の共有マップ ---
     let session_map: SessionMap = Arc::new(Mutex::new(HashMap::new()));
+    let session_registry = SessionRegistry::new(session_map.clone());
     let rtp_port_map: RtpPortMap = Arc::new(Mutex::new(HashMap::new()));
+    let mut rtp_handles: HashMap<String, RtpTxHandle> = HashMap::new();
 
     // packet層 → SIP処理ループ へのチャネル
     let (sip_tx, mut sip_rx) = unbounded_channel::<SipInput>();
@@ -95,11 +101,13 @@ async fn main() -> anyhow::Result<()> {
                         SipEvent::IncomingInvite { call_id, from, to, offer } => {
                             println!("[main] new INVITE, call_id={}", call_id);
 
+                            let rtp_handle = RtpTxHandle::new();
                             let sess_tx = spawn_session(
                                 call_id.clone(),
-                                session_map.clone(),
+                                session_registry.clone(),
                                 MediaConfig::pcmu(advertised_ip.clone(), rtp_port),
                                 session_out_tx.clone(),
+                                rtp_handle.clone(),
                             );
 
                             {
@@ -107,26 +115,29 @@ async fn main() -> anyhow::Result<()> {
                                 map.insert(rtp_port, call_id.clone());
                             }
 
-                            let _ = sess_tx.send(SessionIn::Invite { call_id, from, to, offer });
+                            rtp_handles.insert(call_id.clone(), rtp_handle);
+                            let _ =
+                                sess_tx.send(SessionIn::SipInvite { call_id, from, to, offer });
                         }
                         SipEvent::Ack { call_id } => {
                             println!("[main] ACK for call_id={}", call_id);
-                            if let Some(sess_tx) = session_map.lock().unwrap().get(&call_id).cloned() {
-                                let _ = sess_tx.send(SessionIn::Ack);
+                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                                let _ = sess_tx.send(SessionIn::SipAck);
                             }
                         }
                         SipEvent::Bye { call_id } => {
-                    println!("[main] BYE for call_id={}", call_id);
-                    if let Some(sess_tx) = session_map.lock().unwrap().get(&call_id).cloned() {
-                        let _ = sess_tx.send(SessionIn::Bye);
-                    }
-                }
-                SipEvent::TransactionTimeout { call_id } => {
-                    println!("[main] TransactionTimeout for call_id={}", call_id);
-                    if let Some(sess_tx) = session_map.lock().unwrap().get(&call_id).cloned() {
-                        let _ = sess_tx.send(SessionIn::TransactionTimeout { call_id });
-                    }
-                }
+                            println!("[main] BYE for call_id={}", call_id);
+                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                                let _ = sess_tx.send(SessionIn::SipBye);
+                            }
+                        }
+                        SipEvent::TransactionTimeout { call_id } => {
+                            println!("[main] TransactionTimeout for call_id={}", call_id);
+                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                                let _ =
+                                    sess_tx.send(SessionIn::SipTransactionTimeout { call_id });
+                            }
+                        }
                 SipEvent::Unknown => {
                     println!("[main] Unknown / unsupported SIP message");
                 }
@@ -134,7 +145,36 @@ async fn main() -> anyhow::Result<()> {
         }
             }
             Some((call_id, out)) = session_out_rx.recv() => {
-                sip_core.handle_session_out(&call_id, out);
+                match out {
+                    SessionOut::RtpStartTx { dst_ip, dst_port, .. } => {
+                        if let Some(handle) = rtp_handles.get(&call_id) {
+                            if let Ok(addr) = format!("{}:{}", dst_ip, dst_port).parse() {
+                                handle.start(addr);
+                            } else {
+                                log::warn!(
+                                    "[main] invalid RTP dst {}:{} for call_id={}",
+                                    dst_ip,
+                                    dst_port,
+                                    call_id
+                                );
+                            }
+                        }
+                    }
+                    SessionOut::RtpStopTx => {
+                        if let Some(handle) = rtp_handles.remove(&call_id) {
+                            handle.stop();
+                        }
+                    }
+                    SessionOut::AppSessionTimeout => {
+                        log::warn!("[main] session timer fired for call_id={}", call_id);
+                        if let Some(handle) = rtp_handles.remove(&call_id) {
+                            handle.stop();
+                        }
+                    }
+                    other => {
+                        sip_core.handle_session_out(&call_id, other);
+                    }
+                }
             }
             else => break,
         }

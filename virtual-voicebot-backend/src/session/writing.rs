@@ -5,6 +5,7 @@
 // ここでは経路だけ定義し、実際の送信/受信はまだスタブのまま（挙動は従来どおり）。
 use tokio::sync::mpsc::unbounded_channel;
 
+use crate::rtp::tx::RtpTxHandle;
 use crate::session::types::*;
 use crate::session::{Session, SessionHandle};
 
@@ -13,9 +14,10 @@ pub fn spawn_call(
     call_id: CallId,
     media_cfg: MediaConfig,
     session_out_tx: tokio::sync::mpsc::UnboundedSender<(CallId, SessionOut)>,
+    rtp_tx: RtpTxHandle,
 ) -> SessionHandle {
     let (tx_up, rx_out) = unbounded_channel::<SessionOut>();
-    let handle = Session::spawn(call_id.clone(), tx_up, media_cfg);
+    let handle = Session::spawn(call_id.clone(), tx_up, media_cfg, rtp_tx);
 
     // セッション→上位の指示をここで分配（現状はそのまま転送）
     tokio::spawn(async move {
@@ -30,13 +32,13 @@ pub fn spawn_call(
 
 pub fn spawn_session(
     call_id: CallId,
-    session_map: SessionMap,
+    registry: SessionRegistry,
     media_cfg: MediaConfig,
     session_out_tx: tokio::sync::mpsc::UnboundedSender<(CallId, SessionOut)>,
+    rtp_tx: RtpTxHandle,
 ) -> tokio::sync::mpsc::UnboundedSender<SessionIn> {
-    let handle = spawn_call(call_id.clone(), media_cfg, session_out_tx);
-    // Session manager の薄いラッパ経由で登録（挙動は従来通り）
-    let registry = SessionRegistry::new(session_map);
-    let _ = registry.insert(call_id, handle.tx_in.clone());
+    let handle = spawn_call(call_id.clone(), media_cfg, session_out_tx, rtp_tx);
+    // Session manager の薄いラッパ経由で登録
+    registry.insert(call_id, handle.tx_in.clone());
     handle.tx_in
 }

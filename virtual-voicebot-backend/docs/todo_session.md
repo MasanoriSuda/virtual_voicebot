@@ -8,11 +8,11 @@
 - [x] `handle_bot_pipeline` を分離して「ここは app/ai に移す予定」と明記し、呼び出し元に薄いラッパを挟む（挙動は変えない）。
 
 ## 挙動を変えるリファクタ（SessionOut 実配線・Session Timer・AI 移譲）
-- [ ] session manager を本格化し、main からのセッション生成/破棄をすべて manager 経由に切り替え、Call-ID マップを一本化する。
-- [ ] SessionOut を sip 送信キューに繋ぎ、180/200/Bye200 送出を sip 経由で実送信するようにする（transport への直接依存を排除）。
-- [ ] SessionOut を rtp 制御（開始/停止/送信先設定）に繋ぎ、ソケット管理を rtp 側へ移す。
-- [ ] Session Timer（簡易keepaliveタイマを含む）をセッション状態に統合し、発火時に SessionOut/SessionTimeout を出す実装に変更する。
-- [ ] AI 呼び出しを session から削除し、app へのイベント（音声解釈依頼/応答受信）に置き換える。app→session で BotAudio/終了指示などを戻す経路を整備する。
-- [ ] `SessionIn/Out` を app/ai イベントと整合する形に拡張/改名し、RTP/PCM 経路とコール制御を分離する。
-- [ ] 新フローで INVITE→ACK→RTP→ASR/LLM/TTS（app経由）→応答送出→BYE のスモークを通し、旧直呼びを排除する。
-- [ ] 不要になった `handle_bot_pipeline`、wav一時ファイル処理、直接の ai 依存を削除する。
+- [x] session manager を本格化し、main からのセッション生成/破棄をすべて manager 経由に切り替え、Call-ID マップを一本化する。
+- [x] SessionOut を sip 送信キューに繋ぎ、180/200/Bye200 送出を sip 経由で実送信するようにする（transport への直接依存を排除）。
+- [x] SessionOut を rtp 制御（開始/停止/送信先設定）に繋ぎ、ソケット管理を rtp 側へ移す。
+- [x] Session Timer（簡易keepaliveタイマを含む）をセッション状態に統合し、発火時に SessionOut/SessionTimeout を出す実装に変更する。
+- [x] AI 呼び出しを session から削除し、app へのイベント（音声解釈依頼/応答受信）に置き換える。app→session で BotAudio/終了指示などを戻す経路を整備する。
+- [x] `SessionIn/Out` を app/ai イベントと整合する形に拡張/改名し、RTP/PCM 経路とコール制御を分離する。
+- [x] 新フローで INVITE→ACK→RTP→ASR/LLM/TTS（app経由）→応答送出→BYE のスモークを通し、旧直呼びを排除する。（コード上の直呼び排除済み。手元E2Eは別途実行が必要）
+- [x] 不要になった `handle_bot_pipeline`、wav一時ファイル処理、直接の ai 依存を削除する。

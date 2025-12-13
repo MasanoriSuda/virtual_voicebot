@@ -124,7 +124,7 @@ async fn run_rtp_udp_loop(
                             "[packet] RTP len={} from {} mapped to call_id={} pt={} seq={}",
                             len, raw.src, call_id, pkt.payload_type, pkt.sequence_number
                         );
-                        let _ = sess_tx.send(SessionIn::RtpIn {
+                        let _ = sess_tx.send(SessionIn::MediaRtpIn {
                             ts: pkt.timestamp,
                             payload: pkt.payload,
                         });

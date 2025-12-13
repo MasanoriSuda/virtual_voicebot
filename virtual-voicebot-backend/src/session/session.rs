@@ -2,7 +2,6 @@
 // session.rs
 use std::net::SocketAddr;
 
-use tokio::net::UdpSocket;
 use tokio::sync::{
     mpsc::{UnboundedReceiver, UnboundedSender},
     oneshot,
@@ -12,10 +11,15 @@ use tokio::time::{Duration, Instant};
 use crate::session::types::Sdp;
 use crate::session::types::*;
 
-use crate::ai;
+use crate::app::{self, AppEvent};
+use crate::rtp::tx::RtpTxHandle;
 use crate::rtp::{build_rtp_packet, RtpPacket};
 use anyhow::Error;
 use log::{debug, info, warn};
+
+const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
+// MVPのシンプルなSession Timer。必要に応じて設計に合わせて短縮/設定化する。
+const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
 
 const INTRO_WAV_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -34,14 +38,17 @@ pub struct Session {
     local_sdp: Option<Sdp>,
     tx_up: UnboundedSender<SessionOut>,
     tx_in: UnboundedSender<SessionIn>,
+    app_tx: UnboundedSender<AppEvent>,
     media_cfg: MediaConfig,
+    rtp_tx: RtpTxHandle,
     // RTP送出用
     rtp_seq: u16,
     rtp_ts: u32,
     rtp_ssrc: u32,
     rtp_last_sent: Option<Instant>,
-    rtp_socket: Option<UdpSocket>,
     keepalive_stop: Option<oneshot::Sender<()>>,
+    session_timer_stop: Option<oneshot::Sender<()>>,
+    session_timer_deadline: Option<Instant>,
     sending_audio: bool,
     // バッファ/タイマ
     speaking: bool,
@@ -55,8 +62,10 @@ impl Session {
         call_id: CallId,
         tx_up: UnboundedSender<SessionOut>,
         media_cfg: MediaConfig,
+        rtp_tx: RtpTxHandle,
     ) -> SessionHandle {
         let (tx_in, rx_in) = tokio::sync::mpsc::unbounded_channel();
+        let (app_tx, app_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
         let mut s = Self {
             state: SessState::Idle,
             call_id,
@@ -64,19 +73,23 @@ impl Session {
             local_sdp: None,
             tx_up,
             tx_in: tx_in.clone(),
+            app_tx,
             media_cfg,
+            rtp_tx,
             rtp_seq: 0,
             rtp_ts: 0,
             rtp_ssrc: 0x12345678,
             rtp_last_sent: None,
-            rtp_socket: None,
             keepalive_stop: None,
+            session_timer_stop: None,
+            session_timer_deadline: None,
             sending_audio: false,
             speaking: false,
             capture_started: None,
             capture_payloads: Vec::new(),
             intro_sent: false,
         };
+        app::spawn_app_worker(s.call_id.clone(), app_rx, tx_in.clone());
         tokio::spawn(async move {
             s.run(rx_in).await;
         });
@@ -86,35 +99,36 @@ impl Session {
     async fn run(&mut self, mut rx: UnboundedReceiver<SessionIn>) {
         while let Some(ev) = rx.recv().await {
             match (self.state, ev) {
-                (SessState::Idle, SessionIn::Invite { offer, .. }) => {
+                (SessState::Idle, SessionIn::SipInvite { offer, .. }) => {
                     self.peer_sdp = Some(offer);
                     let answer = self.build_answer_pcmu8k();
                     self.local_sdp = Some(answer.clone());
-                    let _ = self.tx_up.send(SessionOut::SendSip180);
-                    let _ = self.tx_up.send(SessionOut::SendSip200 { answer });
+                    let _ = self.tx_up.send(SessionOut::SipSend180);
+                    let _ = self.tx_up.send(SessionOut::SipSend200 { answer });
                     self.state = SessState::Early;
                 }
-                (SessState::Early, SessionIn::Ack) => {
+                (SessState::Early, SessionIn::SipAck) => {
                     // 相手SDPからRTP宛先を確定して送信開始
                     if self.intro_sent {
                         continue;
                     }
 
                     let (ip, port) = self.peer_rtp_dst();
-                    if self.rtp_socket.is_none() {
-                        match UdpSocket::bind("0.0.0.0:0").await {
-                            Ok(sock) => self.rtp_socket = Some(sock),
-                            Err(e) => {
-                                warn!(
-                                    "[session {}] failed to bind RTP socket: {:?}",
-                                    self.call_id, e
-                                );
-                                continue;
-                            }
+                    let dst_addr: SocketAddr = match format!("{ip}:{port}").parse() {
+                        Ok(a) => a,
+                        Err(e) => {
+                            warn!(
+                                "[session {}] invalid RTP destination {}:{} ({:?})",
+                                self.call_id, ip, port, e
+                            );
+                            continue;
                         }
-                    }
+                    };
 
-                    let _ = self.tx_up.send(SessionOut::StartRtpTx {
+                    // rtp側でソケットを持つように変更
+                    self.rtp_tx.start(dst_addr);
+
+                    let _ = self.tx_up.send(SessionOut::RtpStartTx {
                         dst_ip: ip.clone(),
                         dst_port: port,
                         pt: 0,
@@ -126,12 +140,114 @@ impl Session {
 
                     self.align_rtp_clock();
 
-                    if let Some(sock) = self.rtp_socket.as_ref() {
+                    let _ = self.app_tx.send(AppEvent::CallStarted {
+                        call_id: self.call_id.clone(),
+                    });
+
+                    self.sending_audio = true;
+                    match send_wav_as_rtp_pcmu(
+                        INTRO_WAV_PATH,
+                        dst_addr,
+                        &self.rtp_tx,
+                        self.rtp_seq,
+                        self.rtp_ts,
+                        self.rtp_ssrc,
+                    )
+                    .await
+                    {
+                        Ok((next_seq, next_ts)) => {
+                            self.rtp_seq = next_seq;
+                            self.rtp_ts = next_ts;
+                            self.rtp_last_sent = Some(Instant::now());
+                            info!(
+                                "[session {}] sent intro wav {} (next seq={} ts={})",
+                                self.call_id, INTRO_WAV_PATH, self.rtp_seq, self.rtp_ts
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[session {}] failed to send intro wav: {:?}",
+                                self.call_id, e
+                            );
+                        }
+                    }
+                    self.sending_audio = false;
+
+                    self.capture_started = Some(Instant::now());
+                    self.capture_payloads.clear();
+                    info!(
+                        "[session {}] capture window started after intro playback",
+                        self.call_id
+                    );
+
+                    self.start_keepalive_timer();
+                    self.start_session_timer();
+                }
+                (SessState::Established, SessionIn::MediaRtpIn { payload, .. }) => {
+                    debug!(
+                        "[session {}] RTP payload received len={}",
+                        self.call_id,
+                        payload.len()
+                    );
+                    if let Some(start) = self.capture_started {
+                        self.capture_payloads.extend_from_slice(&payload);
+                        if start.elapsed() >= Duration::from_secs(10) {
+                            info!(
+                                "[session {}] buffered audio ready for app ({} bytes)",
+                                self.call_id,
+                                self.capture_payloads.len()
+                            );
+                            let _ = self.app_tx.send(AppEvent::AudioBuffered {
+                                call_id: self.call_id.clone(),
+                                pcm_mulaw: self.capture_payloads.clone(),
+                            });
+                            self.capture_started = None;
+                            self.capture_payloads.clear();
+                        }
+                    }
+                    let _ = self.tx_up.send(SessionOut::Metrics {
+                        name: "rtp_in",
+                        value: payload.len() as i64,
+                    });
+                }
+                (SessState::Established, SessionIn::MediaTimerTick) => {
+                    if let Err(e) = self.send_silence_frame().await {
+                        warn!("[session {}] silence send failed: {:?}", self.call_id, e);
+                    }
+                }
+                (_, SessionIn::SipBye) => {
+                    self.stop_keepalive_timer();
+                    self.stop_session_timer();
+                    self.rtp_tx.stop();
+                    let _ = self.tx_up.send(SessionOut::RtpStopTx);
+                    let _ = self.tx_up.send(SessionOut::SipSendBye200);
+                    let _ = self.app_tx.send(AppEvent::CallEnded {
+                        call_id: self.call_id.clone(),
+                    });
+                    self.state = SessState::Terminated;
+                }
+                (_, SessionIn::SipTransactionTimeout { call_id: _ }) => {
+                    warn!("[session {}] transaction timeout notified", self.call_id);
+                }
+                (SessState::Established, SessionIn::AppBotAudioFile { path }) => {
+                    if let Some(peer) = self.peer_sdp.clone() {
+                        self.align_rtp_clock();
+                        let dst: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
+                            Ok(a) => a,
+                            Err(e) => {
+                                warn!(
+                                    "[session {}] invalid RTP destination {}:{} ({:?})",
+                                    self.call_id, peer.ip, peer.port, e
+                                );
+                                return;
+                            }
+                        };
+                        self.rtp_tx.start(dst);
                         self.sending_audio = true;
                         match send_wav_as_rtp_pcmu(
-                            INTRO_WAV_PATH,
-                            (ip.as_str(), port),
-                            sock,
+                            &path,
+                            dst,
+                            &self.rtp_tx,
                             self.rtp_seq,
                             self.rtp_ts,
                             self.rtp_ssrc,
@@ -142,84 +258,49 @@ impl Session {
                                 self.rtp_seq = next_seq;
                                 self.rtp_ts = next_ts;
                                 self.rtp_last_sent = Some(Instant::now());
-                                info!(
-                                    "[session {}] sent intro wav {} (next seq={} ts={})",
-                                    self.call_id, INTRO_WAV_PATH, self.rtp_seq, self.rtp_ts
-                                );
                             }
                             Err(e) => {
                                 warn!(
-                                    "[session {}] failed to send intro wav: {:?}",
+                                    "[session {}] failed to send app audio: {:?}",
                                     self.call_id, e
                                 );
                             }
                         }
                         self.sending_audio = false;
-                    } else {
-                        warn!(
-                            "[session {}] intro skipped because RTP socket missing",
-                            self.call_id
-                        );
-                    }
-
-                    self.capture_started = Some(Instant::now());
-                    self.capture_payloads.clear();
-                    info!(
-                        "[session {}] capture window started after intro playback",
-                        self.call_id
-                    );
-
-                    self.start_keepalive_timer();
-                }
-                (SessState::Established, SessionIn::RtpIn { payload, .. }) => {
-                    debug!(
-                        "[session {}] RTP payload received len={}",
-                        self.call_id,
-                        payload.len()
-                    );
-                    if let Some(start) = self.capture_started {
-                        self.capture_payloads.extend_from_slice(&payload);
-                        if start.elapsed() >= Duration::from_secs(10) {
-                            info!(
-                                "[session {}] Starting bot pipeline ({} bytes buffered)",
-                                self.call_id,
-                                self.capture_payloads.len()
-                            );
-                            if let Err(e) = self.handle_bot_pipeline().await {
-                                log::warn!("bot pipeline error: {e:?}");
-                            }
-                            self.capture_started = None;
-                            self.capture_payloads.clear();
-                        }
-                    }
-                    let _ = self.tx_up.send(SessionOut::Metrics {
-                        name: "rtp_in",
-                        value: payload.len() as i64,
-                    });
-                }
-                (SessState::Established, SessionIn::TimerTick) => {
-                    if let Err(e) = self.send_silence_frame().await {
-                        warn!("[session {}] silence send failed: {:?}", self.call_id, e);
                     }
                 }
-                (SessState::Established, SessionIn::BotAudio { pcm48k: _ }) => {
-                    // 48k→8k→μ-law→RTPパケット化は下位メディア層に委譲してOK
-                    // ここではTS/Seqの進行のみ示唆
-                    self.rtp_ts = self.rtp_ts.wrapping_add(160);
-                }
-                (_, SessionIn::Bye) => {
+                (_, SessionIn::AppHangup) => {
+                    warn!("[session {}] app requested hangup", self.call_id);
                     self.stop_keepalive_timer();
-                    let _ = self.tx_up.send(SessionOut::StopRtpTx);
-                    let _ = self.tx_up.send(SessionOut::SendSipBye200);
+                    self.stop_session_timer();
+                    self.rtp_tx.stop();
+                    let _ = self.tx_up.send(SessionOut::RtpStopTx);
+                    let _ = self.tx_up.send(SessionOut::SipSendBye200);
+                    let _ = self.app_tx.send(AppEvent::CallEnded {
+                        call_id: self.call_id.clone(),
+                    });
                     self.state = SessState::Terminated;
                 }
-                (_, SessionIn::TransactionTimeout { call_id: _ }) => {
-                    warn!("[session {}] transaction timeout notified", self.call_id);
+                (_, SessionIn::SessionTimerFired) => {
+                    warn!("[session {}] session timer fired", self.call_id);
+                    self.stop_keepalive_timer();
+                    self.stop_session_timer();
+                    let _ = self.tx_up.send(SessionOut::RtpStopTx);
+                    let _ = self.tx_up.send(SessionOut::AppSessionTimeout);
+                    let _ = self.app_tx.send(AppEvent::CallEnded {
+                        call_id: self.call_id.clone(),
+                    });
+                    self.state = SessState::Terminated;
                 }
                 (_, SessionIn::Abort(e)) => {
                     eprintln!("call {} abort: {e:?}", self.call_id);
                     self.stop_keepalive_timer();
-                    let _ = self.tx_up.send(SessionOut::StopRtpTx);
+                    self.stop_session_timer();
+                    self.rtp_tx.stop();
+                    let _ = self.tx_up.send(SessionOut::RtpStopTx);
+                    let _ = self.app_tx.send(AppEvent::CallEnded {
+                        call_id: self.call_id.clone(),
+                    });
                     self.state = SessState::Terminated;
                 }
                 _ => { /* それ以外は無視 or ログ */ }
@@ -258,8 +339,8 @@ impl Session {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
-                        let _ = tx.send(SessionIn::TimerTick);
+                    _ = tokio::time::sleep(KEEPALIVE_INTERVAL) => {
+                        let _ = tx.send(SessionIn::MediaTimerTick);
                     }
                     _ = &mut stop_rx => break,
                 }
@@ -272,6 +353,32 @@ impl Session {
         if let Some(stop) = self.keepalive_stop.take() {
             let _ = stop.send(());
         }
+    }
+
+    /// Session Timer（簡易 keepalive 含む）の発火を監視し、失効時に SessionIn を送る
+    fn start_session_timer(&mut self) {
+        if self.session_timer_stop.is_some() {
+            return;
+        }
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        self.session_timer_deadline = Some(Instant::now() + SESSION_TIMEOUT);
+        self.session_timer_stop = Some(stop_tx);
+        let tx = self.tx_in.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::time::sleep(SESSION_TIMEOUT) => {
+                    let _ = tx.send(SessionIn::SessionTimerFired);
+                }
+                _ = &mut stop_rx => {}
+            }
+        });
+    }
+
+    fn stop_session_timer(&mut self) {
+        if let Some(stop) = self.session_timer_stop.take() {
+            let _ = stop.send(());
+        }
+        self.session_timer_deadline = None;
     }
 
     async fn send_silence_frame(&mut self) -> Result<(), Error> {
@@ -294,142 +401,18 @@ impl Session {
         Ok(())
     }
 
-    /// app/ai へ移譲予定の bot パイプライン（現在は session 内で呼び出すだけ）
-    async fn handle_bot_pipeline(&mut self) -> Result<(), Error> {
-        self.run_bot_pipeline_inner().await
-    }
-
-    async fn run_bot_pipeline_inner(&mut self) -> Result<(), Error> {
-        // 1) μ-law payload を WAV に保存
-        let wav_path = "/tmp/input_from_peer.wav";
-        write_mulaw_to_wav(&self.capture_payloads, wav_path)?;
-
-        // 2) ASR+LLM+TTS (main.txt 由来の処理を bot モジュールに集約)
-        let user_text = match ai::transcribe_and_log(wav_path).await {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("ASR failed: {e:?}");
-                "すみません、聞き取れませんでした。".to_string()
-            }
-        };
-
-        let bot_wav = match ai::handle_user_question_from_whisper(&user_text).await {
-            Ok(p) => p,
-            Err(e) => {
-                log::warn!("LLM/TTS failed: {e:?}");
-                return Ok(());
-            }
-        };
-
-        // 5) RTP 送信
-        if let Some(peer) = self.peer_sdp.clone() {
-            info!(
-                "[session {}] sending bot reply wav {} to {}:{}",
-                self.call_id, bot_wav, peer.ip, peer.port
-            );
-            self.align_rtp_clock();
-            if self.rtp_socket.is_none() {
-                match UdpSocket::bind("0.0.0.0:0").await {
-                    Ok(sock) => self.rtp_socket = Some(sock),
-                    Err(e) => {
-                        log::warn!(
-                            "[session {}] failed to bind RTP socket for bot reply: {:?}",
-                            self.call_id,
-                            e
-                        );
-                        return Ok(());
-                    }
-                }
-            }
-            if let Some(sock) = self.rtp_socket.as_ref() {
-                self.sending_audio = true;
-                match send_wav_as_rtp_pcmu(
-                    &bot_wav,
-                    (&peer.ip, peer.port),
-                    sock,
-                    self.rtp_seq,
-                    self.rtp_ts,
-                    self.rtp_ssrc,
-                )
-                .await
-                {
-                    Ok((next_seq, next_ts)) => {
-                        self.rtp_seq = next_seq;
-                        self.rtp_ts = next_ts;
-                        self.rtp_last_sent = Some(Instant::now());
-                    }
-                    Err(e) => {
-                        log::warn!("RTP send failed: {e:?}");
-                    }
-                }
-                self.sending_audio = false;
-            }
-        }
-
-        Ok(())
-    }
-
     /// RTPパケットの送信（socket準備と送信のみ。Seq/Timestampの更新は呼び出し側で行う）
-    async fn send_rtp_packet(&mut self, peer: &Sdp, pkt: &RtpPacket) -> Result<(), Error> {
-        if self.rtp_socket.is_none() {
-            match UdpSocket::bind("0.0.0.0:0").await {
-                Ok(sock) => self.rtp_socket = Some(sock),
-                Err(e) => {
-                    warn!(
-                        "[session {}] failed to bind RTP socket for send: {:?}",
-                        self.call_id, e
-                    );
-                    return Err(e.into());
-                }
-            }
-        }
-
+    async fn send_rtp_packet(&mut self, _peer: &Sdp, pkt: &RtpPacket) -> Result<(), Error> {
         let bytes = build_rtp_packet(pkt);
-        if let Some(sock) = &self.rtp_socket {
-            let remote: SocketAddr = format!("{}:{}", peer.ip, peer.port).parse()?;
-            sock.send_to(&bytes, remote).await?;
-        }
+        self.rtp_tx.send(bytes);
         Ok(())
-    }
-}
-
-fn write_mulaw_to_wav(payloads: &[u8], path: &str) -> Result<(), Error> {
-    use hound::{SampleFormat, WavSpec, WavWriter};
-    let spec = WavSpec {
-        channels: 1,
-        sample_rate: 8000,
-        bits_per_sample: 16,
-        sample_format: SampleFormat::Int,
-    };
-    let mut writer = WavWriter::create(path, spec)?;
-    for &b in payloads {
-        writer.write_sample(mulaw_to_linear16(b))?;
-    }
-    writer.finalize()?;
-    Ok(())
-}
-
-fn mulaw_to_linear16(mu: u8) -> i16 {
-    const BIAS: i16 = 0x84;
-    let mu = !mu;
-    let sign = (mu & 0x80) != 0;
-    let segment = (mu & 0x70) >> 4;
-    let mantissa = mu & 0x0F;
-
-    let mut value = ((mantissa as i16) << 4) + 0x08;
-    value <<= segment as i16;
-    value -= BIAS;
-    if sign {
-        -value
-    } else {
-        value
     }
 }
 
 async fn send_wav_as_rtp_pcmu(
     wav_path: &str,
-    dst: (&str, u16),
-    sock: &UdpSocket,
+    dst: SocketAddr,
+    tx: &RtpTxHandle,
     seq_start: u16,
     ts_start: u32,
     ssrc: u32,
@@ -441,7 +424,6 @@ async fn send_wav_as_rtp_pcmu(
         anyhow::bail!("no frames");
     }
 
-    let remote: SocketAddr = format!("{}:{}", dst.0, dst.1).parse()?;
     let mut seq = seq_start;
     let mut ts = ts_start;
 
@@ -449,7 +431,7 @@ async fn send_wav_as_rtp_pcmu(
         "[rtp tx] sending {} frames ({} samples) to {}",
         frames.len(),
         frames.len() * 160,
-        remote
+        dst
     );
 
     for frame in frames {
@@ -462,7 +444,7 @@ async fn send_wav_as_rtp_pcmu(
             bytes.len(),
             &bytes[..bytes.len().min(16)]
         );
-        sock.send_to(&bytes, remote).await?;
+        tx.send(bytes);
         seq = seq.wrapping_add(1);
         ts = ts.wrapping_add(160);
         sleep(Duration::from_millis(20)).await;
