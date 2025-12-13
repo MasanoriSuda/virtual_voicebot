@@ -162,6 +162,16 @@ async fn main() -> anyhow::Result<()> {
                             handle.stop(&call_id);
                         }
                     }
+                    SessionOut::AppSendBotAudioFile { path } => {
+                        if let Some(sess_tx) = session_registry.get(&call_id) {
+                            let _ = sess_tx.send(SessionIn::AppBotAudioFile { path });
+                        }
+                    }
+                    SessionOut::AppRequestHangup => {
+                        if let Some(sess_tx) = session_registry.get(&call_id) {
+                            let _ = sess_tx.send(SessionIn::AppHangup);
+                        }
+                    }
                     other => {
                         sip_core.handle_session_out(&call_id, other);
                     }

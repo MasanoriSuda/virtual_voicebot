@@ -81,7 +81,7 @@ impl Session {
             capture_payloads: Vec::new(),
             intro_sent: false,
         };
-        app::spawn_app_worker(s.call_id.clone(), app_rx, tx_in.clone());
+        app::spawn_app_worker(s.call_id.clone(), app_rx, s.tx_up.clone());
         tokio::spawn(async move {
             s.run(rx_in).await;
         });

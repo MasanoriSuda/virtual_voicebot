@@ -122,6 +122,17 @@ pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
 /// LLM + TTS 実行（現行実装: Gemini→Ollama fallback→ずんだもんTTS）。挙動は変更なし。
 /// I/F はテキスト入力→WAVパス出力（将来はチャネル/PCM化予定、現状は一時ファイルのまま）。
 pub async fn handle_user_question_from_whisper(text: &str) -> Result<String> {
+    let answer = handle_user_question_from_whisper_llm_only(text).await?;
+
+    // 一時WAVファイル経由のまま（責務は ai モジュール内に閉じ込める）
+    let answer_wav = "/tmp/ollama_answer.wav";
+    synth_zundamon_wav(&answer, answer_wav).await?;
+
+    Ok(answer_wav.to_string())
+}
+
+/// LLM 部分のみを切り出した I/F（app→ai で分離できるようにする）
+pub async fn handle_user_question_from_whisper_llm_only(text: &str) -> Result<String> {
     info!("User question (whisper): {}", text);
     let llm_prompt = build_llm_prompt(text);
 
@@ -147,11 +158,7 @@ pub async fn handle_user_question_from_whisper(text: &str) -> Result<String> {
         }
     };
 
-    // 一時WAVファイル経由のまま（責務は ai モジュール内に閉じ込める）
-    let answer_wav = "/tmp/ollama_answer.wav";
-    synth_zundamon_wav(&answer, answer_wav).await?;
-
-    Ok(answer_wav.to_string())
+    Ok(answer)
 }
 
 fn build_llm_prompt(user_text: &str) -> String {

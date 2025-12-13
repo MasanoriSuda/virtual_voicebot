@@ -100,6 +100,12 @@ pub enum SessionOut {
     }, // → VOICEVOXへ
     /// Session Timer 失効を app 等へ通知
     AppSessionTimeout,
+    /// app が生成したボット音声（WAVパス）を session へ戻す
+    AppSendBotAudioFile {
+        path: String,
+    },
+    /// app からの切断指示
+    AppRequestHangup,
     Metrics {
         name: &'static str,
         value: i64,

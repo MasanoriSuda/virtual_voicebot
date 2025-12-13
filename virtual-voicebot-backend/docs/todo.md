@@ -35,6 +35,7 @@
 - [ ] [NEXT][rtp] ジッタバッファと再送整列、RTCP SR/RR送受信、PCMU以外のコーデック抽象を拡張。
 - [ ] [NEXT][session] 保留/再開、無音・RTP無着信のタイムアウト検知とBYE発火、Keepalive戦略の改善。
 - [ ] [NEXT][app/ai] ファイル経由をやめストリーミングI/O化、プロンプト/ポリシー管理の強化、フェイルセーフ応答ポリシー整備。
+- [ ] [NEXT][app/ai] チャンク/ストリーミングI/Oの実装（ASR/LLM/TTSをリアルタイム呼び出しに置き換え、既存バッチI/Fを置き換える）
 - [ ] [NEXT][ops] メトリクス/トレースのモジュール別計測、設定バリデーション、グレースフルシャットダウン対応。
 - [ ] [NEXT][recording] caller/bot 分離トラック（caller.wav, bot.wav）とメタ同期の精度向上（startSec/endSec の運用を本格化）。
 - [ ] [NEXT][storage] 録音を外部ストレージ（S3/MinIO等）へ移行し、recordingUrl を署名付きURLにする。

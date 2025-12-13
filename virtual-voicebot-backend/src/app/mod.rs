@@ -1,12 +1,12 @@
 //! app モジュール（対話オーケストレーション層）
 //! 現状は MVP 用のシンプル実装で、session からの音声バッファを受け取り
 //! ai::{asr,llm,tts} を呼び出してボット音声(WAV)のパスを session に返す。
-//! transport/sip/rtp には依存せず、SessionIn 経由のイベントのみを返す。
+//! transport/sip/rtp には依存せず、SessionOut 経由のイベントのみを返す。
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use crate::ai;
-use crate::session::SessionIn;
+use crate::ai::{asr, llm, tts};
+use crate::session::SessionOut;
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -20,30 +20,32 @@ pub enum AppEvent {
 pub fn spawn_app_worker(
     call_id: String,
     rx: UnboundedReceiver<AppEvent>,
-    session_tx: UnboundedSender<SessionIn>,
+    session_out_tx: UnboundedSender<SessionOut>,
 ) {
-    let worker = AppWorker::new(call_id, session_tx, rx);
+    let worker = AppWorker::new(call_id, session_out_tx, rx);
     tokio::spawn(async move { worker.run().await });
 }
 
 struct AppWorker {
     call_id: String,
-    session_tx: UnboundedSender<SessionIn>,
+    session_out_tx: UnboundedSender<SessionOut>,
     rx: UnboundedReceiver<AppEvent>,
     active: bool,
+    history: Vec<(String, String)>, // (user, bot)
 }
 
 impl AppWorker {
     fn new(
         call_id: String,
-        session_tx: UnboundedSender<SessionIn>,
+        session_out_tx: UnboundedSender<SessionOut>,
         rx: UnboundedReceiver<AppEvent>,
     ) -> Self {
         Self {
             call_id,
-            session_tx,
+            session_out_tx,
             rx,
             active: false,
+            history: Vec::new(),
         }
     }
 
@@ -61,9 +63,8 @@ impl AppWorker {
                         );
                         continue;
                     }
-                    if let Err(e) =
-                        handle_audio_buffer(&self.call_id, pcm_mulaw, self.session_tx.clone()).await
-                    {
+                    let call_id = self.call_id.clone();
+                    if let Err(e) = self.handle_audio_buffer(&call_id, pcm_mulaw).await {
                         log::warn!("[app {}] audio handling failed: {:?}", self.call_id, e);
                     }
                 }
@@ -73,63 +74,63 @@ impl AppWorker {
     }
 }
 
-async fn handle_audio_buffer(
-    call_id: &str,
-    pcm_mulaw: Vec<u8>,
-    session_tx: UnboundedSender<SessionIn>,
-) -> anyhow::Result<()> {
-    let input_wav = format!("/tmp/input_from_peer_{call_id}.wav");
-    write_mulaw_to_wav(&pcm_mulaw, &input_wav)?;
+impl AppWorker {
+    async fn handle_audio_buffer(
+        &mut self,
+        call_id: &str,
+        pcm_mulaw: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        // ASR: チャンクI/F（1チャンクのみだが将来拡張用）
+        let asr_chunks = vec![asr::AsrChunk {
+            pcm_mulaw,
+            end: true,
+        }];
+        let user_text = match asr::transcribe_chunks(call_id, &asr_chunks).await {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("[app {call_id}] ASR failed: {e:?}");
+                "すみません、聞き取れませんでした。".to_string()
+            }
+        };
 
-    let user_text = match ai::transcribe_and_log(&input_wav).await {
-        Ok(t) => t,
-        Err(e) => {
-            log::warn!("[app {call_id}] ASR failed: {e:?}");
-            "すみません、聞き取れませんでした。".to_string()
+        // LLM（簡易履歴を踏まえてプロンプトを構築）
+        let prompt = self.build_prompt(&user_text);
+        let answer_text = match llm::generate_answer(&prompt).await {
+            Ok(ans) => ans,
+            Err(e) => {
+                log::warn!("[app {call_id}] LLM failed: {e:?}");
+                "すみません、うまく答えを用意できませんでした。".to_string()
+            }
+        };
+
+        // 履歴に追加
+        self.history.push((user_text.clone(), answer_text.clone()));
+
+        // TTS
+        match tts::synth_to_wav(&answer_text, None).await {
+            Ok(bot_wav) => {
+                let _ = self
+                    .session_out_tx
+                    .send(SessionOut::AppSendBotAudioFile { path: bot_wav });
+            }
+            Err(e) => {
+                log::warn!("[app {call_id}] TTS failed: {e:?}");
+            }
         }
-    };
-
-    let bot_wav = match ai::handle_user_question_from_whisper(&user_text).await {
-        Ok(p) => p,
-        Err(e) => {
-            log::warn!("[app {call_id}] LLM/TTS failed: {e:?}");
-            return Ok(());
-        }
-    };
-
-    let _ = session_tx.send(SessionIn::AppBotAudioFile { path: bot_wav });
-    Ok(())
-}
-
-fn write_mulaw_to_wav(payloads: &[u8], path: &str) -> anyhow::Result<()> {
-    use hound::{SampleFormat, WavSpec, WavWriter};
-    let spec = WavSpec {
-        channels: 1,
-        sample_rate: 8000,
-        bits_per_sample: 16,
-        sample_format: SampleFormat::Int,
-    };
-    let mut writer = WavWriter::create(path, spec)?;
-    for &b in payloads {
-        writer.write_sample(mulaw_to_linear16(b))?;
+        Ok(())
     }
-    writer.finalize()?;
-    Ok(())
-}
 
-fn mulaw_to_linear16(mu: u8) -> i16 {
-    const BIAS: i16 = 0x84;
-    let mu = !mu;
-    let sign = (mu & 0x80) != 0;
-    let segment = (mu & 0x70) >> 4;
-    let mantissa = mu & 0x0F;
-
-    let mut value = ((mantissa as i16) << 4) + 0x08;
-    value <<= segment as i16;
-    value -= BIAS;
-    if sign {
-        -value
-    } else {
-        value
+    fn build_prompt(&self, latest_user: &str) -> String {
+        let mut prompt = String::new();
+        for (u, b) in &self.history {
+            prompt.push_str("User: ");
+            prompt.push_str(u);
+            prompt.push_str("\nBot: ");
+            prompt.push_str(b);
+            prompt.push('\n');
+        }
+        prompt.push_str("User: ");
+        prompt.push_str(latest_user);
+        prompt
     }
 }
