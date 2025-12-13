@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use crate::rtp::rtcp::RtcpEventTx;
 use crate::rtp::rx::{RawRtp, RtpReceiver};
 use crate::session::SessionMap;
-use crate::sip::tx::SipTransportRequest;
+use crate::transport::TransportSendRequest;
 
 /// packet層 → SIP層 に渡す入力
 #[derive(Debug, Clone)]
@@ -29,7 +29,7 @@ pub async fn run_packet_loop(
     sip_sock: UdpSocket,
     rtp_sock: UdpSocket,
     sip_tx: UnboundedSender<SipInput>,
-    mut sip_send_rx: tokio::sync::mpsc::UnboundedReceiver<crate::sip::tx::SipTransportRequest>,
+    mut sip_send_rx: tokio::sync::mpsc::UnboundedReceiver<TransportSendRequest>,
     session_map: SessionMap,
     rtp_port_map: RtpPortMap,
     rtcp_tx: Option<RtcpEventTx>,
@@ -51,8 +51,9 @@ pub async fn run_packet_loop(
 async fn run_sip_udp_loop(
     sock: UdpSocket,
     sip_tx: UnboundedSender<SipInput>,
-    sip_send_rx: &mut UnboundedReceiver<SipTransportRequest>,
+    sip_send_rx: &mut UnboundedReceiver<TransportSendRequest>,
 ) -> std::io::Result<()> {
+    let local_port = sock.local_addr()?.port();
     let mut buf = vec![0u8; 2048];
 
     loop {
@@ -70,6 +71,10 @@ async fn run_sip_udp_loop(
                 }
             }
             Some(req) = sip_send_rx.recv() => {
+                // 現状は単一ソケット運用のため src_port は informational
+                if req.src_port != local_port {
+                    log::debug!("[sip send] requested src_port {} differs from bound {}", req.src_port, local_port);
+                }
                 let _ = sock.send_to(&req.payload, req.dst).await.ok();
             }
         }

@@ -14,4 +14,4 @@
 - [x] app で対話状態/履歴を管理し、LLMプロンプト構築とTTSリクエスト生成を担う。セッションへの指示は SessionOut 経由に変更する。
 - [x] Bot音声の戻し経路を app→session→rtp に変更し、WAVファイル経由の暫定実装を撤去する。
 - [x] エラーポリシー（ASR失敗・LLM失敗・TTS失敗）の処理を app/ai に移し、session は終了/継続指示だけ受ける形にする。
-- [ ] 新しいチャネル経路で1ターン（音声→ASR→LLM→TTS→RTP）のスモークを通し、旧 `handle_bot_pipeline` を削除する。
+- [x] 新しいチャネル経路で1ターン（音声→ASR→LLM→TTS→RTP）のスモークを通し、旧 `handle_bot_pipeline` を削除する。

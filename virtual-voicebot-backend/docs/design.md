@@ -155,7 +155,7 @@ rtp：RTP/RTCP、コーデック、ストリーム
 
 トランスポートレイヤ
 
-transport::packet：UDP/TCP ソケット、生パケット I/O
+transport::packet：UDP/TCP ソケット、生パケット I/O（送信指示型 TransportSendRequest を提供し、sip/session 型に依存しない）
 
 テキスト図：
 
@@ -798,4 +798,3 @@ B2BUA 化（別の宛先への転送）
 - 矛盾があれば「docs が正、コードは追従」と明記する。
 - 変更依頼では「まず該当 docs を更新 → その内容に沿ってコードを変更」と指示する。
 - レビュー依頼では「docs に整合しているか」を観点に含める。
-

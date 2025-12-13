@@ -320,11 +320,13 @@ impl SipCore {
                             // Timer J 相当の再送（送信キュー経由）
                             if let Some(final_resp) = final_resp {
                                 let transport_tx = self.transport_tx.clone();
+                                let src_port = self.cfg.sip_port;
                                 tokio::spawn(async move {
                                     let mut interval = std::time::Duration::from_millis(500);
                                     while Instant::now() < expires {
                                         let _ = transport_tx.send(SipTransportRequest {
                                             dst: peer,
+                                            src_port,
                                             payload: final_resp.clone(),
                                         });
                                         sleep(interval).await;
@@ -344,7 +346,11 @@ impl SipCore {
     }
 
     fn send_payload(&self, dst: std::net::SocketAddr, payload: Vec<u8>) {
-        let _ = self.transport_tx.send(SipTransportRequest { dst, payload });
+        let _ = self.transport_tx.send(SipTransportRequest {
+            dst,
+            src_port: self.cfg.sip_port,
+            payload,
+        });
     }
 
     fn prune_expired(&mut self) -> Vec<SipEvent> {

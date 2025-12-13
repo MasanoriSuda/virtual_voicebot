@@ -16,7 +16,7 @@ use crate::session::{
     spawn_session, MediaConfig, SessionIn, SessionMap, SessionOut, SessionRegistry,
 };
 use crate::sip::{SipConfig, SipCore, SipEvent};
-use crate::transport::{run_packet_loop, RtpPortMap, SipInput};
+use crate::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendRequest};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     // packet層 → SIP処理ループ へのチャネル
     let (sip_tx, mut sip_rx) = unbounded_channel::<SipInput>();
     // sip → transport 送信指示
-    let (sip_send_tx, sip_send_rx) = unbounded_channel::<crate::sip::tx::SipTransportRequest>();
+    let (sip_send_tx, sip_send_rx) = unbounded_channel::<TransportSendRequest>();
     // session → sip 指示
     let (session_out_tx, mut session_out_rx) =
         unbounded_channel::<(crate::session::types::CallId, SessionOut)>();

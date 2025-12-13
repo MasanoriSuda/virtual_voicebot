@@ -8,6 +8,7 @@
   - SIP 現状: `SipInput { src: SocketAddr, data: Vec<u8> }`（受信ポートはソケットから取得可能）
   - RTP 現状: `RawPacket { src: SocketAddr, dst_port: u16, data: Vec<u8> }`
 - 上位からの送信指示（宛先アドレス、送信元ポート、バイト列）をそのままネットワークに送る
+  - 送信指示型は transport 側で `TransportSendRequest { dst, src_port, payload }` として定義し、sip/session 依存を避ける
 
 上位モジュールとの関係
 - SIP のパース、応答コードの決定、レスポンス組み立ては `sip` / `session` が行い、送信指示として渡す
