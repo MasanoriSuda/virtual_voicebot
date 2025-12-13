@@ -3,11 +3,31 @@ use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
+use crate::rtp::payload::{classify_payload, PayloadKind};
+use crate::rtp::stream_manager::StreamManager;
+use crate::rtp::{build_rtp_packet, RtpPacket};
+
 #[derive(Debug)]
 pub enum RtpTxCommand {
-    Start { dst: SocketAddr },
-    Stop,
-    Send { payload: Vec<u8> },
+    Start {
+        key: String,
+        dst: SocketAddr,
+        pt: u8,
+        ssrc: u32,
+        seq: u16,
+        ts: u32,
+    },
+    Stop {
+        key: String,
+    },
+    SendPayload {
+        key: String,
+        payload: Vec<u8>,
+    },
+    AdjustTimestamp {
+        key: String,
+        delta: u32,
+    },
 }
 
 #[derive(Clone)]
@@ -18,51 +38,110 @@ pub struct RtpTxHandle {
 impl RtpTxHandle {
     pub fn new() -> Self {
         let (tx, rx) = unbounded_channel();
-        tokio::spawn(async move { run_tx(rx).await });
+        let streams = StreamManager::new();
+        tokio::spawn(async move { run_tx(streams, rx).await });
         Self { tx }
     }
 
-    pub fn start(&self, dst: SocketAddr) {
-        let _ = self.tx.send(RtpTxCommand::Start { dst });
+    pub fn start(&self, key: String, dst: SocketAddr, pt: u8, ssrc: u32, seq: u16, ts: u32) {
+        let _ = self.tx.send(RtpTxCommand::Start {
+            key,
+            dst,
+            pt,
+            ssrc,
+            seq,
+            ts,
+        });
     }
 
-    pub fn stop(&self) {
-        let _ = self.tx.send(RtpTxCommand::Stop);
+    pub fn stop(&self, key: &str) {
+        let _ = self.tx.send(RtpTxCommand::Stop {
+            key: key.to_string(),
+        });
     }
 
-    pub fn send(&self, payload: Vec<u8>) {
-        let _ = self.tx.send(RtpTxCommand::Send { payload });
+    pub fn send_payload(&self, key: &str, payload: Vec<u8>) {
+        let _ = self.tx.send(RtpTxCommand::SendPayload {
+            key: key.to_string(),
+            payload,
+        });
+    }
+
+    pub fn adjust_timestamp(&self, key: &str, delta: u32) {
+        if delta == 0 {
+            return;
+        }
+        let _ = self.tx.send(RtpTxCommand::AdjustTimestamp {
+            key: key.to_string(),
+            delta,
+        });
     }
 }
 
-async fn run_tx(mut rx: UnboundedReceiver<RtpTxCommand>) {
+async fn run_tx(streams: StreamManager, mut rx: UnboundedReceiver<RtpTxCommand>) {
     let mut sock: Option<UdpSocket> = None;
-    let mut dst: Option<SocketAddr> = None;
 
     while let Some(cmd) = rx.recv().await {
         match cmd {
-            RtpTxCommand::Start { dst: new_dst } => {
-                dst = Some(new_dst);
+            RtpTxCommand::Start {
+                key,
+                dst,
+                pt,
+                ssrc,
+                seq,
+                ts,
+            } => {
+                if classify_payload(pt) != Ok(PayloadKind::Pcmu) {
+                    log::warn!("[rtp tx] unsupported payload type {}", pt);
+                    continue;
+                }
+                streams.upsert(key, dst, pt, ssrc, seq, ts).await;
                 if sock.is_none() {
                     match UdpSocket::bind("0.0.0.0:0").await {
                         Ok(s) => sock = Some(s),
                         Err(e) => {
                             log::warn!("[rtp tx] failed to bind RTP socket: {e:?}");
-                            dst = None;
                         }
                     }
                 }
             }
-            RtpTxCommand::Stop => {
-                dst = None;
-                sock = None;
-            }
-            RtpTxCommand::Send { payload } => {
-                if let (Some(s), Some(target)) = (sock.as_ref(), dst) {
-                    let _ = s.send_to(&payload, target).await.ok();
-                } else {
-                    log::warn!("[rtp tx] send requested but RTP not started");
+            RtpTxCommand::Stop { key } => {
+                streams.remove(&key).await;
+                if streams.is_empty().await {
+                    sock = None;
                 }
+            }
+            RtpTxCommand::SendPayload { key, payload } => {
+                if let Some(s) = sock.as_ref() {
+                    let sent = streams
+                        .with_mut(&key, |stream| {
+                            let pkt = RtpPacket::new(
+                                stream.pt,
+                                stream.seq,
+                                stream.ts,
+                                stream.ssrc,
+                                payload.clone(),
+                            );
+                            let bytes = build_rtp_packet(&pkt);
+                            // 送信後に進める
+                            stream.seq = stream.seq.wrapping_add(1);
+                            stream.ts = stream.ts.wrapping_add(payload.len() as u32);
+                            (stream.dst, bytes)
+                        })
+                        .await;
+                    if let Some((dst, bytes)) = sent {
+                        let _ = s.send_to(&bytes, dst).await.ok();
+                    } else {
+                        log::warn!("[rtp tx] send requested but stream key not found");
+                    }
+                }
+            }
+            RtpTxCommand::AdjustTimestamp { key, delta } => {
+                let _ = streams
+                    .with_mut(&key, |stream| {
+                        stream.ts = stream.ts.wrapping_add(delta);
+                    })
+                    .await;
             }
         }
     }

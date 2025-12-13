@@ -1,8 +1,11 @@
 pub mod builder;
 pub mod packet;
 pub mod parser;
+pub mod payload;
 pub mod rtcp;
+pub mod rx;
 pub mod stream;
+pub mod stream_manager;
 pub mod tx;
 
 #[allow(unused_imports)]

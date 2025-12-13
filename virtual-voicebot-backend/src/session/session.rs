@@ -13,7 +13,6 @@ use crate::session::types::*;
 
 use crate::app::{self, AppEvent};
 use crate::rtp::tx::RtpTxHandle;
-use crate::rtp::{build_rtp_packet, RtpPacket};
 use anyhow::Error;
 use log::{debug, info, warn};
 
@@ -41,10 +40,6 @@ pub struct Session {
     app_tx: UnboundedSender<AppEvent>,
     media_cfg: MediaConfig,
     rtp_tx: RtpTxHandle,
-    // RTP送出用
-    rtp_seq: u16,
-    rtp_ts: u32,
-    rtp_ssrc: u32,
     rtp_last_sent: Option<Instant>,
     keepalive_stop: Option<oneshot::Sender<()>>,
     session_timer_stop: Option<oneshot::Sender<()>>,
@@ -76,9 +71,6 @@ impl Session {
             app_tx,
             media_cfg,
             rtp_tx,
-            rtp_seq: 0,
-            rtp_ts: 0,
-            rtp_ssrc: 0x12345678,
             rtp_last_sent: None,
             keepalive_stop: None,
             session_timer_stop: None,
@@ -126,7 +118,9 @@ impl Session {
                     };
 
                     // rtp側でソケットを持つように変更
-                    self.rtp_tx.start(dst_addr);
+                    // RTP送信開始（rtp 側で Seq/TS/SSRC を管理）
+                    self.rtp_tx
+                        .start(self.call_id.clone(), dst_addr, 0, 0x12345678, 0, 0);
 
                     let _ = self.tx_up.send(SessionOut::RtpStartTx {
                         dst_ip: ip.clone(),
@@ -149,19 +143,15 @@ impl Session {
                         INTRO_WAV_PATH,
                         dst_addr,
                         &self.rtp_tx,
-                        self.rtp_seq,
-                        self.rtp_ts,
-                        self.rtp_ssrc,
+                        &self.call_id,
                     )
                     .await
                     {
-                        Ok((next_seq, next_ts)) => {
-                            self.rtp_seq = next_seq;
-                            self.rtp_ts = next_ts;
+                        Ok(()) => {
                             self.rtp_last_sent = Some(Instant::now());
                             info!(
-                                "[session {}] sent intro wav {} (next seq={} ts={})",
-                                self.call_id, INTRO_WAV_PATH, self.rtp_seq, self.rtp_ts
+                                "[session {}] sent intro wav {}",
+                                self.call_id, INTRO_WAV_PATH
                             );
                         }
                         Err(e) => {
@@ -218,7 +208,7 @@ impl Session {
                 (_, SessionIn::SipBye) => {
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
-                    self.rtp_tx.stop();
+                    self.rtp_tx.stop(&self.call_id);
                     let _ = self.tx_up.send(SessionOut::RtpStopTx);
                     let _ = self.tx_up.send(SessionOut::SipSendBye200);
                     let _ = self.app_tx.send(AppEvent::CallEnded {
@@ -242,21 +232,9 @@ impl Session {
                                 return;
                             }
                         };
-                        self.rtp_tx.start(dst);
                         self.sending_audio = true;
-                        match send_wav_as_rtp_pcmu(
-                            &path,
-                            dst,
-                            &self.rtp_tx,
-                            self.rtp_seq,
-                            self.rtp_ts,
-                            self.rtp_ssrc,
-                        )
-                        .await
-                        {
-                            Ok((next_seq, next_ts)) => {
-                                self.rtp_seq = next_seq;
-                                self.rtp_ts = next_ts;
+                        match send_wav_as_rtp_pcmu(&path, dst, &self.rtp_tx, &self.call_id).await {
+                            Ok(()) => {
                                 self.rtp_last_sent = Some(Instant::now());
                             }
                             Err(e) => {
@@ -273,7 +251,7 @@ impl Session {
                     warn!("[session {}] app requested hangup", self.call_id);
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
-                    self.rtp_tx.stop();
+                    self.rtp_tx.stop(&self.call_id);
                     let _ = self.tx_up.send(SessionOut::RtpStopTx);
                     let _ = self.tx_up.send(SessionOut::SipSendBye200);
                     let _ = self.app_tx.send(AppEvent::CallEnded {
@@ -296,7 +274,7 @@ impl Session {
                     eprintln!("call {} abort: {e:?}", self.call_id);
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
-                    self.rtp_tx.stop();
+                    self.rtp_tx.stop(&self.call_id);
                     let _ = self.tx_up.send(SessionOut::RtpStopTx);
                     let _ = self.app_tx.send(AppEvent::CallEnded {
                         call_id: self.call_id.clone(),
@@ -324,7 +302,7 @@ impl Session {
     fn align_rtp_clock(&mut self) {
         if let Some(last) = self.rtp_last_sent {
             let gap_samples = (last.elapsed().as_secs_f64() * 8000.0) as u32;
-            self.rtp_ts = self.rtp_ts.wrapping_add(gap_samples);
+            self.rtp_tx.adjust_timestamp(&self.call_id, gap_samples);
         }
     }
 
@@ -382,10 +360,9 @@ impl Session {
     }
 
     async fn send_silence_frame(&mut self) -> Result<(), Error> {
-        let peer = match self.peer_sdp.clone() {
-            Some(p) => p,
-            None => return Ok(()),
-        };
+        if self.peer_sdp.is_none() {
+            return Ok(());
+        }
         if self.sending_audio {
             return Ok(());
         }
@@ -393,18 +370,8 @@ impl Session {
         self.align_rtp_clock();
 
         let frame = vec![0xFFu8; 160]; // μ-law silence
-        let pkt = RtpPacket::new(0, self.rtp_seq, self.rtp_ts, self.rtp_ssrc, frame);
-        self.send_rtp_packet(&peer, &pkt).await?;
-        self.rtp_seq = self.rtp_seq.wrapping_add(1);
-        self.rtp_ts = self.rtp_ts.wrapping_add(160);
+        self.rtp_tx.send_payload(&self.call_id, frame);
         self.rtp_last_sent = Some(Instant::now());
-        Ok(())
-    }
-
-    /// RTPパケットの送信（socket準備と送信のみ。Seq/Timestampの更新は呼び出し側で行う）
-    async fn send_rtp_packet(&mut self, _peer: &Sdp, pkt: &RtpPacket) -> Result<(), Error> {
-        let bytes = build_rtp_packet(pkt);
-        self.rtp_tx.send(bytes);
         Ok(())
     }
 }
@@ -413,19 +380,14 @@ async fn send_wav_as_rtp_pcmu(
     wav_path: &str,
     dst: SocketAddr,
     tx: &RtpTxHandle,
-    seq_start: u16,
-    ts_start: u32,
-    ssrc: u32,
-) -> Result<(u16, u32), Error> {
+    key: &str,
+) -> Result<(), Error> {
     use tokio::time::sleep;
 
     let frames = load_wav_as_pcmu_frames(wav_path)?;
     if frames.is_empty() {
         anyhow::bail!("no frames");
     }
-
-    let mut seq = seq_start;
-    let mut ts = ts_start;
 
     log::info!(
         "[rtp tx] sending {} frames ({} samples) to {}",
@@ -435,21 +397,10 @@ async fn send_wav_as_rtp_pcmu(
     );
 
     for frame in frames {
-        let pkt = RtpPacket::new(0, seq, ts, ssrc, frame);
-        let bytes = build_rtp_packet(&pkt);
-        log::debug!(
-            "[rtp tx] seq={} ts={} len={} first_bytes={:02x?}",
-            seq,
-            ts,
-            bytes.len(),
-            &bytes[..bytes.len().min(16)]
-        );
-        tx.send(bytes);
-        seq = seq.wrapping_add(1);
-        ts = ts.wrapping_add(160);
+        tx.send_payload(key, frame);
         sleep(Duration::from_millis(20)).await;
     }
-    Ok((seq, ts))
+    Ok(())
 }
 
 fn load_wav_as_pcmu_frames(path: &str) -> Result<Vec<Vec<u8>>, Error> {

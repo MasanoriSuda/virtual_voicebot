@@ -75,6 +75,7 @@ async fn main() -> anyhow::Result<()> {
                 sip_send_rx,
                 session_map_for_packet,
                 rtp_port_map_for_packet,
+                None,
             )
             .await
             {
@@ -147,28 +148,18 @@ async fn main() -> anyhow::Result<()> {
             Some((call_id, out)) = session_out_rx.recv() => {
                 match out {
                     SessionOut::RtpStartTx { dst_ip, dst_port, .. } => {
-                        if let Some(handle) = rtp_handles.get(&call_id) {
-                            if let Ok(addr) = format!("{}:{}", dst_ip, dst_port).parse() {
-                                handle.start(addr);
-                            } else {
-                                log::warn!(
-                                    "[main] invalid RTP dst {}:{} for call_id={}",
-                                    dst_ip,
-                                    dst_port,
-                                    call_id
-                                );
-                            }
-                        }
+                        // rtpハンドルの開始は session 側で実施済み。ここではログのみ。
+                        log::debug!("[main] RtpStartTx for call_id={} dst={}:{}", call_id, dst_ip, dst_port);
                     }
                     SessionOut::RtpStopTx => {
                         if let Some(handle) = rtp_handles.remove(&call_id) {
-                            handle.stop();
+                            handle.stop(&call_id);
                         }
                     }
                     SessionOut::AppSessionTimeout => {
                         log::warn!("[main] session timer fired for call_id={}", call_id);
                         if let Some(handle) = rtp_handles.remove(&call_id) {
-                            handle.stop();
+                            handle.stop(&call_id);
                         }
                     }
                     other => {
