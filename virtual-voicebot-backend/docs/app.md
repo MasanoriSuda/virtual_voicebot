@@ -1,0 +1,29 @@
+# app レイヤ詳細設計
+
+## 1. 目的・責務
+- session からのイベントを受け取って「対話状態」を管理する
+- ai::{asr,llm,tts} の呼び出し順番と依存関係を制御する
+- session に「このセッションを続ける/切る」「この音声を流す」などの指示を出す
+
+## 2. イベントフロー
+- session→app に来るイベント一覧
+- app→ai に投げるイベント/リクエスト一覧
+- app→session に返すイベント（BotAudio や Hangup 指示など）
+
+## 3. 対話状態のモデル
+- セッションごとの state（例: Idle / Listening / Thinking / Speaking）
+- LLM のコンテキスト管理（履歴をどこまで持つか）
+
+## 4. エラー/タイムアウト時の振る舞い
+- ASR/LLM/TTS どれが失敗したときに、どうフォールバックするか
+- どの条件で「通話続行」or「謝罪して終了」にするか
+
+## 5. session / ai との責務境界
+- session が知らなくてよいこと
+- ai が知らなくてよいこと
+- app だけが知っているべきこと
+
+## 6. イベント名ドラフト（voice_bot_flow に沿ったもの）
+- session→app: `CallStarted`, `AudioBuffered`, `CallEnded`
+- app→ai: `AsrRequest`, `LlmRequest`, `TtsRequest`
+- app→session: `BotAudioReady`, `HangupRequested`

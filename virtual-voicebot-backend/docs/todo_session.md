@@ -1,11 +1,11 @@
 # docs/todo_session.md
 
 ## 挙動を変えないリファクタ
-- [ ] `writing.rs` の SessionOut 配線スタブにコメントを足し、sip/rtp/app への出口の責務を明示したまま現挙動を維持する。
-- [ ] session manager の骨組み（create/get/destroy/list）を types 近辺に定義し、現行マップ操作をラップするだけの薄いAPIを導入する（挙動は同じ）。
-- [ ] `SessionIn`/`SessionOut`/状態遷移のコメントを docs/session.md と一致させ、命名・説明の整合を取る（動作は変えない）。
-- [ ] keepaliveタイマ開始・停止の責務を関数に分離し、現状の TimerTick ループの挙動を変えずに整理する。
-- [ ] `handle_bot_pipeline` を分離して「ここは app/ai に移す予定」と明記し、呼び出し元に薄いラッパを挟む（挙動は変えない）。
+- [x] `writing.rs` の SessionOut 配線スタブにコメントを足し、sip/rtp/app への出口の責務を明示したまま現挙動を維持する。
+- [x] session manager の骨組み（create/get/destroy/list）を types 近辺に定義し、現行マップ操作をラップするだけの薄いAPIを導入する（挙動は同じ）。
+- [x] `SessionIn`/`SessionOut`/状態遷移のコメントを docs/session.md と一致させ、命名・説明の整合を取る（動作は変えない）。
+- [x] keepaliveタイマ開始・停止の責務を関数に分離し、現状の TimerTick ループの挙動を変えずに整理する。
+- [x] `handle_bot_pipeline` を分離して「ここは app/ai に移す予定」と明記し、呼び出し元に薄いラッパを挟む（挙動は変えない）。
 
 ## 挙動を変えるリファクタ（SessionOut 実配線・Session Timer・AI 移譲）
 - [ ] session manager を本格化し、main からのセッション生成/破棄をすべて manager 経由に切り替え、Call-ID マップを一本化する。

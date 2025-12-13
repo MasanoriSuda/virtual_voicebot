@@ -29,7 +29,7 @@ pub struct SessionHandle {
 
 pub struct Session {
     state: SessState,
-    call_id: String,
+    call_id: CallId,
     peer_sdp: Option<Sdp>,
     local_sdp: Option<Sdp>,
     tx_up: UnboundedSender<SessionOut>,
@@ -52,7 +52,7 @@ pub struct Session {
 
 impl Session {
     pub fn spawn(
-        call_id: String,
+        call_id: CallId,
         tx_up: UnboundedSender<SessionOut>,
         media_cfg: MediaConfig,
     ) -> SessionHandle {
@@ -169,21 +169,7 @@ impl Session {
                         self.call_id
                     );
 
-                    if self.keepalive_stop.is_none() {
-                        let (stop_tx, mut stop_rx) = oneshot::channel();
-                        self.keepalive_stop = Some(stop_tx);
-                        let tx = self.tx_in.clone();
-                        tokio::spawn(async move {
-                            loop {
-                                tokio::select! {
-                                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
-                                        let _ = tx.send(SessionIn::TimerTick);
-                                    }
-                                    _ = &mut stop_rx => break,
-                                }
-                            }
-                        });
-                    }
+                    self.start_keepalive_timer();
                 }
                 (SessState::Established, SessionIn::RtpIn { payload, .. }) => {
                     debug!(
@@ -222,18 +208,14 @@ impl Session {
                     self.rtp_ts = self.rtp_ts.wrapping_add(160);
                 }
                 (_, SessionIn::Bye) => {
-                    if let Some(stop) = self.keepalive_stop.take() {
-                        let _ = stop.send(());
-                    }
+                    self.stop_keepalive_timer();
                     let _ = self.tx_up.send(SessionOut::StopRtpTx);
                     let _ = self.tx_up.send(SessionOut::SendSipBye200);
                     self.state = SessState::Terminated;
                 }
                 (_, SessionIn::Abort(e)) => {
                     eprintln!("call {} abort: {e:?}", self.call_id);
-                    if let Some(stop) = self.keepalive_stop.take() {
-                        let _ = stop.send(());
-                    }
+                    self.stop_keepalive_timer();
                     let _ = self.tx_up.send(SessionOut::StopRtpTx);
                     self.state = SessState::Terminated;
                 }
@@ -262,6 +244,33 @@ impl Session {
         }
     }
 
+    /// keepalive タイマを開始する（挙動は従来と同じ。20ms ごとに TimerTick を送る）
+    fn start_keepalive_timer(&mut self) {
+        if self.keepalive_stop.is_some() {
+            return;
+        }
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        self.keepalive_stop = Some(stop_tx);
+        let tx = self.tx_in.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                        let _ = tx.send(SessionIn::TimerTick);
+                    }
+                    _ = &mut stop_rx => break,
+                }
+            }
+        });
+    }
+
+    /// keepalive タイマを停止する（存在する場合のみ）
+    fn stop_keepalive_timer(&mut self) {
+        if let Some(stop) = self.keepalive_stop.take() {
+            let _ = stop.send(());
+        }
+    }
+
     async fn send_silence_frame(&mut self) -> Result<(), Error> {
         let peer = match self.peer_sdp.clone() {
             Some(p) => p,
@@ -271,35 +280,23 @@ impl Session {
             return Ok(());
         }
 
-        if self.rtp_socket.is_none() {
-            match UdpSocket::bind("0.0.0.0:0").await {
-                Ok(sock) => self.rtp_socket = Some(sock),
-                Err(e) => {
-                    warn!(
-                        "[session {}] failed to bind RTP socket for silence: {:?}",
-                        self.call_id, e
-                    );
-                    return Err(e.into());
-                }
-            }
-        }
-
         self.align_rtp_clock();
 
         let frame = vec![0xFFu8; 160]; // μ-law silence
         let pkt = RtpPacket::new(0, self.rtp_seq, self.rtp_ts, self.rtp_ssrc, frame);
-        let bytes = build_rtp_packet(&pkt);
-        if let Some(sock) = &self.rtp_socket {
-            let remote: SocketAddr = format!("{}:{}", peer.ip, peer.port).parse()?;
-            sock.send_to(&bytes, remote).await?;
-            self.rtp_seq = self.rtp_seq.wrapping_add(1);
-            self.rtp_ts = self.rtp_ts.wrapping_add(160);
-            self.rtp_last_sent = Some(Instant::now());
-        }
+        self.send_rtp_packet(&peer, &pkt).await?;
+        self.rtp_seq = self.rtp_seq.wrapping_add(1);
+        self.rtp_ts = self.rtp_ts.wrapping_add(160);
+        self.rtp_last_sent = Some(Instant::now());
         Ok(())
     }
 
+    /// app/ai へ移譲予定の bot パイプライン（現在は session 内で呼び出すだけ）
     async fn handle_bot_pipeline(&mut self) -> Result<(), Error> {
+        self.run_bot_pipeline_inner().await
+    }
+
+    async fn run_bot_pipeline_inner(&mut self) -> Result<(), Error> {
         // 1) μ-law payload を WAV に保存
         let wav_path = "/tmp/input_from_peer.wav";
         write_mulaw_to_wav(&self.capture_payloads, wav_path)?;
@@ -366,6 +363,29 @@ impl Session {
             }
         }
 
+        Ok(())
+    }
+
+    /// RTPパケットの送信（socket準備と送信のみ。Seq/Timestampの更新は呼び出し側で行う）
+    async fn send_rtp_packet(&mut self, peer: &Sdp, pkt: &RtpPacket) -> Result<(), Error> {
+        if self.rtp_socket.is_none() {
+            match UdpSocket::bind("0.0.0.0:0").await {
+                Ok(sock) => self.rtp_socket = Some(sock),
+                Err(e) => {
+                    warn!(
+                        "[session {}] failed to bind RTP socket for send: {:?}",
+                        self.call_id, e
+                    );
+                    return Err(e.into());
+                }
+            }
+        }
+
+        let bytes = build_rtp_packet(pkt);
+        if let Some(sock) = &self.rtp_socket {
+            let remote: SocketAddr = format!("{}:{}", peer.ip, peer.port).parse()?;
+            sock.send_to(&bytes, remote).await?;
+        }
         Ok(())
     }
 }

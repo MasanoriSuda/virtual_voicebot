@@ -237,6 +237,9 @@ Content-Length: 0\r\n\r\n"
 }
 
 /// RTP用 UDP ループ
+///
+/// 責務: UDPソケットからの受信・簡易RTPパース・sessionへの直接通知のみ。
+/// ここでは rtp モジュールのストリーム管理/RTCP は未導入で、将来の委譲前提で現挙動を維持する。
 async fn run_rtp_udp_loop(
     sock: UdpSocket,
     session_map: SessionMap,
@@ -257,14 +260,14 @@ async fn run_rtp_udp_loop(
             data,
         };
 
-        // テスト用途: local_port に対応する call_id を引く
+        // テスト用途: local_port に対応する call_id を引く（rtp モジュール委譲前の暫定マップ）
         let call_id_opt = {
             let map = rtp_port_map.lock().unwrap();
             map.get(&raw.dst_port).cloned()
         };
 
         if let Some(call_id) = call_id_opt {
-            // 対応するセッションを探して RTP入力イベントを投げる
+            // 対応するセッションを探して RTP入力イベントを投げる（rtp→session 経由は後続タスク）
             let sess_tx_opt = {
                 let map = session_map.lock().unwrap();
                 map.get(&call_id).cloned()

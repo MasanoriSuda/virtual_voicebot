@@ -50,10 +50,17 @@ virtual-voicebot-backend/
 ├─ Cargo.toml
 ├─ README.md              # 概要・ビルド/実行方法
 ├─ docs/
-│  ├─ design.md           # 本ドキュメント（アーキテクチャ設計）
+│  ├─ design.md           # 本ドキュメント（アーキテクチャ設計 / 神様）
+│  ├─ contract.md         # Frontend ↔ Backend API 契約（MVP）
+│  ├─ recording.md        # 録音保存・配信の設計（MVP）
 │  ├─ sip.md              # （必要に応じて）SIP 詳細設計
 │  ├─ rtp.md              # （必要に応じて）RTP/メディア詳細設計
 │  └─ voice_bot_flow.md   # （必要に応じて）ASR/LLM/TTS 連携詳細
+├─ storage/
+│  └─ recordings/         # 録音の実体（callId配下）
+│     └─ <callId>/
+│        ├─ mixed.wav
+│        └─ meta.json
 └─ src/
    ├─ main.rs             # エントリポイント
    ├─ lib.rs              # 主要モジュール re-export
@@ -69,46 +76,59 @@ virtual-voicebot-backend/
    ├─ sip/
    │  ├─ README.md
    │  ├─ mod.rs
-   │  ├─ message.rs       # SIP メッセージ構造体
-   │  ├─ parser.rs        # テキスト → 構造体
-   │  ├─ builder.rs       # 構造体 → テキスト
-   │  ├─ transaction.rs   # トランザクション状態機械
-   │  ├─ dialog.rs        # （必要なら）ダイアログ補助
-   │  └─ timers.rs        # トランザクションタイマ
+   │  ├─ message.rs
+   │  ├─ parser.rs
+   │  ├─ builder.rs
+   │  ├─ transaction.rs
+   │  ├─ dialog.rs
+   │  └─ timers.rs
    │
    ├─ rtp/
    │  ├─ README.md
    │  ├─ mod.rs
-   │  ├─ packet.rs        # RTP/RTCP ヘッダ表現
-   │  ├─ codec.rs         # コーデック抽象
-   │  ├─ stream.rs        # ストリーム管理
-   │  └─ jitter_buffer.rs # 必要ならジッタバッファ
+   │  ├─ packet.rs
+   │  ├─ codec.rs
+   │  ├─ stream.rs
+   │  └─ jitter_buffer.rs
    │
    ├─ session/
    │  ├─ README.md
    │  ├─ mod.rs
-   │  ├─ state.rs         # 呼セッション状態
-   │  ├─ manager.rs       # セッション生成/破棄/検索
-   │  └─ events.rs        # session 周りのイベント定義
+   │  ├─ state.rs
+   │  ├─ manager.rs
+   │  └─ events.rs
    │
-   ├─ app/                # AI 対話アプリケーション層
+   ├─ app/
    │  ├─ README.md
    │  ├─ mod.rs
-   │  ├─ dialog.rs        # 1通話単位の対話状態・フロー制御
-   │  ├─ policy.rs        # 業務ロジック・応答ポリシー
-   │  └─ events.rs        # app と session/ai 間イベント
+   │  ├─ dialog.rs
+   │  ├─ policy.rs
+   │  └─ events.rs
    │
-   ├─ ai/                 # ASR / LLM / TTS クライアント層
+   ├─ ai/
    │  ├─ README.md
    │  ├─ mod.rs
-   │  ├─ asr.rs           # 音声 → テキスト
-   │  ├─ llm.rs           # テキスト → 応答テキスト/アクション
-   │  └─ tts.rs           # テキスト → 音声（PCM）
+   │  ├─ asr.rs
+   │  ├─ llm.rs
+   │  └─ tts.rs
+   │
+   ├─ http/               # Frontend向け REST/SSE/録音配信
+   │  ├─ README.md
+   │  ├─ mod.rs
+   │  ├─ routes.rs        # ルーティング（calls/utterances/events/recordings）
+   │  └─ sse.rs           # SSEストリーム（ping/イベント配信）
+   │
+   ├─ media/              # 録音生成・管理（保存/メタデータ）
+   │  ├─ README.md
+   │  ├─ mod.rs
+   │  ├─ recorder.rs      # 録音の書き出し（mixed等）
+   │  └─ meta.rs          # meta.json管理
    │
    └─ utils/
       ├─ mod.rs
-      ├─ id.rs            # session_id / stream_id 等
-      └─ time.rs          # 時刻/タイマ共通処理
+      ├─ id.rs
+      └─ time.rs
+
 ```
 
 ## 4. レイヤ構成と全体アーキテクチャ
@@ -173,6 +193,10 @@ session から ai への直接依存（必ず app を経由）
 - app から transport/sip/rtp への直接依存は禁止（必ず session を経由）。
 - ai から sip/rtp/transport への直接依存は禁止（必ず app を経由）。
 - session から ai への直接依存は禁止（必ず app を経由）。
+- http から sip/rtp/transport への直接依存は禁止（プロトコル処理を混ぜない）。
+- session/app/ai から http への直接依存は禁止（HTTPに引きずられない）。
+- media は録音生成・保存のみに責務を限定し、http は配信に限定する（生成と配信を混ぜない）。
+
 
 #### 4.2.2 依存関係の簡易図
 
@@ -184,6 +208,20 @@ app  ──→ session ──→ sip ──→ transport
 ```
 
 ※矢印は「知ってよい方向（依存の向き）」を示す。逆方向はイベント/メッセージでのみ疎結合に通知する。
+
+### 4.3 Frontend 連携（HTTP/SSE）レイヤ
+
+本プロジェクトは SIP/RTP（Zoiper）向けのネットワーク入口に加えて、
+Frontend 向けの HTTP/SSE 入口を持つ。
+
+- SIP/RTP 経路: `transport` → (`sip` / `rtp`) → `session` → `app` → `ai`
+- Frontend 経路: `http` → （通話ログ/録音情報の参照） → Frontend 表示
+
+Frontend ↔ Backend の API 契約は `docs/contract.md` を正とする。
+録音の保存と配信に関する内部設計は `docs/recording.md` を正とする。
+
+※ 重要: `http` は通話制御や SIP/RTP の内部状態機械には立ち入らず、
+参照用に整形されたデータ（Call/Utterance/recording metadata）を提供することに徹する。
 
 ## 5. 各モジュールの責務
 
@@ -460,6 +498,43 @@ SIP/RTP/セッションを直接操作しない
 
 通話の開始・終了を決定しない（app / session 側の責務）
 
+### 5.7 http モジュール（REST/SSE/録音配信）
+
+目的：
+Frontend 向けに通話履歴・会話ログ・録音再生を提供するための HTTP API と SSE を提供する。
+
+責務：
+- `docs/contract.md` に基づく REST API を提供（例: calls / utterances）
+- `docs/contract.md` に基づく SSE を提供（call.started / utterance.partial/final / summary.updated / ping）
+- 録音配信 API を提供（`Call.recordingUrl` が参照する URL を配信）
+- （推奨）ブラウザ再生のための Range 対応（可能な範囲で）
+
+非責務：
+- SIP/RTP のパースや RFC ロジックを扱わない（sip/rtp の責務）
+- セッション状態機械やコール制御判断をしない（session/app の責務）
+- 録音ファイルの生成・ミックス・エンコードをしない（media の責務）
+
+### 5.8 media モジュール（録音生成・保存）
+
+目的：
+通話中の音声データ（PCM等）を録音として保存し、Frontend で再生できる形を用意する。
+
+責務：
+- 録音の開始/停止のライフサイクルを受け取り、録音ファイルを生成する
+- `storage/recordings/<callId>/` 配下に録音実体を保存する（例: mixed.wav）
+- 録音メタデータ（meta.json）を生成・更新する
+- 録音の 0秒基準（recording timeline）を確立し、将来 `Utterance.startSec/endSec` と同期できるようにする
+
+非責務：
+- HTTP 配信をしない（http の責務）
+- SIP/RTP のプロトコル判断をしない（sip/rtp の責務）
+- 通話の維持/終了の最終判断をしない（session/app の責務）
+- AI 呼び出しをしない（app/ai の責務）
+
+詳細：
+- 録音設計は `docs/recording.md` を正とする。
+
+
 ## 6. モジュール間インタフェース（イベント指向）
 
 実装上は、モジュール間のやりとりは 構造体/enum ベースのイベント と 非同期チャネル を基本とする。
@@ -710,9 +785,17 @@ B2BUA 化（別の宛先への転送）
 
 ## 11. 運用メモ（神様ドキュメントと Codex への認識手順）
 
-- 本書（`docs/desing.md`）が設計の神様・唯一のソース。仕様変更や判断は必ずここを先に更新し、他ドキュメントやコードはこれに追従させる。
-- Codex / AI に認識させるときは次を実施する:
-  - 作業リクエスト時に「このリポジトリの設計の神は docs/desing.md」と明示する。
-  - 重要な該当節（責務/レイヤ構造/TODOなど）をチャットに引用するか、パス付きで参照箇所を示す。
-  - 変更依頼では「まず docs/desing.md を更新、その内容に沿ってコードを変える」ことを指示する。
-  - レビュー依頼では「docs/desing.md に整合しているか」を観点に含める。
+### 11.1 神様（Single Source of Truth）
+- アーキテクチャと責務境界の神様: `docs/design.md`
+- Frontend ↔ Backend API 契約の神様: `docs/contract.md`
+- 録音（保存/配信）設計の神様: `docs/recording.md`
+
+※ 仕様変更や判断は、該当する「神様ドキュメント」を先に更新し、他ドキュメントやコードを追従させる。
+
+### 11.2 Codex / AI への認識手順（毎回のプロンプトに含める）
+- 「設計の正: docs/design.md」「API契約の正: docs/contract.md」「録音設計の正: docs/recording.md」を明示する。
+- 依存関係ルール（下方向のみ、禁止事項）を必ず守るよう指示する。
+- 矛盾があれば「docs が正、コードは追従」と明記する。
+- 変更依頼では「まず該当 docs を更新 → その内容に沿ってコードを変更」と指示する。
+- レビュー依頼では「docs に整合しているか」を観点に含める。
+

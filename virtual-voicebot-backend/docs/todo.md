@@ -14,7 +14,8 @@
 - [x] [設計][session詳細] manager API、Session Timerの状態持ち、keepalive/タイムアウト時の SessionOut 定義。
 - [x] [設計][app/ai I/F] asr/llm/tts のAPI型（チャネルor Future）、ストリーミングI/O形を決める。
 - [x] [設計][テスト計画] INVITE→ACK→RTP往復、トランザクションタイマ、AI失敗フォールバック等のケース列挙。
-
+- [x] [設計][contract] docs/contract.md を SSE 固定・再接続・ページング・エラー形式まで含めて確定し、design.md と整合させる。
+- [x] [設計][recording] docs/recording.md を確定（保存パス・meta.json・録音0秒基準・Range配信方針）し、contract.md と整合させる。
 # 実装タスク
 
 ## [MVP]
@@ -24,6 +25,9 @@
 - [ ] [MVP][rtp] 送受信をrtpモジュール経由に統一し、簡易ストリーム管理とpayload type別処理を追加。RTCP用の入口を用意。
 - [ ] [MVP][app/ai] appレイヤを新設して対話状態・イベント分配を担当。botロジックをai::{asr,llm,tts}に分割し、チャネル経由でsession↔app↔aiを接続。
 - [ ] [MVP][tests/ops] 簡易E2E（INVITE→ACK→RTP往復）のスモークを追加し、基本ログ/メトリクス出力を整備。
+- [ ] [MVP][media] 録音パイプラインを新設（RTP受信PCM→録音ファイル保存）。storage/recordings/<callId>/mixed.wav と meta.json を生成。
+- [ ] [MVP][http] Frontend向け REST/SSE を実装（/api/calls, /api/calls/{callId}, /api/calls/{callId}/utterances, /api/events）。docs/contract.md に準拠。
+- [ ] [MVP][http-recording] 録音配信APIを追加（Call.recordingUrl が指す URL を提供）。可能なら Range 対応（難しければMVPは先頭再生のみを明記）。
 
 ## [NEXT]
 - [ ] [NEXT][transport] SIP TCPリスナ対応とポートマッピングの期限管理。
@@ -32,6 +36,10 @@
 - [ ] [NEXT][session] 保留/再開、無音・RTP無着信のタイムアウト検知とBYE発火、Keepalive戦略の改善。
 - [ ] [NEXT][app/ai] ファイル経由をやめストリーミングI/O化、プロンプト/ポリシー管理の強化、フェイルセーフ応答ポリシー整備。
 - [ ] [NEXT][ops] メトリクス/トレースのモジュール別計測、設定バリデーション、グレースフルシャットダウン対応。
+- [ ] [NEXT][recording] caller/bot 分離トラック（caller.wav, bot.wav）とメタ同期の精度向上（startSec/endSec の運用を本格化）。
+- [ ] [NEXT][storage] 録音を外部ストレージ（S3/MinIO等）へ移行し、recordingUrl を署名付きURLにする。
+- [ ] [NEXT][http] 認証/認可（Bearer等）導入、録音URLの寿命運用、CORS/CSRF方針整備。
+- [ ] [NEXT][ops] 録音容量の保持期間・削除ポリシー・圧縮/エンコード（mp3/opus）戦略。
 
 ## スプリント計画（優先順）
 - Sprint 1（配線と基盤を固める）
