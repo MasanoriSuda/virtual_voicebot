@@ -12,12 +12,25 @@ use crate::session::{Session, SessionHandle};
 /// セッションを生成し、SessionOut を上位レイヤに配線する（挙動は従来と同じ）。
 pub fn spawn_call(
     call_id: CallId,
+    from_uri: String,
+    to_uri: String,
     media_cfg: MediaConfig,
     session_out_tx: tokio::sync::mpsc::UnboundedSender<(CallId, SessionOut)>,
     rtp_tx: RtpTxHandle,
+    ingest_url: Option<String>,
+    recording_base_url: Option<String>,
 ) -> SessionHandle {
     let (tx_up, rx_out) = unbounded_channel::<SessionOut>();
-    let handle = Session::spawn(call_id.clone(), tx_up, media_cfg, rtp_tx);
+    let handle = Session::spawn(
+        call_id.clone(),
+        from_uri,
+        to_uri,
+        tx_up,
+        media_cfg,
+        rtp_tx,
+        ingest_url,
+        recording_base_url,
+    );
 
     // セッション→上位の指示をここで分配（現状はそのまま転送）
     tokio::spawn(async move {
@@ -32,12 +45,25 @@ pub fn spawn_call(
 
 pub fn spawn_session(
     call_id: CallId,
+    from_uri: String,
+    to_uri: String,
     registry: SessionRegistry,
     media_cfg: MediaConfig,
     session_out_tx: tokio::sync::mpsc::UnboundedSender<(CallId, SessionOut)>,
     rtp_tx: RtpTxHandle,
+    ingest_url: Option<String>,
+    recording_base_url: Option<String>,
 ) -> tokio::sync::mpsc::UnboundedSender<SessionIn> {
-    let handle = spawn_call(call_id.clone(), media_cfg, session_out_tx, rtp_tx);
+    let handle = spawn_call(
+        call_id.clone(),
+        from_uri,
+        to_uri,
+        media_cfg,
+        session_out_tx,
+        rtp_tx,
+        ingest_url,
+        recording_base_url,
+    );
     // Session manager の薄いラッパ経由で登録
     registry.insert(call_id, handle.tx_in.clone());
     handle.tx_in

@@ -16,6 +16,8 @@ use crate::media::Recorder;
 use crate::rtp::tx::RtpTxHandle;
 use anyhow::Error;
 use log::{debug, info, warn};
+use reqwest::Client;
+use serde_json::json;
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
 // MVPのシンプルなSession Timer。必要に応じて設計に合わせて短縮/設定化する。
@@ -34,6 +36,11 @@ pub struct SessionHandle {
 pub struct Session {
     state: SessState,
     call_id: CallId,
+    from_uri: String,
+    to_uri: String,
+    ingest_url: Option<String>,
+    recording_base_url: Option<String>,
+    ingest_sent: bool,
     peer_sdp: Option<Sdp>,
     local_sdp: Option<Sdp>,
     tx_up: UnboundedSender<SessionOut>,
@@ -42,6 +49,8 @@ pub struct Session {
     media_cfg: MediaConfig,
     rtp_tx: RtpTxHandle,
     recorder: Recorder,
+    started_at: Option<Instant>,
+    started_wall: Option<std::time::SystemTime>,
     rtp_last_sent: Option<Instant>,
     keepalive_stop: Option<oneshot::Sender<()>>,
     session_timer_stop: Option<oneshot::Sender<()>>,
@@ -57,9 +66,13 @@ pub struct Session {
 impl Session {
     pub fn spawn(
         call_id: CallId,
+        from_uri: String,
+        to_uri: String,
         tx_up: UnboundedSender<SessionOut>,
         media_cfg: MediaConfig,
         rtp_tx: RtpTxHandle,
+        ingest_url: Option<String>,
+        recording_base_url: Option<String>,
     ) -> SessionHandle {
         let (tx_in, rx_in) = tokio::sync::mpsc::unbounded_channel();
         let call_id_clone = call_id.clone();
@@ -67,6 +80,11 @@ impl Session {
         let mut s = Self {
             state: SessState::Idle,
             call_id,
+            from_uri,
+            to_uri,
+            ingest_url,
+            recording_base_url,
+            ingest_sent: false,
             peer_sdp: None,
             local_sdp: None,
             tx_up,
@@ -75,6 +93,8 @@ impl Session {
             media_cfg,
             rtp_tx,
             recorder: Recorder::new(call_id_clone.clone()),
+            started_at: None,
+            started_wall: None,
             rtp_last_sent: None,
             keepalive_stop: None,
             session_timer_stop: None,
@@ -108,6 +128,8 @@ impl Session {
                     if self.intro_sent {
                         continue;
                     }
+                    self.started_at = Some(Instant::now());
+                    self.started_wall = Some(std::time::SystemTime::now());
                     if let Err(e) = self.recorder.start() {
                         warn!(
                             "[session {}] failed to start recorder: {:?}",
@@ -226,6 +248,7 @@ impl Session {
                             self.call_id, e
                         );
                     }
+                    self.send_ingest("ended").await;
                     self.rtp_tx.stop(&self.call_id);
                     let _ = self.tx_up.send(SessionOut::RtpStopTx);
                     let _ = self.tx_up.send(SessionOut::SipSendBye200);
@@ -283,6 +306,7 @@ impl Session {
                             self.call_id, e
                         );
                     }
+                    self.send_ingest("ended").await;
                     self.rtp_tx.stop(&self.call_id);
                     let _ = self.tx_up.send(SessionOut::RtpStopTx);
                     let _ = self.tx_up.send(SessionOut::SipSendBye200);
@@ -301,6 +325,7 @@ impl Session {
                             self.call_id, e
                         );
                     }
+                    self.send_ingest("ended").await;
                     let _ = self.tx_up.send(SessionOut::RtpStopTx);
                     let _ = self.tx_up.send(SessionOut::AppSessionTimeout);
                     let _ = self.app_tx.send(AppEvent::CallEnded {
@@ -318,6 +343,7 @@ impl Session {
                             self.call_id, e
                         );
                     }
+                    self.send_ingest("failed").await;
                     self.rtp_tx.stop(&self.call_id);
                     let _ = self.tx_up.send(SessionOut::RtpStopTx);
                     let _ = self.app_tx.send(AppEvent::CallEnded {
@@ -420,10 +446,56 @@ impl Session {
         self.align_rtp_clock();
 
         let frame = vec![0xFFu8; 160]; // μ-law silence
-        self.recorder.push_tx_mulaw(&frame);
         self.rtp_tx.send_payload(&self.call_id, frame);
         self.rtp_last_sent = Some(Instant::now());
         Ok(())
+    }
+
+    async fn send_ingest(&mut self, status: &str) {
+        if self.ingest_sent {
+            return;
+        }
+        let ingest_url = match &self.ingest_url {
+            Some(u) => u.clone(),
+            None => return,
+        };
+        let started_at = self.started_wall.unwrap_or_else(std::time::SystemTime::now);
+        let ended_at = std::time::SystemTime::now();
+        let duration_sec = self.started_at.map(|s| s.elapsed().as_secs()).unwrap_or(0);
+        let recording_url = self.recording_base_url.as_ref().map(|base| {
+            format!(
+                "{}/recordings/{}/mixed.wav",
+                base.trim_end_matches('/'),
+                self.recorder.relative_path()
+            )
+        });
+
+        let payload = json!({
+            "callId": self.call_id,
+            "from": self.from_uri,
+            "to": self.to_uri,
+            "startedAt": humantime::format_rfc3339(started_at).to_string(),
+            "endedAt": humantime::format_rfc3339(ended_at).to_string(),
+            "status": status,
+            "summary": "",
+            "durationSec": duration_sec,
+            "recording": recording_url.as_ref().map(|url| json!({
+                "recordingUrl": url,
+                "durationSec": duration_sec,
+                "sampleRate": 8000,
+                "channels": 1
+            })),
+        });
+
+        let client = Client::new();
+        let url = ingest_url.clone();
+        let call_id = self.call_id.clone();
+        self.ingest_sent = true;
+        tokio::spawn(async move {
+            if let Err(e) = client.post(url).json(&payload).send().await {
+                log::warn!("[ingest] failed to post call {}: {:?}", call_id, e);
+            }
+        });
     }
 }
 
@@ -449,6 +521,7 @@ async fn send_wav_as_rtp_pcmu(
     );
 
     for frame in frames {
+        // 送信音声も録音に含めて mixed を作る（キープアライブの無音は別扱い）
         recorder.push_tx_mulaw(&frame);
         tx.send_payload(key, frame);
         sleep(Duration::from_millis(20)).await;

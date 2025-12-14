@@ -1,5 +1,6 @@
 mod ai;
 mod app;
+mod http;
 mod media;
 mod rtp;
 mod session;
@@ -57,12 +58,21 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(rtp_port);
+    let recording_http_addr =
+        std::env::var("RECORDING_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:18080".to_string());
 
     println!(
         "Listening SIP on {}, RTP on {}",
         sip_sock.local_addr()?,
         rtp_sock.local_addr()?
     );
+    println!("[recording] static HTTP on {}", recording_http_addr);
+
+    // 録音配信の簡易HTTPサーバ（/recordings/<callId>/... を静的配信）
+    {
+        let base_dir = std::env::current_dir()?.join("storage/recordings");
+        http::spawn_recording_server(&recording_http_addr, base_dir).await;
+    }
 
     // packetループ起動（UDP受信 → SIP/RTP振り分け → セッションへ）
     {
@@ -104,12 +114,24 @@ async fn main() -> anyhow::Result<()> {
                             println!("[main] new INVITE, call_id={}", call_id);
 
                             let rtp_handle = RtpTxHandle::new();
+                            let ingest_url = std::env::var("INGEST_CALL_URL").ok();
+                            let recording_base_url = std::env::var("RECORDING_BASE_URL")
+                                .ok()
+                                .or_else(|| {
+                                    // デフォルトは録音HTTPサーバのアドレス
+                                    Some(format!("http://{}", recording_http_addr))
+                                });
+
                             let sess_tx = spawn_session(
                                 call_id.clone(),
+                                from.clone(),
+                                to.clone(),
                                 session_registry.clone(),
                                 MediaConfig::pcmu(advertised_ip.clone(), rtp_port),
                                 session_out_tx.clone(),
                                 rtp_handle.clone(),
+                                ingest_url,
+                                recording_base_url,
                             );
 
                             {

@@ -19,4 +19,8 @@ export USE_AWS_TRANSCRIBE=1
 # export AWS_TRANSCRIBE_PREFIX="voicebot"
 # AWSの認証情報/リージョンは usual AWS env か IAM ロールで
 
+# 配信用
+export RECORDING_BASE_URL="http://localhost:18080"
+export INGEST_CALL_URL="http://localhost:3000/api/ingest/call"
+
 RUST_LOG=info cargo run

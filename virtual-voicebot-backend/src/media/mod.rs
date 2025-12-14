@@ -10,6 +10,7 @@ use serde::Serialize;
 pub struct Recorder {
     call_id: String,
     dir: PathBuf,
+    dir_name: String,
     writer: Option<WavWriter<BufWriter<File>>>,
     sample_rate: u32,
     channels: u16,
@@ -20,18 +21,28 @@ pub struct Recorder {
 impl Recorder {
     pub fn new(call_id: impl Into<String>) -> Self {
         let call_id = call_id.into();
+        let dir_name = format!(
+            "{}_{}",
+            chrono::Local::now().format("%Y%m%d-%H%M%S"),
+            call_id
+        );
         let dir = PathBuf::from("storage")
             .join("recordings")
-            .join(call_id.clone());
+            .join(dir_name.clone());
         Self {
             call_id,
             dir,
+            dir_name,
             writer: None,
             sample_rate: 8000,
             channels: 1,
             samples_written: 0,
             started_at: None,
         }
+    }
+
+    pub fn relative_path(&self) -> String {
+        self.dir_name.clone()
     }
 
     /// 録音を開始する（多重呼び出しは無視）
