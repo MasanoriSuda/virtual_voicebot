@@ -193,6 +193,7 @@ fn parse_method(token: &str) -> SipMethod {
         "CANCEL" => SipMethod::Cancel,
         "OPTIONS" => SipMethod::Options,
         "REGISTER" => SipMethod::Register,
+        "PRACK" => SipMethod::Prack,
         other => SipMethod::Unknown(other.to_string()),
     }
 }

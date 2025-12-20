@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="sipp" tests="1" failures="0" errors="0">
+  <testcase name="basic_uas" time="6.195">
+    <system-out>trace_stat: /home/msuda/workspace/virtual_voicebot_4/virtual_voicebot/virtual-voicebot-backend/test/artifacts/sipp/basic_uas/trace_stat.csv
+------------------------------ Scenario Screen -------- [1-9]: Change Screen --
+  Call rate (length)   Port   Total-time  Total-calls  Remote-host
+  10.0(0 ms)/1.000s   5061       6.18 s            1  127.0.0.1:5060(UDP)
+
+  Call limit 1 hit, 0.0 s period          0 ms scheduler resolution            
+  0 calls (limit 30)                      Peak was 1 calls, after 0 s
+  0 Running, 4 Paused, 24 Woken up
+  0 dead call msg (discarded)             0 out-of-call msg (discarded)
+  0 open sockets                          0/0/0 UDP errors (send/recv/cong)
+  0 open sockets                          0/0/0 UDP errors (send/recv/cong)
+
+                                 Messages  Retrans   Timeout   Unexpected-Msg
+0 :      INVITE ----------&gt;         1         0         0                            
+1 :         100 &lt;----------         0         0         0         0                  
+2 :         180 &lt;----------         1         0         0         0                  
+3 :         200 &lt;----------  E-RTD1 1         0         0         0                  
+4 :         ACK ----------&gt;         1         0                                      
+5 :       Pause [    500ms]         1                             0        
+6 :         BYE ----------&gt;         1         0                                      
+7 :         200 &lt;----------         1         0         0         0                  
+------------------------------ Test Terminated --------------------------------
+----------------------------- Statistics Screen ------- [1-9]: Change Screen --
+  Start Time             | 2025-12-21	01:46:16.399930	1766249176.399930         
+  Last Reset Time        | 2025-12-21	01:46:22.588677	1766249182.588677         
+  Current Time           | 2025-12-21	01:46:22.588755	1766249182.588755         
+-------------------------+---------------------------+--------------------------
+  Counter Name           | Periodic value            | Cumulative value
+-------------------------+---------------------------+--------------------------
+  Elapsed Time           | 00:00:00:000000           | 00:00:00:000000          
+  Call Rate              |    0.000 cps              |    0.162 cps             
+-------------------------+---------------------------+--------------------------
+  Incoming calls created |        0                  |        0                 
+  Outgoing calls created |        0                  |        1                 
+  Total Calls created    |                           |        1                 
+  Current Calls          |        0                  |                          
+-------------------------+---------------------------+--------------------------
+  Successful call        |        0                  |        1                 
+  Failed call            |        0                  |        0                 
+-------------------------+---------------------------+--------------------------
+  Response Time 1        | 00:00:00:000000           | 00:00:00:000000          
+  Call Length            | 00:00:00:000000           | 00:00:00:000000          
+------------------------------ Test Terminated --------------------------------
+</system-out>
+    <system-err>Resolving remote host &apos;127.0.0.1&apos;... Done.
+2025-12-21	01:46:22.588603	1766249182.588603: Failed to delete FD from epoll, errno = 1 (Operation not permitted)
+</system-err>
+  </testcase>
+</testsuite>

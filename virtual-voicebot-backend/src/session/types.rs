@@ -78,6 +78,8 @@ pub enum SessionIn {
 /// session → 上位（sip/rtp/app/metrics）への通知/指示
 #[derive(Debug)]
 pub enum SessionOut {
+    /// SIP provisional (100)
+    SipSend100,
     /// SIP provisional (180)
     SipSend180,
     /// SIP final (200 + SDP)

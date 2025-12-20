@@ -9,11 +9,50 @@
 - フロントから通話制御（発信/終話/保留など）は行わない（閲覧のみ）
 - 録音の署名付き URL・認可の厳密化は Future
 
+## MVP Constraints (HTTP)
+- MVPでは frontend→backend の入力/制御APIは提供しない
+- MVPのHTTPは `recordingUrl` の GET のみ
+- 参照REST/SSEは将来追加（契約更新が必要）
+
+## DTO Classification (MVP)
+### Internal Event DTO（非公開・チャネル経由）
+- sip↔session, rtp↔session, session↔app, app↔ai, app↔session など内部通信に用いる
+
+### Public Read Model DTO（frontend向け読み取りモデル）
+- Call, RecordingMeta（MVPで必須）
+- Utterance はMVPでは定義しない（必要性が出た時点で追加）
+
+### Transport DTO（HTTPレスポンス等の実体）
+- `recordingUrl` の GET レスポンス（`audio/wav` のバイト列）
+- Range 対応は将来（MVPでは未対応）
+
+### Correlation ID Rules
+- 外部DTO（Call/RecordingMeta）は `callId` を唯一の相関キーとする
+- 内部イベントは `call_id` を必須とし、音声系は `stream_id` を併用する
+- `session_id` を導入する場合は設計で明文化する（MVPは `call_id == session_id`）
+
+### MVP Minimal Read Models（Public）
+#### Call（Read Model）
+- `callId`: string（必須）
+- `startedAt`: string(ISO8601)（必須）
+- `endedAt`: string(ISO8601)（任意）
+- `recordingUrl`: string（任意）
+- `status`: `"ringing" | "in_call" | "ended" | "error"`（必須）
+
+#### RecordingMeta（Read Model）
+- `callId`: string（必須）
+- `path`: string（内部用。外部に出す場合はファイル名のみ推奨）
+- `durationSec`: number（任意）
+- `format`: `"wav"`（MVP固定）
+- `mixedUrl`: string（必須。`recordingUrl` と同一でも可）
+
 ## Data Model
+
+※この節は拡張例。MVPで必須な最小スキーマは「DTO Classification (MVP)」を正とし、追加項目は後方互換で追加可とする。
 
 ### Call
 - `callId` は通話を一意に識別する
-- `status`: `active` | `ended` | `failed`（必要なら追加可）
+- `status`: `"ringing" | "in_call" | "ended" | "error"`（必要なら追加可）
 - `summary` は通話中または通話後に更新されうる（最後に届いたものが正）
 
 ```json
@@ -23,7 +62,7 @@
   "to": "sip:bot@example",
   "startedAt": "2025-12-13T00:00:00.000Z",
   "endedAt": null,
-  "status": "active",
+  "status": "in_call",
   "summary": "配送状況の確認。住所変更あり。",
   "durationSec": 123,
   "recordingUrl": null

@@ -7,6 +7,8 @@ use anyhow::Result;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
 
+use crate::recording;
+
 pub struct Recorder {
     call_id: String,
     dir: PathBuf,
@@ -21,14 +23,8 @@ pub struct Recorder {
 impl Recorder {
     pub fn new(call_id: impl Into<String>) -> Self {
         let call_id = call_id.into();
-        let dir_name = format!(
-            "{}_{}",
-            chrono::Local::now().format("%Y%m%d-%H%M%S"),
-            call_id
-        );
-        let dir = PathBuf::from("storage")
-            .join("recordings")
-            .join(dir_name.clone());
+        let dir_name = recording::recording_dir_name(&call_id);
+        let dir = recording::recording_dir(&call_id);
         Self {
             call_id,
             dir,

@@ -1,0 +1,13 @@
+[[cases]]
+id = "sip00001"
+title = "sipp basic uas (compose)"
+kind = "sipp_compose"
+compose_file = "../../docker-compose.sipp.yml"
+scenario = "scenarios/basic_uas.xml"
+
+[[cases]]
+id = "sip00002"
+title = "sipp uas 100rel/prack (compose)"
+kind = "sipp_compose"
+compose_file = "../../docker-compose.sipp.yml"
+scenario = "scenarios/basic_uas_100rel.xml"

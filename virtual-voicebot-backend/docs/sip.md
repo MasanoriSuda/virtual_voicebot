@@ -49,7 +49,9 @@
 ## 4. トランザクション詳細設計（UAS）
 
 ### 4.1 INVITE サーバトランザクション
-- RFC 範囲: RFC 3261 17.2.1（UDP/UAS）。MVP は UDP のみ、100rel/PRACK/UPDATE は無効。
+- RFC 範囲: RFC 3261 17.2.1（UDP/UAS）。MVP は UDP のみ。
+  - INVITE に `Supported/Require: 100rel` がある場合は 180 に `Require: 100rel` と `RSeq: 1` を付与する。
+  - PRACK は受信時に 200 OK を返す（RAck の検証/紐付けは未実装）。
 - 状態: `Proceeding` / `Completed` / `Confirmed` / `Terminated`
 - 主なイベント:
   - 受信: `INVITE`（新規/再送）、`ACK`
@@ -143,9 +145,9 @@
 
 - MVP でサポートする:
   - UDP 上の INVITE/ACK/BYE のみ
-  - 100/180/200 のみ（PRACK/UPDATE/Session Timer は無効）
+  - 100/180/200 のみ（INVITE が 100rel 対応なら 180 に Require/RSeq を付与、PRACK は受信時に 200 OK）
 - NEXT で追加する:
-  - 100rel/PRACK
+  - PRACK の RAck 検証/紐付け
+  - 100rel の再送タイマ/再送制御
   - UPDATE
   - Session Timer (4028)
-

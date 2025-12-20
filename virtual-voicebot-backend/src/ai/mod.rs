@@ -19,6 +19,8 @@ use aws_sdk_s3 as s3;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_transcribe as transcribe;
 
+use crate::config;
+
 #[derive(Serialize)]
 struct OllamaChatRequest {
     model: String,
@@ -71,6 +73,10 @@ pub mod asr;
 pub mod llm;
 pub mod tts;
 
+fn http_client(timeout: Duration) -> Result<Client> {
+    Ok(Client::builder().timeout(timeout).build()?)
+}
+
 /// ASR 実行（現行実装: AWS Transcribe→Whisper fallback）。呼び出し順・ポリシーはそのまま。
 pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
     if aws_transcribe_enabled() {
@@ -91,7 +97,7 @@ pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
         }
     }
 
-    let client = Client::new();
+    let client = http_client(config::timeouts().ai_http)?;
     let bytes = tokio::fs::read(wav_path).await?;
 
     let part = multipart::Part::bytes(bytes)
@@ -169,7 +175,7 @@ fn build_llm_prompt(user_text: &str) -> String {
 }
 
 async fn call_ollama(question: &str) -> Result<String> {
-    let client = Client::new();
+    let client = http_client(config::timeouts().ai_http)?;
 
     let req = OllamaChatRequest {
         model: "gemma3:4b".to_string(),
@@ -213,7 +219,7 @@ async fn call_ollama(question: &str) -> Result<String> {
 
 /// ずんだもん TTS の呼び出し。I/F はテキストと出力 WAV パス（従来どおり）。
 pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
-    let client = Client::new();
+    let client = http_client(config::timeouts().ai_http)?;
     let speaker_id = 3; // ずんだもん ノーマル
 
     let query_resp = client
@@ -249,7 +255,7 @@ pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
 }
 
 async fn call_gemini(question: &str) -> Result<String> {
-    let client = Client::new();
+    let client = http_client(config::timeouts().ai_http)?;
 
     let api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
 
@@ -347,6 +353,7 @@ async fn transcribe_with_aws_job(
     s3_uri: &str,
     job_name: &str,
 ) -> Result<String> {
+    let http = http_client(crate::config::timeouts().ai_http)?;
     let client = transcribe::Client::new(config);
 
     let media = transcribe::types::Media::builder()
@@ -374,7 +381,7 @@ async fn transcribe_with_aws_job(
             match job.transcription_job_status() {
                 Some(Status::Completed) => {
                     if let Some(uri) = job.transcript().and_then(|t| t.transcript_file_uri()) {
-                        let resp = reqwest::get(uri).await?;
+                        let resp = http.get(uri).send().await?;
                         let body_text = resp.text().await?;
 
                         log::info!("AWS transcript raw JSON: {}", body_text);

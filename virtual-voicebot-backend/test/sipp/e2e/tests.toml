@@ -1,0 +1,5 @@
+[[cases]]
+id = "sip00003"
+title = "recording http e2e"
+kind = "cargo_test"
+cargo_target = "recording_http_e2e"

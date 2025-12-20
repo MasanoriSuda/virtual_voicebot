@@ -31,9 +31,11 @@ use crate::sip::transaction::{
     NonInviteTxState,
 };
 use crate::sip::tx::{SipTransportRequest, SipTransportTx};
-use crate::transport::SipInput;
+use crate::transport::{SipInput, TransportPeer};
 use std::collections::HashMap;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 /// sip 層から session 層へ渡すイベント（設計ドキュメントの「sip→session 通知」と対応）
@@ -80,6 +82,12 @@ pub struct SipCore {
 struct InviteContext {
     tx: InviteServerTransaction,
     req: SipRequest,
+    reliable: Option<ReliableProvisional>,
+}
+
+struct ReliableProvisional {
+    rseq: u32,
+    stop: Arc<AtomicBool>,
 }
 
 fn parse_offer_sdp(body: &[u8]) -> Option<Sdp> {
@@ -110,6 +118,21 @@ fn parse_offer_sdp(body: &[u8]) -> Option<Sdp> {
 
 fn decode_sip_text(data: &[u8]) -> Result<String, ()> {
     String::from_utf8(data.to_vec()).map_err(|_| ())
+}
+
+fn header_has_token(value: Option<&str>, token: &str) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    value
+        .split(|c| c == ',' || c == ' ' || c == '\t')
+        .filter(|part| !part.is_empty())
+        .any(|part| part.eq_ignore_ascii_case(token))
+}
+
+fn supports_100rel(req: &SipRequest) -> bool {
+    header_has_token(req.header_value("Supported"), "100rel")
+        || header_has_token(req.header_value("Require"), "100rel")
 }
 
 #[derive(Debug)]
@@ -161,7 +184,7 @@ impl SipCore {
         };
 
         let mut ev = match msg {
-            SipMessage::Request(req) => self.handle_request(req, input.src),
+            SipMessage::Request(req) => self.handle_request(req, input.peer),
             SipMessage::Response(_) => vec![SipEvent::Unknown],
         };
 
@@ -169,13 +192,14 @@ impl SipCore {
         events
     }
 
-    fn handle_request(&mut self, req: SipRequest, peer: std::net::SocketAddr) -> Vec<SipEvent> {
+    fn handle_request(&mut self, req: SipRequest, peer: TransportPeer) -> Vec<SipEvent> {
         let headers = CoreHeaderSnapshot::from_request(&req);
         match req.method {
             SipMethod::Invite => self.handle_invite(req, headers, peer),
             SipMethod::Ack => self.handle_ack(headers.call_id),
             SipMethod::Bye => self.handle_non_invite(req, headers, peer, 200, "OK", true),
             SipMethod::Register => self.handle_non_invite(req, headers, peer, 200, "OK", false),
+            SipMethod::Prack => self.handle_prack(req, headers, peer),
             _ => vec![SipEvent::Unknown],
         }
     }
@@ -184,7 +208,7 @@ impl SipCore {
         &mut self,
         req: SipRequest,
         headers: CoreHeaderSnapshot,
-        peer: std::net::SocketAddr,
+        peer: TransportPeer,
     ) -> Vec<SipEvent> {
         // 再送判定: 既存トランザクションがあれば最新レスポンスを再送し、イベントは出さない
         if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
@@ -200,6 +224,7 @@ impl SipCore {
         let ctx = InviteContext {
             tx,
             req: req.clone(),
+            reliable: None,
         };
         self.invites.insert(headers.call_id.clone(), ctx);
 
@@ -237,7 +262,7 @@ impl SipCore {
         &mut self,
         req: SipRequest,
         headers: CoreHeaderSnapshot,
-        peer: std::net::SocketAddr,
+        peer: TransportPeer,
         _status: u16,
         _reason: &str,
         emit_bye_event: bool,
@@ -270,7 +295,95 @@ impl SipCore {
         }
     }
 
-    fn send_tx_action(&self, action: InviteTxAction, peer: std::net::SocketAddr) {
+    fn handle_prack(
+        &mut self,
+        req: SipRequest,
+        headers: CoreHeaderSnapshot,
+        peer: TransportPeer,
+    ) -> Vec<SipEvent> {
+        let tx = self
+            .non_invites
+            .entry(headers.call_id.clone())
+            .or_insert_with(|| NonInviteServerTransaction::new(peer, req.clone()));
+
+        if let Some(resp) = tx.on_retransmit() {
+            self.send_payload(peer, resp);
+            return vec![];
+        }
+
+        if let Some(resp) = response_simple_from_request(&req, 200, "OK") {
+            let bytes = resp.to_bytes();
+            tx.on_final_sent(bytes.clone());
+            tx.last_request = Some(req);
+            self.send_payload(peer, bytes);
+        }
+
+        self.stop_reliable_provisional(&headers.call_id);
+        vec![]
+    }
+
+    fn start_reliable_provisional(
+        &mut self,
+        call_id: &CallId,
+        peer: TransportPeer,
+        payload: Vec<u8>,
+    ) {
+        let Some(ctx) = self.invites.get_mut(call_id) else {
+            return;
+        };
+        if let Some(prev) = ctx.reliable.take() {
+            prev.stop.store(true, Ordering::SeqCst);
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let rseq = 1;
+        ctx.reliable = Some(ReliableProvisional { rseq, stop: stop.clone() });
+
+        let transport_tx = self.transport_tx.clone();
+        let src_port = self.cfg.sip_port;
+        let timeout_resp = response_simple_from_request(&ctx.req, 504, "Server Time-out")
+            .map(|resp| resp.to_bytes());
+        let call_id = call_id.clone();
+        tokio::spawn(async move {
+            let mut interval = Duration::from_millis(500);
+            let max_duration = Duration::from_secs(32);
+            let start = Instant::now();
+            loop {
+                sleep(interval).await;
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                if start.elapsed() >= max_duration {
+                    log::warn!("[sip 100rel] PRACK timeout call_id={}", call_id);
+                    if let Some(resp) = timeout_resp {
+                        let _ = transport_tx.send(SipTransportRequest {
+                            peer,
+                            src_port,
+                            payload: resp,
+                        });
+                    }
+                    break;
+                }
+                let _ = transport_tx.send(SipTransportRequest {
+                    peer,
+                    src_port,
+                    payload: payload.clone(),
+                });
+                interval = std::cmp::min(interval * 2, Duration::from_secs(4));
+            }
+            stop.store(true, Ordering::SeqCst);
+        });
+    }
+
+    fn stop_reliable_provisional(&mut self, call_id: &CallId) {
+        if let Some(ctx) = self.invites.get_mut(call_id) {
+            if let Some(rel) = ctx.reliable.take() {
+                rel.stop.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    fn send_tx_action(&self, action: InviteTxAction, peer: TransportPeer) {
         match action {
             InviteTxAction::Retransmit(resp) => self.send_payload(peer, resp),
             InviteTxAction::Timeout => { /* Timer H/I 経由の通知などは未使用 */ }
@@ -279,15 +392,43 @@ impl SipCore {
 
     pub fn handle_session_out(&mut self, call_id: &CallId, out: SessionOut) {
         match out {
-            SessionOut::SipSend180 => {
+            SessionOut::SipSend100 => {
                 if let Some(ctx) = self.invites.get_mut(call_id) {
-                    if let Some(resp) = response_provisional_from_request(&ctx.req, 180, "Ringing")
+                    if let Some(resp) = response_provisional_from_request(&ctx.req, 100, "Trying")
                     {
                         let bytes = resp.to_bytes();
                         ctx.tx.remember_provisional(bytes.clone());
                         let peer = ctx.tx.peer;
                         self.send_payload(peer, bytes);
                     }
+                }
+            }
+            SessionOut::SipSend180 => {
+                let provision = if let Some(ctx) = self.invites.get_mut(call_id) {
+                    if let Some(mut resp) =
+                        response_provisional_from_request(&ctx.req, 180, "Ringing")
+                    {
+                        let reliable = supports_100rel(&ctx.req);
+                        if reliable {
+                            resp.headers.push(SipHeader::new("Require", "100rel"));
+                            resp.headers.push(SipHeader::new("RSeq", "1"));
+                        }
+                        let bytes = resp.to_bytes();
+                        let peer = ctx.tx.peer;
+                        ctx.tx.remember_provisional(bytes.clone());
+                        Some((peer, bytes, reliable))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some((peer, bytes, reliable)) = provision {
+                    if reliable {
+                        self.start_reliable_provisional(call_id, peer, bytes.clone());
+                    }
+                    self.send_payload(peer, bytes);
                 }
             }
             SessionOut::SipSend200 { answer } => {
@@ -304,6 +445,7 @@ impl SipCore {
                         ctx.tx.on_final_sent(bytes.clone(), 200);
                         let peer = ctx.tx.peer;
                         self.send_payload(peer, bytes);
+                        self.stop_reliable_provisional(call_id);
                     }
                 }
             }
@@ -325,7 +467,7 @@ impl SipCore {
                                     let mut interval = std::time::Duration::from_millis(500);
                                     while Instant::now() < expires {
                                         let _ = transport_tx.send(SipTransportRequest {
-                                            dst: peer,
+                                            peer,
                                             src_port,
                                             payload: final_resp.clone(),
                                         });
@@ -345,19 +487,31 @@ impl SipCore {
         }
     }
 
-    fn send_payload(&self, dst: std::net::SocketAddr, payload: Vec<u8>) {
+    fn send_payload(&self, peer: TransportPeer, payload: Vec<u8>) {
         if let Some(first_line) = payload
             .split(|b| *b == b'\n')
             .next()
             .and_then(|line| std::str::from_utf8(line).ok())
         {
-            log::info!("[sip ->] to {} {}", dst, first_line.trim());
+            log::info!(
+                "[sip ->] {}:{} -> {:?} {}",
+                self.cfg.advertised_ip,
+                self.cfg.sip_port,
+                peer,
+                first_line.trim()
+            );
         } else {
-            log::info!("[sip ->] to {} len={}", dst, payload.len());
+            log::info!(
+                "[sip ->] {}:{} -> {:?} len={}",
+                self.cfg.advertised_ip,
+                self.cfg.sip_port,
+                peer,
+                payload.len()
+            );
         }
 
         let _ = self.transport_tx.send(SipTransportRequest {
-            dst,
+            peer,
             src_port: self.cfg.sip_port,
             payload,
         });

@@ -12,7 +12,9 @@ use crate::session::types::Sdp;
 use crate::session::types::*;
 
 use crate::app::{self, AppEvent};
+use crate::config;
 use crate::media::Recorder;
+use crate::recording;
 use crate::rtp::tx::RtpTxHandle;
 use anyhow::Error;
 use log::{debug, info, warn};
@@ -119,6 +121,7 @@ impl Session {
                     self.peer_sdp = Some(offer);
                     let answer = self.build_answer_pcmu8k();
                     self.local_sdp = Some(answer.clone());
+                    let _ = self.tx_up.send(SessionOut::SipSend100);
                     let _ = self.tx_up.send(SessionOut::SipSend180);
                     let _ = self.tx_up.send(SessionOut::SipSend200 { answer });
                     self.state = SessState::Early;
@@ -334,7 +337,7 @@ impl Session {
                     self.state = SessState::Terminated;
                 }
                 (_, SessionIn::Abort(e)) => {
-                    eprintln!("call {} abort: {e:?}", self.call_id);
+                    warn!("call {} abort: {e:?}", self.call_id);
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
                     if let Err(e) = self.recorder.stop() {
@@ -462,13 +465,11 @@ impl Session {
         let started_at = self.started_wall.unwrap_or_else(std::time::SystemTime::now);
         let ended_at = std::time::SystemTime::now();
         let duration_sec = self.started_at.map(|s| s.elapsed().as_secs()).unwrap_or(0);
-        let recording_url = self.recording_base_url.as_ref().map(|base| {
-            format!(
-                "{}/recordings/{}/mixed.wav",
-                base.trim_end_matches('/'),
-                self.recorder.relative_path()
-            )
-        });
+        let recording_dir = self.recorder.relative_path();
+        let recording_url = self
+            .recording_base_url
+            .as_ref()
+            .map(|base| recording::recording_url(base, &recording_dir));
 
         let payload = json!({
             "callId": self.call_id,
@@ -487,11 +488,22 @@ impl Session {
             })),
         });
 
-        let client = Client::new();
+        let timeout = config::timeouts().ingest_http;
         let url = ingest_url.clone();
         let call_id = self.call_id.clone();
         self.ingest_sent = true;
         tokio::spawn(async move {
+            let client = match Client::builder().timeout(timeout).build() {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!(
+                        "[ingest] failed to build client for call {}: {:?}",
+                        call_id,
+                        e
+                    );
+                    return;
+                }
+            };
             if let Err(e) = client.post(url).json(&payload).send().await {
                 log::warn!("[ingest] failed to post call {}: {:?}", call_id, e);
             }

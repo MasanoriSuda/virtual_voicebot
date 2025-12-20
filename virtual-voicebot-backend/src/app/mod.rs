@@ -52,10 +52,24 @@ impl AppWorker {
     async fn run(mut self) {
         while let Some(ev) = self.rx.recv().await {
             match ev {
-                AppEvent::CallStarted { .. } => {
+                AppEvent::CallStarted { call_id } => {
+                    if call_id != self.call_id {
+                        log::warn!(
+                            "[app {}] CallStarted received for mismatched call_id={}",
+                            self.call_id,
+                            call_id
+                        );
+                    }
                     self.active = true;
                 }
-                AppEvent::AudioBuffered { pcm_mulaw, .. } => {
+                AppEvent::AudioBuffered { call_id, pcm_mulaw } => {
+                    if call_id != self.call_id {
+                        log::warn!(
+                            "[app {}] AudioBuffered received for mismatched call_id={}",
+                            self.call_id,
+                            call_id
+                        );
+                    }
                     if !self.active {
                         log::debug!(
                             "[app {}] dropped audio because call not active",
@@ -68,7 +82,16 @@ impl AppWorker {
                         log::warn!("[app {}] audio handling failed: {:?}", self.call_id, e);
                     }
                 }
-                AppEvent::CallEnded { .. } => break,
+                AppEvent::CallEnded { call_id } => {
+                    if call_id != self.call_id {
+                        log::warn!(
+                            "[app {}] CallEnded received for mismatched call_id={}",
+                            self.call_id,
+                            call_id
+                        );
+                    }
+                    break;
+                }
             }
         }
     }

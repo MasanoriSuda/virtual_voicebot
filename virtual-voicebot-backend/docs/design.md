@@ -44,6 +44,7 @@
 ## 3. ディレクトリ構成
 
 プロジェクト全体の構成は以下とする。
+※以下は設計上の目安（将来的な分割を含む）で、MVPでは `session/session.rs` や `app/mod.rs`、`http/mod.rs` に集約される場合がある。必要なタイミングで段階的に分割する。
 
 ```text
 virtual-voicebot-backend/
@@ -112,11 +113,11 @@ virtual-voicebot-backend/
    │  ├─ llm.rs
    │  └─ tts.rs
    │
-   ├─ http/               # Frontend向け REST/SSE/録音配信
+   ├─ http/               # Frontend向け参照/録音配信（MVP: 録音配信のみ）
    │  ├─ README.md
    │  ├─ mod.rs
-   │  ├─ routes.rs        # ルーティング（calls/utterances/events/recordings）
-   │  └─ sse.rs           # SSEストリーム（ping/イベント配信）
+   │  ├─ routes.rs        # 参照系ルーティング（将来/必要時）
+   │  └─ sse.rs           # SSEストリーム（将来/必要時、backend→frontend）
    │
    ├─ media/              # 録音生成・管理（保存/メタデータ）
    │  ├─ README.md
@@ -212,16 +213,25 @@ app  ──→ session ──→ sip ──→ transport
 ### 4.3 Frontend 連携（HTTP/SSE）レイヤ
 
 本プロジェクトは SIP/RTP（Zoiper）向けのネットワーク入口に加えて、
-Frontend 向けの HTTP/SSE 入口を持つ。
+Frontend 向けの HTTP 入口（録音配信）を持つ。SSE は backend→frontend の通知用途として将来導入する前提とする。
 
 - SIP/RTP 経路: `transport` → (`sip` / `rtp`) → `session` → `app` → `ai`
-- Frontend 経路: `http` → （通話ログ/録音情報の参照） → Frontend 表示
+- Frontend 経路（MVP）: backend → frontend（Call Events の push/emit。frontend は受信して取り込む。詳細は `docs/contract.md`）
+- 録音再生: frontend → backend（`Call.recordingUrl` の GET）
+
+MVP の http は `Call.recordingUrl` の GET（録音配信）のみを必須とする。
+参照系 REST API / SSE は将来の拡張であり、追加する場合は `docs/contract.md` の合意を正とする。
 
 Frontend ↔ Backend の API 契約は `docs/contract.md` を正とする。
 録音の保存と配信に関する内部設計は `docs/recording.md` を正とする。
 
 ※ 重要: `http` は通話制御や SIP/RTP の内部状態機械には立ち入らず、
-参照用に整形されたデータ（Call/Utterance/recording metadata）を提供することに徹する。
+参照/配信用に整形されたデータを提供することに徹する。Frontend から通話制御や入力を行う契約は持たない。
+
+Read Model 方針（MVP）：
+- Call read model store は未実装とする（`recordingUrl` は純関数で算出可能なため）。
+- 将来の参照API/SSE導入時に、http から参照する専用ストアを追加する。
+- app/session はストアを直接持たず、イベントで更新する。
 
 ## 5. 各モジュールの責務
 
@@ -498,21 +508,26 @@ SIP/RTP/セッションを直接操作しない
 
 通話の開始・終了を決定しない（app / session 側の責務）
 
-### 5.7 http モジュール（REST/SSE/録音配信）
+### 5.7 http モジュール（録音配信/参照API）
 
 目的：
-Frontend 向けに通話履歴・会話ログ・録音再生を提供するための HTTP API と SSE を提供する。
+Frontend 向けに録音再生を提供し、参照系 API / SSE は将来/必要時に提供する。
 
 責務：
-- `docs/contract.md` に基づく REST API を提供（例: calls / utterances）
-- `docs/contract.md` に基づく SSE を提供（call.started / utterance.partial/final / summary.updated / ping）
-- 録音配信 API を提供（`Call.recordingUrl` が参照する URL を配信）
+- `docs/contract.md` の `recordingUrl` が参照する録音配信（MVP 必須）
+- （将来/必要時）参照系の REST API を read-only で提供
+- （将来/必要時）backend→frontend の通知に限定した SSE を提供
 - （推奨）ブラウザ再生のための Range 対応（可能な範囲で）
 
 非責務：
+- Frontend からの通話制御/入力の受け口を持たない（契約外）
 - SIP/RTP のパースや RFC ロジックを扱わない（sip/rtp の責務）
 - セッション状態機械やコール制御判断をしない（session/app の責務）
 - 録音ファイルの生成・ミックス・エンコードをしない（media の責務）
+
+MVP 方針：
+- http は録音配信（recordingUrl の GET）のみ提供する。
+- 参照系 REST API / SSE は実装しない（必要になった時点で contract/design を更新して追加する）。
 
 ### 5.8 media モジュール（録音生成・保存）
 
@@ -539,6 +554,7 @@ Frontend 向けに通話履歴・会話ログ・録音再生を提供するた�
 ## 6. モジュール間インタフェース（イベント指向）
 
 実装上は、モジュール間のやりとりは 構造体/enum ベースのイベント と 非同期チャネル を基本とする。
+※Frontend 連携（backend→frontend の ingest/push）は外部経路（contract）であり、本章の内部モジュールイベント（sip/rtp/session/app/ai）には含めない。
 
 ### 6.1 主なイベントの流れ（例）
 
@@ -948,6 +964,10 @@ B2BUA 化（別の宛先への転送）
 - RTP→ASR、LLM→TTS→RTPは詰まりやすい。無制限キューは禁止。
 - チャネル容量を制限し、詰まったら「間引き」「最新優先」「切断」などの方針を app policy に置く。
 - “遅延が伸び続ける”より“少し欠ける”ほうが会話品質は良い、を原則とする。
+MVP のデフォルト方針：
+- RTP→ASR：最新優先（遅延を増やす古いPCMは破棄）
+- TTS→RTP：割り込み優先（新しい発話で古い送出を停止）
+- LLM：同一セッションで in-flight は1つ（同時実行しない）
 
 ### 14.7 Idempotency / Determinism（冪等性 / 決定性）
 - 同じイベントを複数回処理しても破綻しない（SIP再送、二重BYE、重複RTPなど）。

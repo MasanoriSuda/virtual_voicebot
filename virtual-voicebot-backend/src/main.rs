@@ -1,7 +1,10 @@
 mod ai;
 mod app;
+mod config;
 mod http;
+mod logging;
 mod media;
+mod recording;
 mod rtp;
 mod session;
 mod sip;
@@ -10,7 +13,7 @@ mod transport;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use tokio::net::UdpSocket;
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc::unbounded_channel;
 
 use crate::rtp::tx::RtpTxHandle;
@@ -22,17 +25,12 @@ use crate::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendReque
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    logging::init();
 
-    let sip_bind_ip = std::env::var("SIP_BIND_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let sip_port = std::env::var("SIP_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5060);
-    let rtp_port_cfg = std::env::var("RTP_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10000);
+    let cfg = config::Config::from_env()?;
+    let sip_bind_ip = cfg.sip_bind_ip;
+    let sip_port = cfg.sip_port;
+    let rtp_port_cfg = cfg.rtp_port;
 
     // --- セッションとRTPポート管理の共有マップ ---
     let session_map: SessionMap = Arc::new(Mutex::new(HashMap::new()));
@@ -50,9 +48,10 @@ async fn main() -> anyhow::Result<()> {
 
     // --- ソケット準備 (SIP/RTPポートは環境変数で指定) ---
     let sip_sock = UdpSocket::bind((sip_bind_ip.as_str(), sip_port)).await?;
+    let sip_tcp_listener = TcpListener::bind((sip_bind_ip.as_str(), sip_port)).await?;
     let rtp_sock = UdpSocket::bind(("0.0.0.0", rtp_port_cfg)).await?;
     let rtp_port = rtp_sock.local_addr()?.port();
-    let local_ip = std::env::var("LOCAL_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let local_ip = cfg.local_ip;
     let advertised_ip = std::env::var("ADVERTISED_IP").unwrap_or_else(|_| local_ip.clone());
     let advertised_rtp_port = std::env::var("ADVERTISED_RTP_PORT")
         .ok()
@@ -61,16 +60,17 @@ async fn main() -> anyhow::Result<()> {
     let recording_http_addr =
         std::env::var("RECORDING_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:18080".to_string());
 
-    println!(
-        "Listening SIP on {}, RTP on {}",
+    log::info!(
+        "Listening SIP UDP on {}, SIP TCP on {}, RTP on {}",
         sip_sock.local_addr()?,
+        sip_tcp_listener.local_addr()?,
         rtp_sock.local_addr()?
     );
-    println!("[recording] static HTTP on {}", recording_http_addr);
+    log::info!("[recording] static HTTP on {}", recording_http_addr);
 
     // 録音配信の簡易HTTPサーバ（/recordings/<callId>/... を静的配信）
     {
-        let base_dir = std::env::current_dir()?.join("storage/recordings");
+        let base_dir = std::env::current_dir()?.join(recording::RECORDINGS_DIR);
         http::spawn_recording_server(&recording_http_addr, base_dir).await;
     }
 
@@ -81,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             if let Err(e) = run_packet_loop(
                 sip_sock,
+                Some(sip_tcp_listener),
                 rtp_sock,
                 sip_tx,
                 sip_send_rx,
@@ -90,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
             {
-                eprintln!("[packet] loop error: {:?}", e);
+                log::error!("[packet] loop error: {:?}", e);
             }
         });
     }
@@ -111,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
                 for ev in events {
                     match ev {
                         SipEvent::IncomingInvite { call_id, from, to, offer } => {
-                            println!("[main] new INVITE, call_id={}", call_id);
+                            log::info!("[main] new INVITE, call_id={}", call_id);
 
                             let rtp_handle = RtpTxHandle::new();
                             let ingest_url = std::env::var("INGEST_CALL_URL").ok();
@@ -144,26 +145,26 @@ async fn main() -> anyhow::Result<()> {
                                 sess_tx.send(SessionIn::SipInvite { call_id, from, to, offer });
                         }
                         SipEvent::Ack { call_id } => {
-                            println!("[main] ACK for call_id={}", call_id);
+                            log::info!("[main] ACK for call_id={}", call_id);
                             if let Some(sess_tx) = session_registry.get(&call_id) {
                                 let _ = sess_tx.send(SessionIn::SipAck);
                             }
                         }
                         SipEvent::Bye { call_id } => {
-                            println!("[main] BYE for call_id={}", call_id);
+                            log::info!("[main] BYE for call_id={}", call_id);
                             if let Some(sess_tx) = session_registry.get(&call_id) {
                                 let _ = sess_tx.send(SessionIn::SipBye);
                             }
                         }
                         SipEvent::TransactionTimeout { call_id } => {
-                            println!("[main] TransactionTimeout for call_id={}", call_id);
+                            log::warn!("[main] TransactionTimeout for call_id={}", call_id);
                             if let Some(sess_tx) = session_registry.get(&call_id) {
                                 let _ =
                                     sess_tx.send(SessionIn::SipTransactionTimeout { call_id });
                             }
                         }
                 SipEvent::Unknown => {
-                    println!("[main] Unknown / unsupported SIP message");
+                    log::debug!("[main] Unknown / unsupported SIP message");
                 }
             }
         }
@@ -194,6 +195,14 @@ async fn main() -> anyhow::Result<()> {
                         if let Some(sess_tx) = session_registry.get(&call_id) {
                             let _ = sess_tx.send(SessionIn::AppHangup);
                         }
+                    }
+                    SessionOut::Metrics { name, value } => {
+                        log::info!(
+                            "[metrics] name={} value={} call_id={}",
+                            name,
+                            value,
+                            call_id
+                        );
                     }
                     other => {
                         sip_core.handle_session_out(&call_id, other);

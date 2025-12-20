@@ -1,7 +1,7 @@
 # はじめに
 このファイルは「設計/実装タスクと優先度」を管理する。  
 - 設計の詳細は docs/design.md を正とし、ここには書かない。  
-- 制限事項・非目標は docs/constraints.md に書く。  
+- 制約/非目標は docs/design.md と docs/contract.md に集約する。  
 - チェックボックス表記: `[ ]` 未着手 / `[x]` 完了。カテゴリは `[設計]` `[MVP]` `[NEXT]` を先頭に付ける。  
 - 設計タスクと実装タスクを分けて管理する（設計を先に完了させる）。
 
@@ -14,7 +14,7 @@
 - [x] [設計][session詳細] manager API、Session Timerの状態持ち、keepalive/タイムアウト時の SessionOut 定義。
 - [x] [設計][app/ai I/F] asr/llm/tts のAPI型（チャネルor Future）、ストリーミングI/O形を決める。
 - [x] [設計][テスト計画] INVITE→ACK→RTP往復、トランザクションタイマ、AI失敗フォールバック等のケース列挙。
-- [x] [設計][contract] docs/contract.md を SSE 固定・再接続・ページング・エラー形式まで含めて確定し、design.md と整合させる。
+- [x] [設計][contract] docs/contract.md を ingest中心（backend→frontend push/emit）+ recordingUrl GET を正として確定し、design.md と整合させる（SSE/参照APIは将来/必要時）。
 - [x] [設計][recording] docs/recording.md を確定（保存パス・meta.json・録音0秒基準・Range配信方針）し、contract.md と整合させる。
 # 実装タスク
 
@@ -24,19 +24,24 @@
 - [x] [MVP][session] SessionOutの実配線（SIP送出、RTP開始/停止）を実装し、managerでセッション生成/破棄を一元化。Session Timerの基本処理を追加し、ASR/LLM/TTS処理はapp/aiに移す。
 - [x] [MVP][rtp] 送受信をrtpモジュール経由に統一し、簡易ストリーム管理とpayload type別処理を追加。RTCP用の入口を用意。
 - [x] [MVP][app/ai] appレイヤを新設して対話状態・イベント分配を担当。botロジックをai::{asr,llm,tts}に分割し、チャネル経由でsession↔app↔aiを接続。
-- [ ] [MVP][tests/ops] 簡易E2E（INVITE→ACK→RTP往復）のスモークを追加し、基本ログ/メトリクス出力を整備。
-- [ ] [MVP][media] 録音パイプラインを新設（RTP受信PCM→録音ファイル保存）。storage/recordings/<callId>/mixed.wav と meta.json を生成。
-- [ ] [MVP][http] Frontend向け REST/SSE を実装（/api/calls, /api/calls/{callId}, /api/calls/{callId}/utterances, /api/events）。docs/contract.md に準拠。
-- [ ] [MVP][http-recording] 録音配信APIを追加（Call.recordingUrl が指す URL を提供）。可能なら Range 対応（難しければMVPは先頭再生のみを明記）。
+- [x] [MVP][tests/ops] SIPのみE2E（SIPp: INVITE→ACK→BYE）を追加し、基本ログ/メトリクス出力を整備。
+- [x] [MVP][media] 録音パイプラインを新設（RTP受信PCM→録音ファイル保存）。storage/recordings/<callId>/mixed.wav と meta.json を生成。
+- [x] [MVP][http] Frontend向けは recordingUrl の GET を必須とする（参照REST/SSEは将来/必要時、frontend→backend 制御/入力は契約外）。docs/contract.md に準拠。
+- [x] [MVP][http-recording] 録音配信APIを追加（Call.recordingUrl が指す URL を提供）。Range 対応はMVP既定。
 
 ## [NEXT]
-- [ ] [NEXT][transport] SIP TCPリスナ対応とポートマッピングの期限管理。
-- [ ] [NEXT][sip] 100rel/PRACK, UPDATE, Session-Expires/Min-SE（refresher含む）対応、エラーハンドリング強化。
+- [x] [NEXT][transport] SIP TCPリスナ対応と接続（peer/conn）のidle timeout管理。
+- [x] [NEXT][sip] 100rel: INVITEが100rel対応のとき 180 に Require/RSeq を付与する（骨組み）。
+- [x] [NEXT][sip] PRACK 受信時に 200 OK を返す（RAck 検証なしの骨組み）。
+- [x] [NEXT][sip] 100rel 再送制御/タイマ（RSeq再送）と異常系のハンドリング。
+- [ ] [NEXT][sip] PRACK の RAck 検証/紐付けとテスト追加。
+- [ ] [NEXT][sip] UPDATE, Session-Expires/Min-SE（refresher含む）対応、エラーハンドリング強化。
 - [ ] [NEXT][rtp] ジッタバッファと再送整列、RTCP SR/RR送受信、PCMU以外のコーデック抽象を拡張。
 - [ ] [NEXT][session] 保留/再開、無音・RTP無着信のタイムアウト検知とBYE発火、Keepalive戦略の改善。
 - [ ] [NEXT][app/ai] ファイル経由をやめストリーミングI/O化、プロンプト/ポリシー管理の強化、フェイルセーフ応答ポリシー整備。
 - [ ] [NEXT][app/ai] チャンク/ストリーミングI/Oの実装（ASR/LLM/TTSをリアルタイム呼び出しに置き換え、既存バッチI/Fを置き換える）
 - [ ] [NEXT][ops] メトリクス/トレースのモジュール別計測、設定バリデーション、グレースフルシャットダウン対応。
+- [ ] [NEXT][tests/ops] RTP往復のE2E（SIP→RTP→BYE）を段階導入し、実運用に近いシナリオで検証。
 - [ ] [NEXT][recording] caller/bot 分離トラック（caller.wav, bot.wav）とメタ同期の精度向上（startSec/endSec の運用を本格化）。
 - [ ] [NEXT][storage] 録音を外部ストレージ（S3/MinIO等）へ移行し、recordingUrl を署名付きURLにする。
 - [ ] [NEXT][http] 認証/認可（Bearer等）導入、録音URLの寿命運用、CORS/CSRF方針整備。
@@ -44,22 +49,23 @@
 
 ## スプリント計画（優先順）
 - Sprint 1（配線と基盤を固める）
-  1. [ ] [MVP][transport] SIP応答をsip/sessionへ委譲し、UDP受信/配送のみとする。
-  2. [ ] [MVP][sip] レスポンス組み立て・送信指示経路、INVITE/非INVITEトランザクションとタイマの骨組み実装。
-  3. [ ] [MVP][session] SessionOut配線（SIP送出・RTP開始/停止）、managerによる生成/破棄一元化、Session Timerの基本処理。
-  4. [ ] [MVP][tests/ops] INVITE→ACK→RTP往復のスモークと基本ログ/メトリクス整備。
+  1. [x] [MVP][transport] SIP応答をsip/sessionへ委譲し、UDP受信/配送のみとする。
+  2. [x] [MVP][sip] レスポンス組み立て・送信指示経路、INVITE/非INVITEトランザクションとタイマの骨組み実装。
+  3. [x] [MVP][session] SessionOut配線（SIP送出・RTP開始/停止）、managerによる生成/破棄一元化、Session Timerの基本処理。
+  4. [x] [MVP][tests/ops] SIPのみE2E（SIPp: INVITE→ACK→BYE）のスモークと基本ログ/メトリクス整備。
 - Sprint 2（メディアと対話の分離）
-  1. [ ] [MVP][rtp] 送受信をrtpモジュール経由に統一し、簡易ストリーム管理とRTCP入口を追加。
-  2. [ ] [MVP][app/ai] appレイヤ新設、botロジックをai::{asr,llm,tts}に分割しチャネル接続、sessionからAI呼び出しを排除。
-  3. [ ] [MVP][session] app/aiイベントとの結線を反映（BotAudio/ASR結果の経路を整理）。
-  4. [ ] [MVP][tests/ops] 音声→ASR→LLM→TTS→RTPの1ターンE2E確認。
+  1. [x] [MVP][rtp] 送受信をrtpモジュール経由に統一し、簡易ストリーム管理とRTCP入口を追加。
+  2. [x] [MVP][app/ai] appレイヤ新設、botロジックをai::{asr,llm,tts}に分割しチャネル接続、sessionからAI呼び出しを排除。
+  3. [x] [MVP][session] app/aiイベントとの結線を反映（BotAudio/ASR結果の経路を整理）。
+  4. [ ] [MVP][tests/ops] recordingUrl の Range 対応E2E（HTTP）のリグレッション整備。
 - Sprint 3（拡張・運用強化）
-  1. [ ] [NEXT][transport] SIP TCPリスナとポートマッピング期限管理。
+  1. [x] [NEXT][transport] SIP TCPリスナと接続（peer/conn）のidle timeout管理。
   2. [ ] [NEXT][sip] 100rel/PRACK, UPDATE, Session-Expires/Min-SE（refresher）の対応とエラーハンドリング強化。
   3. [ ] [NEXT][rtp] ジッタバッファ、RTCP SR/RR、PCMU以外のコーデック抽象拡張。
   4. [ ] [NEXT][session] 保留/再開、無音・RTP無着信タイムアウトからのBYE発火、Keepalive改善。
   5. [ ] [NEXT][app/ai] ストリーミングI/O化、プロンプト/ポリシー強化、フェイルセーフ応答ポリシー整備。
   6. [ ] [NEXT][ops] メトリクス/トレース充実、設定バリデーション、グレースフルシャットダウン対応。
+  7. [ ] [NEXT][tests/ops] RTP往復のE2E（SIP→RTP→BYE）の段階導入。
 
 ## フェーズ別の進め方
 

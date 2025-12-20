@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use crate::transport::TransportPeer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InviteTxState {
@@ -20,14 +20,14 @@ pub enum InviteTxAction {
 /// - 3xx–6xx の再送や Timer G/H/I の詳細は後続で拡張予定
 pub struct InviteServerTransaction {
     pub state: InviteTxState,
-    pub peer: SocketAddr,
+    pub peer: TransportPeer,
     last_provisional: Option<Vec<u8>>,
     last_final: Option<Vec<u8>>,
     pub invite_req: Option<crate::sip::SipRequest>,
 }
 
 impl InviteServerTransaction {
-    pub fn new(peer: SocketAddr) -> Self {
+    pub fn new(peer: TransportPeer) -> Self {
         Self {
             state: InviteTxState::Proceeding,
             peer,
@@ -88,14 +88,14 @@ pub struct NonInviteServerTransaction {
     pub state: NonInviteTxState,
     #[allow(dead_code)]
     #[allow(dead_code)]
-    pub peer: SocketAddr,
+    pub peer: TransportPeer,
     pub last_request: Option<crate::sip::SipRequest>,
     pub last_final: Option<Vec<u8>>,
     pub expires_at: std::time::Instant,
 }
 
 impl NonInviteServerTransaction {
-    pub fn new(peer: SocketAddr, req: crate::sip::SipRequest) -> Self {
+    pub fn new(peer: TransportPeer, req: crate::sip::SipRequest) -> Self {
         Self {
             state: NonInviteTxState::Trying,
             peer,

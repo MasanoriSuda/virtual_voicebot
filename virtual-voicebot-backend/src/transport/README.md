@@ -4,11 +4,12 @@
 
 主な責務
 - UDP/TCP ソケットの初期化・bind と受信ループの維持
-- 受信パケットを「送信元アドレス + 受信ポート + ペイロード（バイト列）」として上位に通知する
-  - SIP 現状: `SipInput { src: SocketAddr, data: Vec<u8> }`（受信ポートはソケットから取得可能）
+- 受信パケットを「peer + ペイロード（バイト列）」として上位に通知する
+  - SIP 現状: `SipInput { peer: TransportPeer, data: Vec<u8> }`
   - RTP 現状: `RawPacket { src: SocketAddr, dst_port: u16, data: Vec<u8> }`
 - 上位からの送信指示（宛先アドレス、送信元ポート、バイト列）をそのままネットワークに送る
-  - 送信指示型は transport 側で `TransportSendRequest { dst, src_port, payload }` として定義し、sip/session 依存を避ける
+  - 送信指示型は transport 側で `TransportSendRequest { peer, src_port, payload }` として定義し、sip/session 依存を避ける
+  - `TransportPeer` は `Udp(SocketAddr)` と `Tcp(ConnId)` を持つ
 
 上位モジュールとの関係
 - SIP のパース、応答コードの決定、レスポンス組み立ては `sip` / `session` が行い、送信指示として渡す
