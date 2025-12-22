@@ -111,7 +111,13 @@ async fn main() -> anyhow::Result<()> {
                 let events = sip_core.handle_input(&input);
                 for ev in events {
                     match ev {
-                        SipEvent::IncomingInvite { call_id, from, to, offer } => {
+                        SipEvent::IncomingInvite {
+                            call_id,
+                            from,
+                            to,
+                            offer,
+                            session_expires,
+                        } => {
                             log::info!("[main] new INVITE, call_id={}", call_id);
 
                             let rtp_handle = RtpTxHandle::new();
@@ -141,8 +147,13 @@ async fn main() -> anyhow::Result<()> {
                             }
 
                             rtp_handles.insert(call_id.clone(), rtp_handle);
-                            let _ =
-                                sess_tx.send(SessionIn::SipInvite { call_id, from, to, offer });
+                            let _ = sess_tx.send(SessionIn::SipInvite {
+                                call_id,
+                                from,
+                                to,
+                                offer,
+                                session_expires,
+                            });
                         }
                         SipEvent::Ack { call_id } => {
                             log::info!("[main] ACK for call_id={}", call_id);
@@ -156,6 +167,11 @@ async fn main() -> anyhow::Result<()> {
                                 let _ = sess_tx.send(SessionIn::SipBye);
                             }
                         }
+                        SipEvent::SessionRefresh { call_id, expires } => {
+                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                                let _ = sess_tx.send(SessionIn::SipSessionExpires { expires });
+                            }
+                        }
                         SipEvent::TransactionTimeout { call_id } => {
                             log::warn!("[main] TransactionTimeout for call_id={}", call_id);
                             if let Some(sess_tx) = session_registry.get(&call_id) {
@@ -163,11 +179,11 @@ async fn main() -> anyhow::Result<()> {
                                     sess_tx.send(SessionIn::SipTransactionTimeout { call_id });
                             }
                         }
-                SipEvent::Unknown => {
-                    log::debug!("[main] Unknown / unsupported SIP message");
+                        SipEvent::Unknown => {
+                            log::debug!("[main] Unknown / unsupported SIP message");
+                        }
+                    }
                 }
-            }
-        }
             }
             Some((call_id, out)) = session_out_rx.recv() => {
                 match out {
@@ -197,12 +213,21 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     SessionOut::Metrics { name, value } => {
-                        log::info!(
-                            "[metrics] name={} value={} call_id={}",
-                            name,
-                            value,
-                            call_id
-                        );
+                        if name == "rtp_in" {
+                            log::debug!(
+                                "[metrics] name={} value={} call_id={}",
+                                name,
+                                value,
+                                call_id
+                            );
+                        } else {
+                            log::info!(
+                                "[metrics] name={} value={} call_id={}",
+                                name,
+                                value,
+                                call_id
+                            );
+                        }
                     }
                     other => {
                         sip_core.handle_session_out(&call_id, other);

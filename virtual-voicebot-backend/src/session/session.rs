@@ -57,6 +57,7 @@ pub struct Session {
     keepalive_stop: Option<oneshot::Sender<()>>,
     session_timer_stop: Option<oneshot::Sender<()>>,
     session_timer_deadline: Option<Instant>,
+    session_expires: Duration,
     sending_audio: bool,
     // バッファ/タイマ
     speaking: bool,
@@ -101,6 +102,7 @@ impl Session {
             keepalive_stop: None,
             session_timer_stop: None,
             session_timer_deadline: None,
+            session_expires: SESSION_TIMEOUT,
             sending_audio: false,
             speaking: false,
             capture_started: None,
@@ -117,8 +119,11 @@ impl Session {
     async fn run(&mut self, mut rx: UnboundedReceiver<SessionIn>) {
         while let Some(ev) = rx.recv().await {
             match (self.state, ev) {
-                (SessState::Idle, SessionIn::SipInvite { offer, .. }) => {
+                (SessState::Idle, SessionIn::SipInvite { offer, session_expires, .. }) => {
                     self.peer_sdp = Some(offer);
+                    if let Some(expires) = session_expires {
+                        self.update_session_expires(expires);
+                    }
                     let answer = self.build_answer_pcmu8k();
                     self.local_sdp = Some(answer.clone());
                     let _ = self.tx_up.send(SessionOut::SipSend100);
@@ -318,6 +323,9 @@ impl Session {
                     });
                     self.state = SessState::Terminated;
                 }
+                (_, SessionIn::SipSessionExpires { expires }) => {
+                    self.update_session_expires(expires);
+                }
                 (_, SessionIn::SessionTimerFired) => {
                     warn!("[session {}] session timer fired", self.call_id);
                     self.stop_keepalive_timer();
@@ -418,12 +426,13 @@ impl Session {
             return;
         }
         let (stop_tx, mut stop_rx) = oneshot::channel();
-        self.session_timer_deadline = Some(Instant::now() + SESSION_TIMEOUT);
+        let timeout = self.session_expires;
+        self.session_timer_deadline = Some(Instant::now() + timeout);
         self.session_timer_stop = Some(stop_tx);
         let tx = self.tx_in.clone();
         tokio::spawn(async move {
             tokio::select! {
-                _ = tokio::time::sleep(SESSION_TIMEOUT) => {
+                _ = tokio::time::sleep(timeout) => {
                     let _ = tx.send(SessionIn::SessionTimerFired);
                 }
                 _ = &mut stop_rx => {}
@@ -436,6 +445,14 @@ impl Session {
             let _ = stop.send(());
         }
         self.session_timer_deadline = None;
+    }
+
+    fn update_session_expires(&mut self, expires: Duration) {
+        self.session_expires = expires;
+        if self.session_timer_stop.is_some() {
+            self.stop_session_timer();
+            self.start_session_timer();
+        }
     }
 
     async fn send_silence_frame(&mut self) -> Result<(), Error> {

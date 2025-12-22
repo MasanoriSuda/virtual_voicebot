@@ -16,7 +16,7 @@ pub enum InviteTxAction {
 }
 
 /// INVITE サーバトランザクションの簡易実装（UDP前提）。
-/// - 2xx 送信時は即 Terminated
+/// - 2xx 送信時は即 Terminated（2xx 再送は SipCore で ACK 到着まで管理）
 /// - 3xx–6xx の再送や Timer G/H/I の詳細は後続で拡張予定
 pub struct InviteServerTransaction {
     pub state: InviteTxState,

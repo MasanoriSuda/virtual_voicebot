@@ -61,12 +61,42 @@ pub fn timeouts() -> &'static Timeouts {
     TIMEOUTS.get_or_init(Timeouts::from_env)
 }
 
+#[derive(Clone, Debug)]
+pub struct RtpConfig {
+    pub jitter_max_reorder: u16,
+    pub rtcp_interval: Duration,
+}
+
+impl RtpConfig {
+    fn from_env() -> Self {
+        // Defaults (MVP/NEXT): jitter reorder 5, RTCP interval 5s.
+        // Env: RTP_JITTER_MAX_REORDER / RTCP_INTERVAL_MS.
+        Self {
+            jitter_max_reorder: env_u16("RTP_JITTER_MAX_REORDER", 5),
+            rtcp_interval: env_duration_ms("RTCP_INTERVAL_MS", 5_000),
+        }
+    }
+}
+
+static RTP_CONFIG: OnceLock<RtpConfig> = OnceLock::new();
+
+pub fn rtp_config() -> &'static RtpConfig {
+    RTP_CONFIG.get_or_init(RtpConfig::from_env)
+}
+
 fn env_duration_ms(key: &str, default_ms: u64) -> Duration {
     let ms = std::env::var(key)
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(default_ms);
     Duration::from_millis(ms)
+}
+
+fn env_u16(key: &str, default_value: u16) -> u16 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(default_value)
 }
 
 #[derive(Clone, Debug)]

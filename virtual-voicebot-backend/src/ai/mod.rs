@@ -169,7 +169,7 @@ pub async fn handle_user_question_from_whisper_llm_only(text: &str) -> Result<St
 
 fn build_llm_prompt(user_text: &str) -> String {
     format!(
-        "以下の質問に「はい」または「いいえ」で回答し、回答全体を30文字以内にまとめてください。質問: {}",
+        "以下の質問に120文字以内にまとめてください。質問: {}",
         user_text
     )
 }
@@ -257,7 +257,8 @@ pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
 async fn call_gemini(question: &str) -> Result<String> {
     let client = http_client(config::timeouts().ai_http)?;
 
-    let api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
+    let api_key =
+        std::env::var("GEMINI_API_KEY").map_err(|_| anyhow!("GEMINI_API_KEY must be set"))?;
 
     let model =
         std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash-lite".to_string());

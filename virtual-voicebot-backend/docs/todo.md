@@ -34,9 +34,9 @@
 - [x] [NEXT][sip] 100rel: INVITEが100rel対応のとき 180 に Require/RSeq を付与する（骨組み）。
 - [x] [NEXT][sip] PRACK 受信時に 200 OK を返す（RAck 検証なしの骨組み）。
 - [x] [NEXT][sip] 100rel 再送制御/タイマ（RSeq再送）と異常系のハンドリング。
-- [ ] [NEXT][sip] PRACK の RAck 検証/紐付けとテスト追加。
-- [ ] [NEXT][sip] UPDATE, Session-Expires/Min-SE（refresher含む）対応、エラーハンドリング強化。
-- [ ] [NEXT][rtp] ジッタバッファと再送整列、RTCP SR/RR送受信、PCMU以外のコーデック抽象を拡張。
+- [x] [NEXT][sip] PRACK の RAck 検証/紐付けとテスト追加。
+- [x] [NEXT][sip] UPDATE, Session-Expires/Min-SE（refresher含む）対応、エラーハンドリング強化。
+- [x] [NEXT][rtp] ジッタバッファと再送整列、RTCP SR/RR送受信、PCMU以外のコーデック抽象を拡張。
 - [ ] [NEXT][session] 保留/再開、無音・RTP無着信のタイムアウト検知とBYE発火、Keepalive戦略の改善。
 - [ ] [NEXT][app/ai] ファイル経由をやめストリーミングI/O化、プロンプト/ポリシー管理の強化、フェイルセーフ応答ポリシー整備。
 - [ ] [NEXT][app/ai] チャンク/ストリーミングI/Oの実装（ASR/LLM/TTSをリアルタイム呼び出しに置き換え、既存バッチI/Fを置き換える）
@@ -57,7 +57,7 @@
   1. [x] [MVP][rtp] 送受信をrtpモジュール経由に統一し、簡易ストリーム管理とRTCP入口を追加。
   2. [x] [MVP][app/ai] appレイヤ新設、botロジックをai::{asr,llm,tts}に分割しチャネル接続、sessionからAI呼び出しを排除。
   3. [x] [MVP][session] app/aiイベントとの結線を反映（BotAudio/ASR結果の経路を整理）。
-  4. [ ] [MVP][tests/ops] recordingUrl の Range 対応E2E（HTTP）のリグレッション整備。
+  4. [x] [MVP][tests/ops] recordingUrl の Range 対応E2E（HTTP）のリグレッション整備。
 - Sprint 3（拡張・運用強化）
   1. [x] [NEXT][transport] SIP TCPリスナと接続（peer/conn）のidle timeout管理。
   2. [ ] [NEXT][sip] 100rel/PRACK, UPDATE, Session-Expires/Min-SE（refresher）の対応とエラーハンドリング強化。

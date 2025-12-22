@@ -126,6 +126,7 @@ fn method_to_str(method: &SipMethod) -> &str {
         SipMethod::Cancel => "CANCEL",
         SipMethod::Options => "OPTIONS",
         SipMethod::Register => "REGISTER",
+        SipMethod::Update => "UPDATE",
         SipMethod::Prack => "PRACK",
         SipMethod::Unknown(token) => token.as_str(),
     }

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<scenario name="basic_uas_invite_prack_bad_rack">
+  <send retrans="500">
+    <![CDATA[
+INVITE sip:service@[remote_ip]:[remote_port] SIP/2.0
+Via: SIP/2.0/UDP [local_ip]:[local_port];branch=z9hG4bK-[call_number]
+From: <sip:uac@[local_ip]>;tag=[call_number]
+To: <sip:uas@[remote_ip]>
+Call-ID: [call_id]
+CSeq: 1 INVITE
+Contact: <sip:uac@[local_ip]:[local_port]>
+Max-Forwards: 70
+Subject: SIPp 100rel UAC (bad RAck)
+Supported: 100rel
+Content-Type: application/sdp
+Content-Length: [len]
+
+v=0
+o=- 0 0 IN IP4 [local_ip]
+s=-
+c=IN IP4 [local_ip]
+t=0 0
+m=audio [media_port] RTP/AVP 0
+a=rtpmap:0 PCMU/8000
+    ]]>
+  </send>
+
+  <recv response="100" optional="true"/>
+  <recv response="180" rtd="true">
+    <action>
+      <ereg regexp="Require: *100rel" search_in="msg" check_it="true"/>
+      <ereg regexp="RSeq: *1" search_in="msg" check_it="true"/>
+    </action>
+  </recv>
+
+  <send>
+    <![CDATA[
+PRACK sip:service@[remote_ip]:[remote_port] SIP/2.0
+Via: SIP/2.0/UDP [local_ip]:[local_port];branch=z9hG4bK-[call_number]
+From: [last_From]
+To: [last_To]
+Call-ID: [call_id]
+CSeq: 2 PRACK
+RAck: 1 999 INVITE
+Contact: <sip:uac@[local_ip]:[local_port]>
+Max-Forwards: 70
+Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="481"/>
+</scenario>

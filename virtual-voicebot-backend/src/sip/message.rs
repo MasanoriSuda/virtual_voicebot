@@ -34,6 +34,7 @@ pub enum SipMethod {
     Cancel,
     Options,
     Register,
+    Update,
     Prack,
     #[allow(dead_code)]
     Unknown(String),

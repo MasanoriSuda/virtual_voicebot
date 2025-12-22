@@ -63,7 +63,7 @@
 | --- | --- | --- | --- |
 | (新規) | INVITE 受信 | Proceeding | 100/180 を送信（任意） |
 | Proceeding | 再送 INVITE | Proceeding | 最新の 1xx を再送 |
-| Proceeding | 2xx 送信 | Terminated | 2xx 送信。2xx はダイアログ層で ACK 管理（トランザクションは即終了） |
+| Proceeding | 2xx 送信 | Terminated | 2xx 送信。ACK 到着まで 2xx 再送を UAS コアで管理（トランザクションは即終了） |
 | Proceeding | 3xx–6xx 送信 | Completed | 3xx–6xx 送信、Timer G/H 開始 |
 | Completed | 再送 INVITE | Completed | 直近の最終応答を再送 |
 | Completed | Timer G 発火 | Completed | 最終応答を再送（T1 倍増、上限 T2） |

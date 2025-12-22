@@ -17,6 +17,9 @@ pub struct StreamEntry {
     pub ssrc: u32,
     pub seq: u16,
     pub ts: u32,
+    pub packet_count: u32,
+    pub octet_count: u32,
+    pub last_rtp_ts: u32,
 }
 
 impl StreamManager {
@@ -34,6 +37,9 @@ impl StreamManager {
                 ssrc,
                 seq,
                 ts,
+                packet_count: 0,
+                octet_count: 0,
+                last_rtp_ts: ts,
             },
         );
     }
@@ -53,5 +59,10 @@ impl StreamManager {
 
     pub async fn is_empty(&self) -> bool {
         self.inner.lock().await.is_empty()
+    }
+
+    pub async fn list(&self) -> Vec<(String, StreamEntry)> {
+        let map = self.inner.lock().await;
+        map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 }

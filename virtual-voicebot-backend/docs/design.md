@@ -313,7 +313,7 @@ sip 側が適切な Via/To/From/CSeq 等を補完し、テキスト化・送信�
 
 補足（トランザクション詳細の要約、詳細は docs/sip.md）：
 
-- INVITE サーバトランザクション: Proceeding → Completed → Confirmed → Terminated。2xx 送信時は即 Terminated、3xx–6xx 送信時は Timer G/H、ACK 受信で Confirmed→Timer I→Terminated。
+- INVITE サーバトランザクション: Proceeding → Completed → Confirmed → Terminated。2xx 送信時はトランザクション自体は Terminated としつつ、ACK 到着まで 2xx を再送する（UASコアで管理）。3xx–6xx 送信時は Timer G/H、ACK 受信で Confirmed→Timer I→Terminated。
 - 非 INVITE サーバトランザクション: Trying → Proceeding → Completed → Terminated。最終応答送信で Timer J、発火で Terminated。
 - UAS で使うタイマは G/H/I（INVITE）と J（非 INVITE）。発火時は TransactionTimeout を session へ通知。
 - sip→transport 送信は「構造化メッセージ＋宛先」を送信キューへ渡し、テキスト化と送信は transport 層が担当。

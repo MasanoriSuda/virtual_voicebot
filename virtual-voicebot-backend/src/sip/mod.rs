@@ -47,6 +47,7 @@ pub enum SipEvent {
         from: String,
         to: String,
         offer: Sdp,
+        session_expires: Option<Duration>,
     },
     /// 既存ダイアログに対する ACK
     Ack {
@@ -59,6 +60,11 @@ pub enum SipEvent {
     /// トランザクションのタイムアウト通知（Timer J など）
     TransactionTimeout {
         call_id: CallId,
+    },
+    /// Session-Expires を受けたときのセッション更新通知
+    SessionRefresh {
+        call_id: CallId,
+        expires: Duration,
     },
     Unknown,
 }
@@ -83,11 +89,47 @@ struct InviteContext {
     tx: InviteServerTransaction,
     req: SipRequest,
     reliable: Option<ReliableProvisional>,
+    expected_rack: Option<RAckHeader>,
+    session_timer: Option<SessionTimerConfig>,
+    final_ok: Option<FinalOkRetransmit>,
+    final_ok_payload: Option<Vec<u8>>,
 }
 
 struct ReliableProvisional {
-    rseq: u32,
     stop: Arc<AtomicBool>,
+}
+
+struct FinalOkRetransmit {
+    stop: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Refresher {
+    Uac,
+    Uas,
+}
+
+impl Refresher {
+    fn as_str(self) -> &'static str {
+        match self {
+            Refresher::Uac => "uac",
+            Refresher::Uas => "uas",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SessionTimerConfig {
+    expires: Duration,
+    refresher: Refresher,
+    min_se: u64,
+}
+
+#[derive(Debug, Clone)]
+struct RAckHeader {
+    rseq: u32,
+    cseq: u32,
+    method: String,
 }
 
 fn parse_offer_sdp(body: &[u8]) -> Option<Sdp> {
@@ -120,6 +162,22 @@ fn decode_sip_text(data: &[u8]) -> Result<String, ()> {
     String::from_utf8(data.to_vec()).map_err(|_| ())
 }
 
+fn parse_rack(value: &str) -> Option<RAckHeader> {
+    let mut parts = value.split_whitespace();
+    let rseq_str = parts.next()?;
+    let cseq_str = parts.next()?;
+    let method = parts.next()?.to_string();
+    let rseq = rseq_str.parse::<u32>().ok()?;
+    let cseq = cseq_str.parse::<u32>().ok()?;
+    Some(RAckHeader { rseq, cseq, method })
+}
+
+fn rack_matches(expected: &RAckHeader, actual: &RAckHeader) -> bool {
+    expected.rseq == actual.rseq
+        && expected.cseq == actual.cseq
+        && expected.method.eq_ignore_ascii_case(&actual.method)
+}
+
 fn header_has_token(value: Option<&str>, token: &str) -> bool {
     let Some(value) = value else {
         return false;
@@ -133,6 +191,78 @@ fn header_has_token(value: Option<&str>, token: &str) -> bool {
 fn supports_100rel(req: &SipRequest) -> bool {
     header_has_token(req.header_value("Supported"), "100rel")
         || header_has_token(req.header_value("Require"), "100rel")
+}
+
+const LOCAL_MIN_SECS: u64 = 90;
+
+fn parse_session_expires(value: &str) -> Option<(u64, Option<Refresher>)> {
+    let mut parts = value.split(';');
+    let expires = parts.next()?.trim().parse::<u64>().ok()?;
+    let mut refresher = None;
+    for part in parts {
+        let part = part.trim();
+        if let Some(val) = part.strip_prefix("refresher=") {
+            refresher = match val.trim().to_ascii_lowercase().as_str() {
+                "uac" => Some(Refresher::Uac),
+                "uas" => Some(Refresher::Uas),
+                _ => None,
+            };
+        }
+    }
+    Some((expires, refresher))
+}
+
+fn parse_min_se(value: &str) -> Option<u64> {
+    value.trim().parse::<u64>().ok()
+}
+
+enum SessionTimerError {
+    Invalid,
+    TooSmall { min_se: u64 },
+}
+
+fn session_timer_from_request(
+    req: &SipRequest,
+) -> Result<Option<SessionTimerConfig>, SessionTimerError> {
+    let Some(raw) = req.header_value("Session-Expires") else {
+        return Ok(None);
+    };
+    let (expires, refresher_opt) = parse_session_expires(raw).ok_or(SessionTimerError::Invalid)?;
+    let min_se_header = match req.header_value("Min-SE") {
+        Some(value) => parse_min_se(value).ok_or(SessionTimerError::Invalid)?,
+        None => 0,
+    };
+    let min_se = std::cmp::max(LOCAL_MIN_SECS, min_se_header);
+    if expires < min_se {
+        return Err(SessionTimerError::TooSmall { min_se });
+    }
+    let refresher = refresher_opt.unwrap_or(Refresher::Uac);
+    Ok(Some(SessionTimerConfig {
+        expires: Duration::from_secs(expires),
+        refresher,
+        min_se,
+    }))
+}
+
+fn apply_session_timer_headers(resp: &mut SipResponse, cfg: &SessionTimerConfig) {
+    resp.headers.push(SipHeader::new(
+        "Session-Expires",
+        format!(
+            "{};refresher={}",
+            cfg.expires.as_secs(),
+            cfg.refresher.as_str()
+        ),
+    ));
+    resp.headers
+        .push(SipHeader::new("Min-SE", cfg.min_se.to_string()));
+    let supported = resp
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("Supported"))
+        .map(|h| h.value.as_str());
+    if !header_has_token(supported, "timer") {
+        resp.headers.push(SipHeader::new("Supported", "timer"));
+    }
 }
 
 #[derive(Debug)]
@@ -199,6 +329,7 @@ impl SipCore {
             SipMethod::Ack => self.handle_ack(headers.call_id),
             SipMethod::Bye => self.handle_non_invite(req, headers, peer, 200, "OK", true),
             SipMethod::Register => self.handle_non_invite(req, headers, peer, 200, "OK", false),
+            SipMethod::Update => self.handle_update(req, headers, peer),
             SipMethod::Prack => self.handle_prack(req, headers, peer),
             _ => vec![SipEvent::Unknown],
         }
@@ -212,11 +343,37 @@ impl SipCore {
     ) -> Vec<SipEvent> {
         // 再送判定: 既存トランザクションがあれば最新レスポンスを再送し、イベントは出さない
         if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
-            if let Some(action) = ctx.tx.on_retransmit() {
+            let (action, final_ok, tx_peer) = (
+                ctx.tx.on_retransmit(),
+                ctx.final_ok_payload.clone(),
+                ctx.tx.peer,
+            );
+            if let Some(action) = action {
                 self.send_tx_action(action, peer);
+            } else if let Some(payload) = final_ok {
+                self.send_payload(tx_peer, payload);
             }
             return vec![];
         }
+
+        let session_timer = match session_timer_from_request(&req) {
+            Ok(timer) => timer,
+            Err(SessionTimerError::Invalid) => {
+                if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
+                    self.send_payload(peer, resp.to_bytes());
+                }
+                return vec![];
+            }
+            Err(SessionTimerError::TooSmall { min_se }) => {
+                if let Some(mut resp) =
+                    response_simple_from_request(&req, 422, "Session Interval Too Small")
+                {
+                    resp.headers.push(SipHeader::new("Min-SE", min_se.to_string()));
+                    self.send_payload(peer, resp.to_bytes());
+                }
+                return vec![];
+            }
+        };
 
         // 新規 INVITE: トランザクション生成（レスポンスは SessionOut 経由で送るためここでは送信しない）
         let mut tx = InviteServerTransaction::new(peer);
@@ -225,28 +382,52 @@ impl SipCore {
             tx,
             req: req.clone(),
             reliable: None,
+            expected_rack: None,
+            session_timer: session_timer.clone(),
+            final_ok: None,
+            final_ok_payload: None,
         };
         self.invites.insert(headers.call_id.clone(), ctx);
 
         let offer = parse_offer_sdp(&req.body).unwrap_or_else(|| Sdp::pcmu("0.0.0.0", 0));
+        if let Ok(sdp) = std::str::from_utf8(&req.body) {
+            let sdp_inline = sdp.replace('\r', "").replace('\n', "\\n");
+            log::info!(
+                "[sip invite sdp] call_id={} sdp={}",
+                headers.call_id,
+                sdp_inline
+            );
+        } else {
+            log::info!(
+                "[sip invite sdp] call_id={} sdp_len={}",
+                headers.call_id,
+                req.body.len()
+            );
+        }
         vec![SipEvent::IncomingInvite {
             call_id: headers.call_id,
             from: headers.from,
             to: headers.to,
             offer,
+            session_expires: session_timer.map(|cfg| cfg.expires),
         }]
     }
 
     fn handle_ack(&mut self, call_id: CallId) -> Vec<SipEvent> {
+        let mut stop_final_ok = false;
         let (action, terminate, peer_opt) = if let Some(ctx) = self.invites.get_mut(&call_id) {
             let peer = ctx.tx.peer;
             let action = ctx.tx.on_ack();
             let terminate = ctx.tx.state == InviteTxState::Terminated;
+            stop_final_ok = ctx.final_ok.is_some();
             (action, terminate, Some(peer))
         } else {
             (None, false, None)
         };
 
+        if stop_final_ok {
+            self.stop_final_ok_retransmit(&call_id);
+        }
         if let Some(action) = action {
             if let Some(peer) = peer_opt {
                 self.send_tx_action(action, peer);
@@ -301,6 +482,48 @@ impl SipCore {
         headers: CoreHeaderSnapshot,
         peer: TransportPeer,
     ) -> Vec<SipEvent> {
+        let rack = match req.header_value("RAck").and_then(parse_rack) {
+            Some(rack) => rack,
+            None => {
+                log::warn!(
+                    "[sip 100rel] invalid/missing RAck call_id={}",
+                    headers.call_id
+                );
+                if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
+                    self.send_payload(peer, resp.to_bytes());
+                }
+                return vec![];
+            }
+        };
+
+        let expected = self
+            .invites
+            .get(&headers.call_id)
+            .and_then(|ctx| ctx.expected_rack.clone());
+        let Some(expected) = expected else {
+            log::warn!(
+                "[sip 100rel] unexpected PRACK (no pending reliable provisional) call_id={}",
+                headers.call_id
+            );
+            if let Some(resp) = response_simple_from_request(&req, 481, "Call/Transaction Does Not Exist") {
+                self.send_payload(peer, resp.to_bytes());
+            }
+            return vec![];
+        };
+
+        if !rack_matches(&expected, &rack) {
+            log::warn!(
+                "[sip 100rel] RAck mismatch call_id={} expected={:?} got={:?}",
+                headers.call_id,
+                expected,
+                rack
+            );
+            if let Some(resp) = response_simple_from_request(&req, 481, "Call/Transaction Does Not Exist") {
+                self.send_payload(peer, resp.to_bytes());
+            }
+            return vec![];
+        }
+
         let tx = self
             .non_invites
             .entry(headers.call_id.clone())
@@ -322,6 +545,61 @@ impl SipCore {
         vec![]
     }
 
+    fn handle_update(
+        &mut self,
+        req: SipRequest,
+        headers: CoreHeaderSnapshot,
+        peer: TransportPeer,
+    ) -> Vec<SipEvent> {
+        let session_timer = match session_timer_from_request(&req) {
+            Ok(timer) => timer,
+            Err(SessionTimerError::Invalid) => {
+                if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
+                    self.send_payload(peer, resp.to_bytes());
+                }
+                return vec![];
+            }
+            Err(SessionTimerError::TooSmall { min_se }) => {
+                if let Some(mut resp) =
+                    response_simple_from_request(&req, 422, "Session Interval Too Small")
+                {
+                    resp.headers.push(SipHeader::new("Min-SE", min_se.to_string()));
+                    self.send_payload(peer, resp.to_bytes());
+                }
+                return vec![];
+            }
+        };
+
+        let tx = self
+            .non_invites
+            .entry(headers.call_id.clone())
+            .or_insert_with(|| NonInviteServerTransaction::new(peer, req.clone()));
+
+        if let Some(resp) = tx.on_retransmit() {
+            self.send_payload(peer, resp);
+            return vec![];
+        }
+
+        if let Some(mut resp) = response_simple_from_request(&req, 200, "OK") {
+            if let Some(cfg) = &session_timer {
+                apply_session_timer_headers(&mut resp, cfg);
+            }
+            let bytes = resp.to_bytes();
+            tx.on_final_sent(bytes.clone());
+            tx.last_request = Some(req);
+            self.send_payload(peer, bytes);
+        }
+
+        if let Some(cfg) = session_timer {
+            vec![SipEvent::SessionRefresh {
+                call_id: headers.call_id,
+                expires: cfg.expires,
+            }]
+        } else {
+            vec![]
+        }
+    }
+
     fn start_reliable_provisional(
         &mut self,
         call_id: &CallId,
@@ -337,7 +615,23 @@ impl SipCore {
 
         let stop = Arc::new(AtomicBool::new(false));
         let rseq = 1;
-        ctx.reliable = Some(ReliableProvisional { rseq, stop: stop.clone() });
+        let expected_rack = ctx
+            .req
+            .header_value("CSeq")
+            .and_then(|value| parse_cseq_header(value).ok())
+            .map(|cseq| RAckHeader {
+                rseq,
+                cseq: cseq.num,
+                method: cseq.method,
+            });
+        if expected_rack.is_none() {
+            log::warn!(
+                "[sip 100rel] failed to build expected RAck call_id={}",
+                call_id
+            );
+        }
+        ctx.expected_rack = expected_rack;
+        ctx.reliable = Some(ReliableProvisional { stop: stop.clone() });
 
         let transport_tx = self.transport_tx.clone();
         let src_port = self.cfg.sip_port;
@@ -380,6 +674,59 @@ impl SipCore {
             if let Some(rel) = ctx.reliable.take() {
                 rel.stop.store(true, Ordering::SeqCst);
             }
+        }
+    }
+
+    fn start_final_ok_retransmit(
+        &mut self,
+        call_id: &CallId,
+        peer: TransportPeer,
+        payload: Vec<u8>,
+    ) {
+        let Some(ctx) = self.invites.get_mut(call_id) else {
+            return;
+        };
+        if let Some(prev) = ctx.final_ok.take() {
+            prev.stop.store(true, Ordering::SeqCst);
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        ctx.final_ok = Some(FinalOkRetransmit { stop: stop.clone() });
+        ctx.final_ok_payload = Some(payload.clone());
+
+        let transport_tx = self.transport_tx.clone();
+        let src_port = self.cfg.sip_port;
+        let call_id = call_id.clone();
+        tokio::spawn(async move {
+            let mut interval = Duration::from_millis(500);
+            let max_duration = Duration::from_secs(32);
+            let start = Instant::now();
+            loop {
+                sleep(interval).await;
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                if start.elapsed() >= max_duration {
+                    log::warn!("[sip] 2xx retransmit timeout (no ACK) call_id={}", call_id);
+                    break;
+                }
+                let _ = transport_tx.send(SipTransportRequest {
+                    peer,
+                    src_port,
+                    payload: payload.clone(),
+                });
+                interval = std::cmp::min(interval * 2, Duration::from_secs(4));
+            }
+            stop.store(true, Ordering::SeqCst);
+        });
+    }
+
+    fn stop_final_ok_retransmit(&mut self, call_id: &CallId) {
+        if let Some(ctx) = self.invites.get_mut(call_id) {
+            if let Some(final_ok) = ctx.final_ok.take() {
+                final_ok.stop.store(true, Ordering::SeqCst);
+            }
+            ctx.final_ok_payload = None;
         }
     }
 
@@ -433,7 +780,7 @@ impl SipCore {
             }
             SessionOut::SipSend200 { answer } => {
                 if let Some(ctx) = self.invites.get_mut(call_id) {
-                    if let Some(resp) = response_final_with_sdp(
+                    if let Some(mut resp) = response_final_with_sdp(
                         &ctx.req,
                         200,
                         "OK",
@@ -441,9 +788,27 @@ impl SipCore {
                         self.cfg.sip_port,
                         &answer,
                     ) {
+                        if let Some(cfg) = &ctx.session_timer {
+                            apply_session_timer_headers(&mut resp, cfg);
+                        }
+                        if let Ok(sdp) = std::str::from_utf8(&resp.body) {
+                            let sdp_inline = sdp.replace('\r', "").replace('\n', "\\n");
+                            log::info!(
+                                "[sip 200 sdp] call_id={} sdp={}",
+                                call_id,
+                                sdp_inline
+                            );
+                        } else {
+                            log::info!(
+                                "[sip 200 sdp] call_id={} sdp_len={}",
+                                call_id,
+                                resp.body.len()
+                            );
+                        }
                         let bytes = resp.to_bytes();
                         ctx.tx.on_final_sent(bytes.clone(), 200);
                         let peer = ctx.tx.peer;
+                        self.start_final_ok_retransmit(call_id, peer, bytes.clone());
                         self.send_payload(peer, bytes);
                         self.stop_reliable_provisional(call_id);
                     }

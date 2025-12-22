@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 // types.rs
+use std::time::Duration;
+
 #[derive(Clone, Debug)]
 pub struct Sdp {
     pub ip: String,
@@ -48,6 +50,7 @@ pub enum SessionIn {
         from: String,
         to: String,
         offer: Sdp,
+        session_expires: Option<Duration>,
     },
     /// SIP側からのACK
     SipAck,
@@ -72,6 +75,10 @@ pub enum SessionIn {
     SessionTimerFired,
     /// keepalive tick
     MediaTimerTick,
+    /// Session-Expires による更新（INVITE/UPDATE）
+    SipSessionExpires {
+        expires: Duration,
+    },
     Abort(anyhow::Error),
 }
 
