@@ -1,5 +1,7 @@
 # docs/todo_session.md
 
+全体のTODOは `docs/todo.md` を参照。
+
 ## 挙動を変えないリファクタ
 - [x] `writing.rs` の SessionOut 配線スタブにコメントを足し、sip/rtp/app への出口の責務を明示したまま現挙動を維持する。
 - [x] session manager の骨組み（create/get/destroy/list）を types 近辺に定義し、現行マップ操作をラップするだけの薄いAPIを導入する（挙動は同じ）。

@@ -14,14 +14,22 @@
 
 ---
 
-## 2. 対応 RFC とスコープ
+## 2. 参照RFC とスコープ
 
-### 2.1 対応予定 RFC
+### 2.1 参照RFC
 
+#### Signaling (SIP)
 - **RFC 3261**: SIP: Session Initiation Protocol
 - **RFC 3262**: Reliability of Provisional Responses (100rel/PRACK)
 - **RFC 3311**: The Session Initiation Protocol (SIP) UPDATE Method
 - **RFC 4028**: Session Timers in the Session Initiation Protocol (SIP)
+- **RFC 3263**: Session Initiation Protocol (SIP): Locating SIP Servers（DNSによるSIPサーバ探索）
+
+#### Media / SDP
+- **RFC 3264**: An Offer/Answer Model with the Session Description Protocol (SDP)（SDP Offer/Answer）
+- **RFC 8866**: SDP: Session Description Protocol（SDP本体。RFC 4566 を obsolete）
+- **RFC 3550**: RTP: A Transport Protocol for Real-Time Applications（RTP/RTCP）
+
 
 ### 2.2 段階的スコープ
 
@@ -38,6 +46,14 @@
 - RFC 3311: UPDATE 対応
 - RFC 4028: Session Timer 対応
 - 複数セッション・高負荷環境でのスケール
+
+### 2.3 未決事項（今後決める）
+
+- UASのみで運用する前提で良いか、Registrar/Proxy機能を将来含めるか（RFC3261 10/16）
+- SIPS/TLS を運用要件として想定するか（RFC3261 12.1.1, 18.2）
+- Forking を扱う必要があるか（複数2xx/複数ダイアログ）（RFC3261 13.1）
+- 認証（401/407）をスコープに入れるか（RFC3261 8.2/22系）
+- OPTIONSの「INVITEと同等の可否」判定に使うアプリ状態（Busy等）の定義（RFC3261 11.2）
 
 ---
 

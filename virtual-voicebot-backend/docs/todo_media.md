@@ -1,5 +1,7 @@
 # docs/todo_media.md
 
+全体のTODOは `docs/todo.md` を参照。
+
 ## 目的
 - media モジュールの録音設計・実装タスクを管理する。
 

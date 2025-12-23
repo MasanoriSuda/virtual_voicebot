@@ -1,5 +1,7 @@
 # docs/todo_rtp.md
 
+全体のTODOは `docs/todo.md` を参照。
+
 ## 挙動を変えないリファクタ
 - [x] `transport::packet::run_rtp_udp_loop` 内のRTP処理と session 直行部分にコメントを追加し、rtpモジュールへの移行前提を明示する（挙動は維持）。
 - [x] `session.rs` 内のRTP送信処理（RtpPacket生成・build・UdpSocket送信）を関数に分離し、将来rtpに移すフックを用意する（挙動は維持）。

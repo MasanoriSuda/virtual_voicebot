@@ -1,5 +1,7 @@
 # docs/todo_transport.md
 
+全体のTODOは `docs/todo.md` を参照。
+
 ## [MVP][transport] SIP応答をsip/sessionへ委譲するタスク
 
 ### 挙動を変えないリファクタ
