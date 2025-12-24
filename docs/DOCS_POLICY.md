@@ -1,0 +1,178 @@
+# ドキュメントポリシー (DOCS_POLICY)
+
+**ステータス**: ドラフト（レビュー待ち）
+**作成日**: 2025-12-25
+
+---
+
+## 1. 目的
+
+本ドキュメントは、virtual-voicebot リポジトリにおけるドキュメント管理の基本方針を定めます。
+
+**目標**:
+- 正本（Source of Truth）を明確にし、重複・矛盾を防ぐ
+- ドキュメントの発見可能性を高める
+- 更新漏れ・陳腐化を防ぐ
+
+---
+
+## 2. ドキュメント階層
+
+```
+virtual-voicebot/
+├── README.md                    # リポジトリ概要（エントリポイント）
+├── CONTRIBUTING.md              # 開発参加ガイド
+├── STYLE.md                     # プロジェクト共通スタイル（正本）
+├── PRINCIPLES.md                # 価値観・原則
+│
+├── docs/
+│   ├── DOCS_POLICY.md           # 本ドキュメント
+│   ├── DOCS_INDEX.md            # ドキュメント一覧
+│   ├── contract.md              # Frontend ↔ Backend API契約
+│   └── style/
+│       └── rust.md              # Rust固有スタイル（STYLE.mdに従属）
+│
+└── virtual-voicebot-backend/
+    ├── README.md                # Backend概要・クイックスタート
+    ├── AGENTS.md                # AI/Codex向け指示書（正本）
+    │
+    ├── docs/
+    │   ├── design.md            # アーキテクチャ設計（正本）
+    │   ├── sip.md               # SIP詳細設計（正本）
+    │   ├── rtp.md               # RTP詳細設計（正本）
+    │   ├── session.md           # Session詳細設計（正本）
+    │   ├── recording.md         # 録音設計（正本）
+    │   ├── tests.md             # テスト計画
+    │   ├── tests_e2e_sipp.md    # SIPp E2E手順（正本）
+    │   ├── todo.md              # TODO管理（正本）
+    │   └── gap-analysis.md      # RFC準拠ギャップ分析
+    │
+    ├── src/*/README.md          # モジュール概要（docs/*.mdへのリンク含む）
+    └── test/README.md           # E2Eランナー使用方法
+```
+
+---
+
+## 3. 正本ルール
+
+### 3.1 正本の定義
+
+**正本（Source of Truth）** とは、あるトピックについて唯一の権威ある情報源となるドキュメントです。
+
+### 3.2 正本の識別
+
+正本ファイルには、ファイル先頭に以下を記載します：
+
+```markdown
+<!-- SOURCE_OF_TRUTH: [トピック名] -->
+```
+
+例:
+```markdown
+<!-- SOURCE_OF_TRUTH: SIP詳細設計 -->
+# SIP モジュール詳細設計 (`src/sip`)
+```
+
+### 3.3 正本一覧
+
+| トピック | 正本ファイル | 補助ファイル |
+|---------|-------------|-------------|
+| アーキテクチャ | `docs/design.md` | - |
+| API契約 | `docs/contract.md` | - |
+| SIP設計 | `docs/sip.md` | `src/sip/README.md` |
+| RTP設計 | `docs/rtp.md` | `src/rtp/README.md` |
+| Session設計 | `docs/session.md` | `src/session/README.md` |
+| 録音設計 | `docs/recording.md` | - |
+| TODO管理 | `docs/todo.md` | - |
+| SIPp E2E | `docs/tests_e2e_sipp.md` | `test/README.md` |
+| AI/Codex指示 | `AGENTS.md` | - |
+| スタイル | `STYLE.md` | `docs/style/*.md` |
+
+### 3.4 矛盾時の優先順位
+
+矛盾がある場合は以下の順で優先：
+
+1. **正本ファイル** > 補助ファイル
+2. **docs/*.md** > src/*/README.md
+3. **STYLE.md** > docs/style/*.md
+4. **design.md** > 個別モジュール設計
+
+---
+
+## 4. ファイル命名規則
+
+### 4.1 README.md
+
+- 各ディレクトリの入口として配置
+- 内容: 概要、クイックスタート、詳細ドキュメントへのリンク
+- **Readme.md** は使用しない（大文字統一）
+
+### 4.2 docs/ 配下
+
+| パターン | 用途 | 例 |
+|---------|------|-----|
+| `{topic}.md` | 設計・仕様ドキュメント | `sip.md`, `rtp.md` |
+| `todo.md` | TODO管理（単一ファイル） | - |
+| `todo_{module}.md` | **廃止予定** | - |
+| `tests_{type}.md` | テスト関連 | `tests_e2e_sipp.md` |
+
+### 4.3 廃止するパターン
+
+| パターン | 理由 | 代替 |
+|---------|------|------|
+| `todo_{module}.md` | 分散管理で更新漏れ | `todo.md` 内セクション |
+| `current-spec.md` | 空ファイル | 削除 |
+| 重複AGENTS.md | ルートがTBD | backend版を正本 |
+
+---
+
+## 5. 更新ルール
+
+### 5.1 コードと同時更新
+
+仕様・責務・フローが変わる修正では、**先にドキュメントを更新**してからコードを変更する。
+
+参照: `AGENTS.md §8 変更手順`
+
+### 5.2 TODO管理
+
+- `docs/todo.md` を唯一のTODO管理ファイルとする
+- 完了タスクは `[x]` でマークし、定期的にアーカイブセクションに移動
+- モジュール別TODOファイル（todo_sip.md等）は廃止予定
+
+### 5.3 陳腐化防止
+
+- `src/*/README.md` は詳細を持たず、`docs/*.md` へのリンクを中心とする
+- 実装と乖離したドキュメントを発見した場合は、Issueを作成して追跡
+
+---
+
+## 6. アーカイブポリシー
+
+### 6.1 アーカイブ対象
+
+- 完了済みの詳細TODOファイル
+- 旧バージョンの設計ドキュメント
+- 開発日誌（advenc_calendar/）
+
+### 6.2 アーカイブ方法
+
+**選択肢（要決定）**:
+- A) `docs/archive/` ディレクトリに移動
+- B) git履歴で管理し、ファイル自体は削除
+- C) 現状維持（完了済みも残す）
+
+---
+
+## 7. レビューチェックリスト
+
+ドキュメント変更時は以下を確認：
+
+- [ ] 正本ファイルを更新したか（補助ファイルだけの更新は避ける）
+- [ ] 重複箇所がないか確認したか
+- [ ] リンク切れがないか確認したか
+- [ ] DOCS_INDEX.md に反映が必要か確認したか
+
+---
+
+*本ドキュメントは定期的にレビューし、運用に合わせて更新します。*

@@ -11,37 +11,10 @@
 - `docs/todo_*.md`: モジュール別の TODO（詳細タスク）。
 
 # 設計タスク
-- [x] [設計][レイヤ配線] transportは入出力＋配送のみ、SIP応答はsip/sessionで組み立てる流れを明文化・図示。
-- [x] [設計][イベント設計] SessionIn/SessionOut と app↔ai のイベント種別・チャネル方向を確定。
-- [x] [設計][エラーポリシー] SIPトランザクションタイマ、RTP無着信、AI失敗時の動作（再送/謝罪/終了）を決定。
-- [x] [設計][sipトランザクション詳細] 状態遷移表と Timer A/B/E/F… の扱い、送信キューI/Fを具体化。
-- [x] [設計][rtpストリーム詳細] SSRC/Seq/Timestamp管理と簡易ジッタポリシー、RTCP送受のシグネチャ定義。
-- [x] [設計][session詳細] manager API、Session Timerの状態持ち、keepalive/タイムアウト時の SessionOut 定義。
-- [x] [設計][app/ai I/F] asr/llm/tts のAPI型（チャネルor Future）、ストリーミングI/O形を決める。
-- [x] [設計][テスト計画] INVITE→ACK→RTP往復、トランザクションタイマ、AI失敗フォールバック等のケース列挙。
-- [x] [設計][contract] docs/contract.md を ingest中心（backend→frontend push/emit）+ recordingUrl GET を正として確定し、design.md と整合させる（SSE/参照APIは将来/必要時）。
-- [x] [設計][recording] docs/recording.md を確定（保存パス・meta.json・録音0秒基準・Range配信方針）し、contract.md と整合させる。
+る。
 # 実装タスク
 
-## [MVP]
-- [x] [MVP][transport] SIP応答生成をsip/sessionに委譲し、UDPの受信/配送に専念（100/180/200/BYE/REGISTER即時返信を撤去）。
-- [x] [MVP][sip] レスポンス組み立て＋送信指示の経路を用意し、INVITE/非INVITEトランザクション状態機械とタイマを実装。SessionOutを受けて送信まで繋ぐ。
-- [x] [MVP][session] SessionOutの実配線（SIP送出、RTP開始/停止）を実装し、managerでセッション生成/破棄を一元化。Session Timerの基本処理を追加し、ASR/LLM/TTS処理はapp/aiに移す。
-- [x] [MVP][rtp] 送受信をrtpモジュール経由に統一し、簡易ストリーム管理とpayload type別処理を追加。RTCP用の入口を用意。
-- [x] [MVP][app/ai] appレイヤを新設して対話状態・イベント分配を担当。botロジックをai::{asr,llm,tts}に分割し、チャネル経由でsession↔app↔aiを接続。
-- [x] [MVP][tests/ops] SIPのみE2E（SIPp: INVITE→ACK→BYE）を追加し、基本ログ/メトリクス出力を整備。
-- [x] [MVP][media] 録音パイプラインを新設（RTP受信PCM→録音ファイル保存）。storage/recordings/<callId>/mixed.wav と meta.json を生成。
-- [x] [MVP][http] Frontend向けは recordingUrl の GET を必須とする（参照REST/SSEは将来/必要時、frontend→backend 制御/入力は契約外）。docs/contract.md に準拠。
-- [x] [MVP][http-recording] 録音配信APIを追加（Call.recordingUrl が指す URL を提供）。Range 対応はMVP既定。
-
 ## [NEXT]
-- [x] [NEXT][transport] SIP TCPリスナ対応と接続（peer/conn）のidle timeout管理。
-- [x] [NEXT][sip] 100rel: INVITEが100rel対応のとき 180 に Require/RSeq を付与する（骨組み）。
-- [x] [NEXT][sip] PRACK 受信時に 200 OK を返す（RAck 検証なしの骨組み）。
-- [x] [NEXT][sip] 100rel 再送制御/タイマ（RSeq再送）と異常系のハンドリング。
-- [x] [NEXT][sip] PRACK の RAck 検証/紐付けとテスト追加。
-- [x] [NEXT][sip] UPDATE, Session-Expires/Min-SE（refresher含む）対応、エラーハンドリング強化。
-- [x] [NEXT][rtp] ジッタバッファと再送整列、RTCP SR/RR送受信、PCMU以外のコーデック抽象を拡張。
 - [ ] [NEXT][session] 保留/再開、無音・RTP無着信のタイムアウト検知とBYE発火、Keepalive戦略の改善。
 - [ ] [NEXT][app/ai] ファイル経由をやめストリーミングI/O化、プロンプト/ポリシー管理の強化、フェイルセーフ応答ポリシー整備。
 - [ ] [NEXT][app/ai] チャンク/ストリーミングI/Oの実装（ASR/LLM/TTSをリアルタイム呼び出しに置き換え、既存バッチI/Fを置き換える）
