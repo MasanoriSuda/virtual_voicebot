@@ -1,5 +1,9 @@
 # uas-voice-bot: Design Document
 
+> **I/F 正本の優先順位（2025-12-28 追加、Refs Issue #7）**
+> - app↔session/ai I/F の詳細は `app.md` / `ai.md` が正本
+> - 本ドキュメントと矛盾する場合は各正本を優先
+
 ## 1. 目的と概要
 
 `uas-voice-bot` は、Rust で実装された SIP UAS ベースの音声対話ボットです。
@@ -47,9 +51,12 @@
 - RFC 4028: Session Timer 対応
 - 複数セッション・高負荷環境でのスケール
 
-### 2.3 未決事項（今後決める）
+### 2.3 確定事項・未決事項
 
-- UASのみで運用する前提で良いか、Registrar/Proxy機能を将来含めるか（RFC3261 10/16）
+**確定事項（2025-12-28 更新、Refs Issue #7）**:
+- **UAS 優先**: MVP は UAS のみで運用する。Registrar/Proxy 機能は将来検討（RFC3261 10/16）
+
+**未決事項（今後決める）**:
 - SIPS/TLS を運用要件として想定するか（RFC3261 12.1.1, 18.2）
 - Forking を扱う必要があるか（複数2xx/複数ダイアログ）（RFC3261 13.1）
 - 認証（401/407）をスコープに入れるか（RFC3261 8.2/22系）
@@ -380,7 +387,7 @@ PCM ⇔ RTP ペイロード変換
 - RTCP は SR/RR のインタフェースのみ定義（実装は後続スプリント）。品質通知は将来的にイベント化。
 - 上位（session/app/ai）は SSRC/Seq/Timestamp/ジッタを意識せず、PCMイベントだけ扱う。
 
-補足（app/ai I/F の要約、詳細は docs/voice_bot_flow.md）：
+補足（app/ai I/F の要約、詳細は app.md/ai.md（正本）、voice_bot_flow.md（補助））：
 
 - ASR/TTS はチャネルベースのストリーミング、LLM は 1リクエスト1レスポンスの Future を基本とするハイブリッド。
 - app→ai: AsrInputPcm / LlmRequest / TtsRequest、ai→app: AsrResult/AsrError / LlmResponse/LlmError / TtsPcmChunk/TtsError。
@@ -628,7 +635,9 @@ PcmOutputChunk（app が TTS から受け取った PCM を session 経由で rtp
 
 app → session
 
-SessionAction（応答コード、SDP 付き応答指示、BYE 指示など）
+BotAudioReady / HangupRequested（TTS音声送信指示 / BYE送信指示、app.md §2 参照）
+
+> **旧名廃止（2025-12-28）**: SessionAction は廃止。BotAudioReady/HangupRequested を使用すること。
 
 ※具体的な型名/フィールドは実装時に調整するが、このレベルの分解を維持する。
 
@@ -643,11 +652,11 @@ SessionAction（応答コード、SDP 付き応答指示、BYE 指示など）
 [session → sip]     SendProvisionalResponse (100/180等), SendFinalResponse (200/4xx/5xx),
                     SendPrack, SendUpdate               : 応答/再送/UPDATE送信の指示（構造体ベース）
 
-[rtp → session]     RtpIn (ts, payload, ssrc/pt/seq)    : RTP受信のペイロード通知
-[session → rtp]     StartRtpTx/StopRtpTx, RtpOutFrame   : 送信開始/停止とPCM→RTP化の指示
+[rtp → session]     PcmInputChunk                       : デコード済みPCMのみをsessionへ通知（rtp.md §6.4 参照）
+[session → rtp]     StartRtpTx/StopRtpTx, PcmOutputChunk : 送信開始/停止とPCM送出の指示
 
-[app → session]     SessionAction (例: 180/200+SDP/Bye) : 高レベルなコール制御指示
-[session → app]     CallStarted/CallEnded/Error, MediaReady : 通話状態/エラーの通知
+[app → session]     BotAudioReady/HangupRequested       : TTS音声送信指示/BYE送信指示（app.md §2 参照）
+[session → app]     CallStarted/PcmReceived/CallEnded/SessionTimeout : 通話状態の通知（app.md §2 参照）
 
 [rtp → session]     PcmInputChunk                       : PCM入力をsessionへ（session→app→ai::asrの経路）
 [session → app]     PcmReceived                         : PCMをappへ通知
@@ -755,7 +764,7 @@ SIP レベルの実際のメッセージ送信は sip に依頼
 
 一定時間 RTP が来ない場合：
 
-RtpTimeout イベントを session や app に通知
+RtpTimeout イベントを session に通知（app へは session 経由で転送）
 
 パケット異常（SSRC 不一致など）：
 
@@ -789,7 +798,7 @@ SIP / RTP / AI の代表的なエラー検知からユーザ影響までを明�
   - 検知レイヤ: ai::asr / ai::llm / ai::tts（各クライアントがリトライ後に失敗判定）
   - 通知イベント: `ai::asr → app` に `AsrError`、`ai::llm → app` に `LlmError`、`ai::tts → app` に `TtsError`（call_id/理由付き）
   - 最終判断レイヤ: app（フォールバック方針を決める）
-    - 基本方針: 初回失敗は謝罪定型を生成し `app → ai::tts → app → session → rtp` で返して継続。同一フェーズで連続失敗（回数は config 管理、既定: 2回）で `app → session` に `SessionAction::Bye` を送り終了。
+    - 基本方針: 初回失敗は謝罪定型を生成し `app → ai::tts → app → session → rtp` で返して継続。同一フェーズで連続失敗（回数は config 管理、既定: 2回）で `app → session` に `HangupRequested` を送り終了。
   - UAC への振る舞い: 初回は謝罪音声を返して継続。連続失敗時は謝罪音声の後に BYE（もしくは即 BYE）で切断。
 
 ## 9. 音声対話フロー（概要）
@@ -967,7 +976,7 @@ B2BUA 化（別の宛先への転送）
 
 ### 13.8 テスト方針（品質の規則）
 - プロトコル層（sip/rtp）はユニットテストを優先（パース/ビルド、ジッタ整列、デコード等）。
-- app は状態機械のテストを優先（入力イベント→期待する出力イベント/SessionAction）。
+- app は状態機械のテストを優先（入力イベント→期待する出力イベント: BotAudioReady/HangupRequested 等）。
 - 統合テストは「擬似UAC（INVITE→RTP→BYE）」の最小シナリオを用意し、回帰を防ぐ。
 
 ### 13.9 変更手順（ドキュメント駆動の規則）

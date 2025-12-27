@@ -10,6 +10,11 @@
 
 ## 2. イベントフロー
 
+### 必須フィールド規約（2025-12-28 追加、Refs Issue #7）
+- **全イベント**: `call_id` / `session_id`（MVP では同一値、ai.md §1 参照）
+- **PCM 系イベント**: 上記に加え `stream_id` を必須とする
+- 参照: design.md §13.1、ai.md §1
+
 ### session → app イベント
 | イベント | 用途 |
 |----------|------|
@@ -21,8 +26,10 @@
 ### app → session イベント
 | イベント | 用途 |
 |----------|------|
-| `BotAudioReady` | TTS 音声を RTP へ送信指示 |
+| `BotAudioReady` | TTS 音声を RTP へ送信指示（payload: `PcmOutputChunk`） |
 | `HangupRequested` | BYE 送信指示 |
+
+> **補足**: `BotAudioReady` は PCM チャンク（`PcmOutputChunk`）を含む。session は受け取った PCM を rtp へ転送する。
 
 ### app → ai イベント
 - [ai.md](ai.md) §5 参照

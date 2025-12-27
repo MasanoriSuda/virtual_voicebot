@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: Session詳細設計 -->
 # session モジュール詳細設計 (`src/session`)
 
 ## 1. 目的・スコープ
@@ -14,7 +15,7 @@
 ## 3. Session Timer の状態管理
 - 持つタイマ: keepalive/無音監視タイマ（MVP）、Session-Expires/Min-SE リフレッシュタイマ（拡張時）。
 - ライフサイクル: Confirmed 遷移で開始。再INVITE/UPDATE 受信で残り時間を更新。BYE/エラー/終了で全タイマ停止。
-- 発火時の通知: `SessionTimeout` を `session → app` に送る。必要に応じて `SessionAction::Bye` を自動生成して `session → sip` へ送る（ポリシー次第）。
+- 発火時の通知: `SessionTimeout` を `session → app` に送る。app が `HangupRequested` を返した場合、session が BYE を sip へ送る。
 - 簡略化（MVP）: Session-Expires/Min-SE は無効化可。keepaliveのみでタイムアウト検知、失効後は警告→BYE など単純ルールを適用。
 
 -## 4. keepalive / タイムアウト時の SessionOut
@@ -23,19 +24,22 @@
 - 任意メトリクス: `SessionOut::Metrics { name: "session_timeout", value: 1 }` などを発行しても良い。
 
 ## 4. イベントと責務（RTP/PCM とコール制御の分離）
+
+> **正本参照（2025-12-28 追記）**: session↔app イベント名の正本は [app.md](app.md) §2
+
 - SIP起点入力: `SessionIn::SipInvite` / `SipAck` / `SipBye` / `SipTransactionTimeout`
-- メディア入力: `SessionIn::MediaRtpIn`（payloadのみを受け、パースは transport/rtp）、keepalive tick は `MediaTimerTick`
-- app入力: `SessionIn::AppBotAudioFile` / `AppHangup`
+- メディア入力: `SessionIn::PcmInputChunk`（rtp からデコード済み PCM を受ける）、keepalive tick は `MediaTimerTick`
+- app入力: `SessionIn::BotAudioReady` / `HangupRequested`（app.md §2 参照）
 - SIP出力: `SessionOut::SipSend180` / `SipSend200` / `SipSendBye200`
-- RTP出力: `SessionOut::RtpStartTx` / `RtpStopTx`
-- app出力: `SessionOut::AppSessionTimeout`（タイマ失効通知）、将来のTTS依頼 `AppRequestTts`
+- RTP出力: `SessionOut::RtpStartTx` / `RtpStopTx` / `PcmOutputChunk`（app から受けた PCM を rtp へ転送）
+- app出力: `SessionOut::CallStarted` / `PcmReceived` / `CallEnded` / `SessionTimeout`（app.md §2 参照）
 - メトリクス: `SessionOut::Metrics`
 
 ## 5. 他モジュールとの責務境界
 - sip: 受信 SIP を `SessionIn::SipInvite/Ack/Bye/...` で通知。応答送信は `SessionOut::SipSend*` で依頼。
-- rtp: I/O と SSRC/Seq 管理・簡易ジッタは rtp。session は開始/停止と送信先設定だけ伝える（`RtpStartTx/RtpStopTx`）。`MediaRtpIn` は transport/rtp からの通知を受けるだけ。
-- app/ai: 対話・ASR/LLM/TTS は app/ai で完結。session はコール制御と PCM 経路制御のみ。音声バッファは `AppEvent::AudioBuffered` として受け渡す。
+- rtp: I/O と SSRC/Seq 管理・簡易ジッタは rtp。session は開始/停止と送信先設定だけ伝える（`RtpStartTx/RtpStopTx`）。rtp からは `PcmInputChunk` で PCM を受け取る。
+- app/ai: 対話・ASR/LLM/TTS は app/ai で完結。session はコール制御と PCM 経路制御のみ。app からは `BotAudioReady`（payload: `PcmOutputChunk`）で TTS 音声を受け取り、`HangupRequested` で BYE 指示を受ける（app.md §2 参照）。session は受け取った `PcmOutputChunk` を rtp へ転送する。
 
 ## 6. MVP と拡張
-- MVP: keepaliveタイマを簡易 Session Timer として運用（失効で `SessionOut::AppSessionTimeout` を通知し、必要に応じて app が切断判断を行う）。Session-Expires/Min-SE はオフでも可。
+- MVP: keepaliveタイマを簡易 Session Timer として運用（失効で `SessionTimeout` を通知し、必要に応じて app が切断判断を行う）。Session-Expires/Min-SE はオフでも可。
 - NEXT: 4028 準拠の refresher 管理、再INVITE/UPDATE 送受、無音監視ポリシーの高度化。

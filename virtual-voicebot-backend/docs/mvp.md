@@ -37,7 +37,7 @@ http (録音配信のみ /recordings/…)
 1. transport が SIP UDP を受信 → sip へ `SipInput`
 2. sip が INVITE をパースし SessionOut で 180/200 を送出 → transport 経由で送信
 3. main が SipEvent を受けて session を生成（rtp/recording 配線）
-4. RTP 受信: transport → rtp → session に `MediaRtpIn`
+4. RTP 受信: transport → rtp → session に `PcmInputChunk`（旧名 MediaRtpIn は廃止）
 5. session が録音開始、音声を media に書き込み
 6. BYE/タイムアウトで録音停止し ingest に通話情報＋recordingUrl を POST
 7. http モジュールが `/recordings/<日時_callId>/mixed.wav` を配信、フロントは recordingUrl を再生

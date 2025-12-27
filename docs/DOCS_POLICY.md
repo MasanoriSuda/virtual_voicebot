@@ -110,6 +110,9 @@ virtual-voicebot/
 2. **docs/*.md** > src/*/README.md
 3. **STYLE.md** > docs/style/*.md
 4. **design.md** > 個別モジュール設計
+5. **I/F/AC（詳細仕様）** → `app.md/ai.md/tests.md` が `design.md` より優先
+
+> **2025-12-28 追加**: I/F 詳細・AC は各正本が design.md より優先（Refs Issue #7）
 
 ---
 
