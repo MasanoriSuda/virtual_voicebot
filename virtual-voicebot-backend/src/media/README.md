@@ -4,6 +4,9 @@
 - 通話中の音声データ（PCM等）を受け取り、録音ファイルとして保存する。
 - 録音のメタデータ（開始時刻、長さ、発話区間との整合に必要な情報）を管理する。
 
+## 詳細設計
+- 正本: [docs/recording.md](../../docs/recording.md)
+
 ## 責務
 - session/rtp から渡される音声ストリームを録音用に収集する
 - 形式（例: wav）で storage/recordings/<callId>/ に書き出す

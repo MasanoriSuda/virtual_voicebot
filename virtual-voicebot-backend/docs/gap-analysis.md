@@ -1,6 +1,18 @@
-# Gap Analysis: 汎用SIPサーバー（Asterisk相当）を目指すための機能ギャップ
+<!-- SOURCE_OF_TRUTH: RFC準拠ギャップ分析・仕様 -->
+# Gap Analysis: UAS優先のボイスボット向けSIPサーバー
 
-本文書は、現在の virtual-voicebot-backend の実装と、RFC仕様および Asterisk のような汎用SIPサーバーとして必要な機能との差分を分析します。
+| 項目 | 値 |
+|------|-----|
+| **Status** | Draft |
+| **Owner** | TBD |
+| **Last Updated** | 2025-12-27 |
+| **SoT (Source of Truth)** | Yes - RFC準拠/仕様 |
+
+---
+
+本文書は、virtual-voicebot-backend の実装状況を分析し、**UAS（着信）機能を最優先**とした開発方針に基づくギャップを整理します。
+
+**開発方針**: まずは UAS を完成させ、相互接続性を確保する。認証・暗号化・UAC・Proxy は将来実装として後工程に回す。
 
 ---
 
@@ -15,483 +27,352 @@
 7. [RFC 3264 (Offer/Answer SDP) ギャップ](#7-rfc-3264-offeranswer-sdp-ギャップ)
 8. [RFC 3550 (RTP/RTCP) ギャップ](#8-rfc-3550-rtprtcp-ギャップ)
 9. [RFC 8866 (SDP) ギャップ](#9-rfc-8866-sdp-ギャップ)
-10. [汎用SIPサーバー必須機能](#10-汎用sipサーバー必須機能)
-11. [優先度別実装ロードマップ](#11-優先度別実装ロードマップ)
+10. [優先度別ロードマップ](#10-優先度別ロードマップ)
+11. [Acceptance Criteria (SIPp検証)](#11-acceptance-criteria-sipp検証)
 
 ---
 
 ## 1. エグゼクティブサマリー
 
-### 現状評価
+### 1.1 UAS優先の現状評価
 
-| カテゴリ | 現在の成熟度 | 汎用SIP要件 | ギャップ |
-|---------|-------------|------------|---------|
-| SIP UAS (着信) | 60% | 100% | **中** |
-| SIP UAC (発信) | 0% | 100% | **致命的** |
-| Proxy機能 | 0% | 100% | **致命的** |
-| 認証 | 0% | 100% | **致命的** |
-| トランスポート | 50% | 100% | **高** |
-| RTP/RTCP | 40% | 100% | **高** |
-| SDP/Offer-Answer | 30% | 100% | **高** |
-| 追加機能 (DTMF等) | 0% | 100% | **高** |
+| カテゴリ | 実装状態 | テストカバレッジ | 優先度 | 次のアクション |
+|---------|----------|-----------------|--------|----------------|
+| **SIP UAS 基本** | Partial | Unit: ✓ / E2E: ✓ | P0 | CANCEL対応 |
+| **SIP UAS 拡張** | Partial | Unit: ✓ | P1 | OPTIONS, 486 |
+| **RTP/RTCP** | Partial | Unit: ✓ / E2E: Partial | P0 | SDES追加 |
+| **SDP パース** | Partial | Unit: ✓ | P1 | rtpmap/fmtp |
+| **DTMF 受信** | Not | - | P0 | Goertzel実装 |
+| **E2E テスト** | Partial | E2E: Partial | P0 | シナリオ拡充 |
+| トランスポート (UDP/TCP) | Implemented | Unit: ✓ / E2E: ✓ | - | 完了 |
 
-### 総合評価
+### 1.2 Deferred（後工程）項目
 
-現在の実装は**ボイスボット専用のUAS**として機能しているが、汎用SIPサーバーとしては以下の致命的なギャップがある：
+以下は将来実装予定として優先度を下げますが、削除はしません。
 
-1. **UAC機能の完全欠如** - 発信ができない
-2. **Proxy機能なし** - ルーティング/フォワードができない
-3. **認証機構なし** - セキュリティが確保できない
-4. **DNS解決なし** - SIP URI解決ができない
+| カテゴリ | 実装状態 | 備考 |
+|---------|----------|------|
+| 認証 (Digest/401/407) | Deferred | Spec策定後に実装 |
+| 暗号化 (TLS) | Deferred | Spec策定後に実装 |
+| 暗号化 (SRTP) | Deferred | Spec策定後に実装 |
+| SIP UAC (発信) | Deferred | UAS完了後に着手 |
+| Proxy機能 | Deferred | 現時点で不要 |
+| DNS SRV/NAPTR | Deferred | UAC実装時に必要 |
+
+### 1.3 凡例
+
+| 実装状態 | 意味 |
+|---------|------|
+| Implemented | 完全実装済み |
+| Partial | 部分実装（制限あり） |
+| Not | 未実装（優先対象） |
+| Deferred | 優先度を下げて後工程 |
+
+### 1.4 総合評価
+
+現在の実装は**ボイスボット専用のUAS**として機能している。UAS完成度を上げることで、SIPpおよび一般的なSIPクライアントとの相互接続性を確保することが最優先目標。
+
+**P0 で解決すべきギャップ**:
+1. CANCEL 受信処理の欠如
+2. DTMF 受信機能の欠如
+3. E2E テストシナリオの不足
 
 ---
 
 ## 2. RFC 3261 (SIP Core) ギャップ
 
-### 2.1 メソッド対応
+### 2.1 メソッド対応（UAS観点）
 
-| メソッド | RFC要件 | 現状 | ギャップ | 優先度 |
-|---------|--------|------|---------|-------|
-| INVITE | MUST (UAS/UAC) | UAS のみ | UAC未実装 | **P0** |
-| ACK | MUST (UAS/UAC) | UAS のみ | UAC未実装 | **P0** |
-| BYE | MUST (UAS/UAC) | UAS のみ | UAC未実装 | **P0** |
-| CANCEL | MUST | 未実装 | 完全欠如 | **P0** |
-| REGISTER | SHOULD | 200 OK即時返信 | 認証・バインディング管理なし | **P1** |
-| OPTIONS | SHOULD | 未実装 | ケイパビリティ応答なし | **P2** |
+| メソッド | RFC要件 | UAS実装状態 | テスト | 優先度 |
+|---------|--------|-------------|--------|--------|
+| INVITE | MUST | Implemented | E2E: ✓ | - |
+| ACK | MUST | Implemented | E2E: ✓ | - |
+| BYE | MUST | Implemented | E2E: ✓ | - |
+| CANCEL | MUST | **Not** | - | **P0** |
+| OPTIONS | SHOULD | Not | - | P1 |
+| REGISTER | SHOULD | Partial | - | P2 |
 
-### 2.2 トランザクション層
+### 2.2 トランザクション層（UAS）
 
-| 要件 | RFC参照 | 現状 | ギャップ |
-|-----|---------|------|---------|
-| INVITE Client Transaction | §17.1.1 | 未実装 | UAC全体が欠如 |
-| Non-INVITE Client Transaction | §17.1.2 | 未実装 | UAC全体が欠如 |
-| INVITE Server Transaction | §17.2.1 | 簡易実装 | Timer G/H の厳密な実装なし |
-| Non-INVITE Server Transaction | §17.2.2 | 実装済み | Timer J相当は動作 |
-
-**RFC 3261 §17.2.1 INVITE Server Transaction 状態遷移**:
-```
-現状の問題点:
-- Timer G (再送間隔) の正確な実装なし
-- Timer H (最終応答タイムアウト) の厳密な管理なし
-- Timer I (ACK待機後のConfirmed→Terminated) は即時遷移で代用
-```
+| 要件 | RFC参照 | 実装状態 | テスト | 優先度 |
+|-----|---------|----------|--------|--------|
+| INVITE Server Transaction | §17.2.1 | Partial | Unit: ✓ | P1 (Timer厳密化) |
+| Non-INVITE Server Transaction | §17.2.2 | Implemented | Unit: ✓ | - |
 
 ### 2.3 トランスポート層
 
-| 要件 | RFC参照 | 現状 | ギャップ |
-|-----|---------|------|---------|
-| UDP | MUST | 実装済み | - |
-| TCP | MUST | 実装済み | - |
-| TLS | MUST (§26.3.1) | 未実装 | **セキュリティ要件** |
-| SCTP | MAY | 未実装 | 低優先度 |
-| WebSocket (RFC 7118) | - | 未実装 | WebRTC連携に必要 |
+| 要件 | RFC参照 | 実装状態 | テスト | 優先度 |
+|-----|---------|----------|--------|--------|
+| UDP | MUST | Implemented | E2E: ✓ | - |
+| TCP | MUST | Implemented | E2E: ✓ | - |
+| TLS | MUST (§26.3.1) | Deferred | - | Deferred |
+| WebSocket | RFC 7118 | Deferred | - | Deferred |
 
-### 2.4 ヘッダフィールド
+### 2.4 ヘッダフィールド（UAS必須）
 
-| ヘッダ | 要件 | 現状 | ギャップ |
-|-------|-----|------|---------|
-| Via | 必須 | パース/生成済み | branch計算の厳密性要確認 |
-| From/To | 必須 | パース/生成済み | tag生成は実装済み |
-| Call-ID | 必須 | 実装済み | - |
-| CSeq | 必須 | 実装済み | - |
-| Max-Forwards | 必須 | パースのみ | デクリメント/転送なし |
-| Contact | 必須 | 簡易実装 | URI完全パースなし |
-| Record-Route/Route | Proxy必須 | 未実装 | Proxy機能欠如 |
-| Authorization/WWW-Authenticate | 認証必須 | 未実装 | 認証欠如 |
-| Proxy-Authorization/Proxy-Authenticate | Proxy認証 | 未実装 | Proxy欠如 |
+| ヘッダ | 要件 | 実装状態 | テスト | 優先度 |
+|-------|-----|----------|--------|--------|
+| Via | 必須 | Implemented | Unit: ✓ | - |
+| From/To | 必須 | Implemented | Unit: ✓ | - |
+| Call-ID | 必須 | Implemented | Unit: ✓ | - |
+| CSeq | 必須 | Implemented | Unit: ✓ | - |
+| Contact | 必須 | Partial | - | P1 |
+| Authorization | 認証用 | Deferred | - | Deferred |
 
-### 2.5 レスポンスコード
+### 2.5 レスポンスコード（UAS）
 
-| カテゴリ | 実装済み | 未実装（必須） |
-|---------|---------|---------------|
-| 1xx | 100, 180 | 181, 182, 183 |
-| 2xx | 200 | 202 |
-| 3xx | なし | 300, 301, 302, 305, 380 (リダイレクト必須) |
-| 4xx | 400, 422, 481 | **401, 403, 404, 405, 406, 407, 408, 415, 420, 480, 486, 487, 488** |
-| 5xx | 504 | 500, 501, 502, 503, 505, 513 |
-| 6xx | なし | 600, 603, 604, 606 |
-
-**致命的な欠如**: 401/407 (認証チャレンジ)、408 (タイムアウト)、486 (Busy)、487 (Terminated)
+| カテゴリ | 実装済み | 次に必要 | 優先度 |
+|---------|---------|----------|--------|
+| 1xx | 100, 180 | - | - |
+| 2xx | 200 | - | - |
+| 4xx | 400, 422, 481 | **486, 487** | **P0/P1** |
+| 5xx | 504 | 500 | P2 |
 
 ---
 
 ## 3. RFC 3262 (100rel/PRACK) ギャップ
 
-### 現状実装
-
-| 要件 | 現状 | 評価 |
-|-----|------|------|
-| RSeq ヘッダ生成 | 固定値 "1" | 初期値のランダム化必要 |
-| PRACK受信処理 | RAck検証実装済み | 準拠 |
-| 再送タイマ (T1開始, 指数バックオフ) | 500ms開始, 4秒上限 | T1=500ms でRFC準拠 |
-| タイムアウト (64*T1 = 32秒) | 32秒で504返信 | 準拠 |
-| 複数Reliable Provisional | 未対応 | RSeq連番管理必要 |
-
-### ギャップ詳細
-
-```
-RFC 3262 §3 UAS Behavior:
-"The value of the header field for the first reliable provisional
-response in a transaction MUST be between 1 and 2**31 - 1.
-It is RECOMMENDED that it be chosen uniformly in this range."
-
-現状: 固定値 1 を使用
-対応: 乱数生成による初期値設定が推奨
-```
+| 要件 | 実装状態 | テスト | 優先度 |
+|-----|----------|--------|--------|
+| RSeq ヘッダ生成 | Partial | Unit: ✓ | P1 (ランダム化) |
+| PRACK受信処理 | Implemented | Unit: ✓ | - |
+| 再送タイマ | Implemented | Unit: ✓ | - |
+| タイムアウト | Implemented | Unit: ✓ | - |
+| 複数Reliable Provisional | Not | - | P2 |
 
 ---
 
 ## 4. RFC 3311 (UPDATE) ギャップ
 
-### 現状実装
-
-| 要件 | 現状 | 評価 |
-|-----|------|------|
-| UPDATE受信 (UAS) | Session-Expires更新のみ | SDP offer/answer未対応 |
-| UPDATE送信 (UAC) | 未実装 | セッション更新発信不可 |
-| 491 Request Pending | 未実装 | offer衝突時の処理なし |
-| Early Dialog対応 | 未確認 | テスト必要 |
-
-### RFC要件との差分
-
-```
-RFC 3311 §5.2:
-"If an UPDATE is received that contains an offer, and the UAS has
-generated an offer (in an UPDATE, PRACK or INVITE) to which it has
-not yet received an answer, the UAS MUST reject the UPDATE with a
-491 response."
-
-現状: 491応答未実装、offer状態管理なし
-```
+| 要件 | 実装状態 | テスト | 優先度 |
+|-----|----------|--------|--------|
+| UPDATE受信 (UAS) | Partial | Unit: ✓ | - |
+| UPDATE送信 (UAC) | Deferred | - | Deferred |
+| 491 Request Pending | Not | - | P2 |
 
 ---
 
 ## 5. RFC 4028 (Session Timers) ギャップ
 
-### 現状実装
-
-| 要件 | 現状 | 評価 |
-|-----|------|------|
-| Session-Expires パース | 実装済み | 準拠 |
-| Min-SE パース | 実装済み | 準拠 |
-| refresher パラメータ | パース済み | 準拠 |
-| 422応答 + Min-SE | 実装済み | 準拠 |
-| re-INVITE送信 (refresher=uas時) | 未実装 | **リフレッシュ発信不可** |
-| UPDATE送信 (refresher=uas時) | 未実装 | **リフレッシュ発信不可** |
-| Supported: timer | 200 OK に付与 | 準拠 |
-
-### 致命的ギャップ
-
-```
-RFC 4028 §10:
-"If the refresher never gets a response to that session refresh
-request, it sends a BYE to terminate the session."
-
-現状: refresher=uas の場合、リフレッシュを送信できないため
-      セッションがタイムアウトする可能性あり
-```
+| 要件 | 実装状態 | テスト | 優先度 |
+|-----|----------|--------|--------|
+| Session-Expires パース | Implemented | Unit: ✓ | - |
+| Min-SE パース | Implemented | Unit: ✓ | - |
+| 422応答 + Min-SE | Implemented | Unit: ✓ | - |
+| re-INVITE送信 | Deferred | - | Deferred |
+| UPDATE送信 | Deferred | - | Deferred |
 
 ---
 
 ## 6. RFC 3263 (DNS SRV/NAPTR) ギャップ
 
-### 現状
-
-**完全未実装**
-
-### RFC要件
-
-| 機能 | 要件 | 現状 |
-|-----|------|------|
-| NAPTR クエリ | SHOULD | 未実装 |
-| SRV クエリ | MUST | 未実装 |
-| A/AAAA クエリ | MUST | 未実装 |
-| トランスポート選択 | MUST | 未実装 |
-| フェイルオーバー | SHOULD | 未実装 |
-
-### 影響
-
-```
-UAC機能（発信）には DNS 解決が必須:
-- sip:user@domain.com → IP:port:transport への解決
-- SRV による負荷分散・冗長化
-- NAPTR によるトランスポート自動選択
-
-現状は発信機能自体がないため未対応
-```
+| 機能 | 実装状態 | 優先度 | 備考 |
+|-----|----------|--------|------|
+| SRV クエリ | Deferred | Deferred | UAC実装時に必要 |
+| NAPTR クエリ | Deferred | Deferred | UAC実装時に必要 |
+| A/AAAA クエリ | Deferred | Deferred | UAC実装時に必要 |
 
 ---
 
 ## 7. RFC 3264 (Offer/Answer SDP) ギャップ
 
-### 現状実装
-
-| 要件 | 現状 | 評価 |
-|-----|------|------|
-| Offer受信 (INVITE) | c=/m= パースのみ | **最小限** |
-| Answer生成 | 固定PCMU/8000 | **コーデックネゴシエーションなし** |
-| Re-INVITE offer | 未対応 | セッション変更不可 |
-| Hold/Resume (a=sendonly等) | 未対応 | 保留操作不可 |
-| 複数メディアストリーム | 未対応 | audioのみ |
-
-### SDPパース/生成の問題
-
-```
-現状のSDPパーサ (sip/mod.rs:135-159):
-- c=IN IP4 のみ対応 (IPv6未対応)
-- m=audio のみ対応 (video等未対応)
-- rtpmap 属性未パース
-- fmtp 属性未パース
-- 複数コーデック提示時の選択ロジックなし
-
-現状のSDP生成:
-- 固定テンプレート（PCMU/8000のみ）
-- 動的コーデック選択なし
-```
-
-### RFC 3264 必須機能
-
-| 機能 | RFC参照 | 現状 |
-|-----|---------|------|
-| コーデック交渉 | §5, §6 | 未実装 |
-| ポート0によるストリーム拒否 | §6 | 未実装 |
-| a=inactive/sendonly/recvonly/sendrecv | §8.4 | 未実装 |
-| IP変更 (re-INVITE) | §8.3.1 | 未実装 |
+| 要件 | 実装状態 | テスト | 優先度 |
+|-----|----------|--------|--------|
+| Offer受信 (INVITE) | Partial | Unit: ✓ | - |
+| Answer生成 | Partial | - | P1 (動的化) |
+| Re-INVITE offer | Deferred | - | Deferred |
+| Hold/Resume | Deferred | - | Deferred |
+| コーデック交渉 | Not | - | P2 |
 
 ---
 
 ## 8. RFC 3550 (RTP/RTCP) ギャップ
 
-### 8.1 RTP
+### 8.1 RTP（UAS）
 
-| 要件 | 現状 | 評価 |
-|-----|------|------|
-| パケット構造 | 実装済み | 準拠 |
-| SSRC管理 | 実装済み | 準拠 |
-| Sequence番号 | 実装済み | 準拠 |
-| Timestamp | 実装済み | 準拠 |
-| CSRC (mixer) | 未実装 | 会議機能用 |
-| Padding | 未実装 | 必要時に追加 |
-| Extension Header | 未実装 | RTP拡張用 |
+| 要件 | 実装状態 | テスト | 優先度 |
+|-----|----------|--------|--------|
+| パケット構造 | Implemented | Unit: ✓ | - |
+| SSRC管理 | Implemented | Unit: ✓ | - |
+| Sequence番号 | Implemented | Unit: ✓ | - |
+| Timestamp | Implemented | Unit: ✓ | - |
 
 ### 8.2 RTCP
 
-| 要件 | 現状 | 評価 |
-|-----|------|------|
-| SR (Sender Report) | パース/生成実装 | 準拠 |
-| RR (Receiver Report) | パース/生成実装 | 準拠 |
-| SDES | 未実装 | **CNAME必須** |
-| BYE | 未実装 | セッション終了通知 |
-| APP | 未実装 | アプリ定義用 |
-| 送信間隔アルゴリズム (§6.2) | 固定5秒 | 動的計算なし |
+| 要件 | 実装状態 | テスト | 優先度 |
+|-----|----------|--------|--------|
+| SR | Implemented | Unit: ✓ | - |
+| RR | Implemented | Unit: ✓ | - |
+| SDES (CNAME) | **Not** | - | **P1** |
+| BYE | Not | - | P2 |
 
-### 致命的ギャップ
+### 8.3 DTMF
 
-```
-RFC 3550 §6.5.1 CNAME:
-"The CNAME identifier MUST be included in each compound RTCP packet."
-
-現状: SDES未実装のためCNAME送信なし
-      → 厳密なRTCP準拠には必須
-```
-
-### 8.3 追加RTP機能
-
-| 機能 | 現状 | 必要性 |
-|-----|------|--------|
-| RFC 2833 DTMF | 未実装 | **汎用SIPでは必須** |
-| RFC 4733 (DTMF更新) | 未実装 | 推奨 |
-| RFC 3389 Comfort Noise | 未実装 | 推奨 |
-| RFC 2198 Redundant Audio | 未実装 | オプション |
+| 機能 | 実装状態 | 優先度 | 備考 |
+|-----|----------|--------|------|
+| DTMF トーン検出 (Goertzel) | **Not** | **P0** | インバンド検出 |
+| RFC 2833 DTMF | Not | P2 | アウトオブバンド |
 
 ---
 
 ## 9. RFC 8866 (SDP) ギャップ
 
-### SDPフィールド対応
-
-| フィールド | 現状 | 必要性 |
-|-----------|------|--------|
-| v= (version) | 生成のみ | OK |
-| o= (origin) | 生成のみ | セッションバージョン管理なし |
-| s= (session name) | 生成のみ | OK |
-| c= (connection) | パース/生成 | IPv6未対応 |
-| t= (timing) | 生成のみ | OK |
-| m= (media) | 簡易パース | 複数メディア未対応 |
-| a=rtpmap | 未パース | **コーデック識別に必須** |
-| a=fmtp | 未パース | コーデックパラメータ必須 |
-| a=ptime | 未パース | パケット化間隔 |
-| a=sendrecv等 | 未パース | Hold/Resume必須 |
-
-### 必須パース拡張
-
-```
-現状のm=行パース (最初のPT値のみ取得):
-m=audio 49170 RTP/AVP 0 8 101
-
-RFC要件:
-- 全PT値をパースしてコーデックリスト構築
-- rtpmapとの照合でコーデック特定
-- 優先順位に基づく選択
-
-例:
-m=audio 49170 RTP/AVP 0 8 101
-a=rtpmap:0 PCMU/8000
-a=rtpmap:8 PCMA/8000
-a=rtpmap:101 telephone-event/8000
-a=fmtp:101 0-16
-```
+| フィールド | 実装状態 | 優先度 | 備考 |
+|-----------|----------|--------|------|
+| c= (connection) | Partial | - | IPv6: P2 |
+| m= (media) | Partial | - | - |
+| a=rtpmap | **Not** | **P1** | コーデック識別 |
+| a=fmtp | Not | P2 | パラメータ |
+| a=sendrecv等 | Deferred | Deferred | Hold/Resume用 |
 
 ---
 
-## 10. 汎用SIPサーバー必須機能
+## 10. 優先度別ロードマップ
 
-### 10.1 Asterisk相当に必要な機能
+### 10.1 P0: UAS必須（即時対応）
 
-| カテゴリ | 機能 | 現状 | 優先度 |
-|---------|------|------|-------|
-| **発信** | UAC INVITE/ACK/BYE | 未実装 | **P0** |
-| **発信** | DNS SRV解決 | 未実装 | **P0** |
-| **転送** | REFER | 未実装 | **P1** |
-| **転送** | Blind Transfer | 未実装 | **P1** |
-| **転送** | Attended Transfer | 未実装 | **P2** |
-| **認証** | Digest認証 (MD5) | 未実装 | **P0** |
-| **認証** | 401/407チャレンジ | 未実装 | **P0** |
-| **登録** | REGISTER処理 | 200即時返信のみ | **P1** |
-| **登録** | バインディング管理 | 未実装 | **P1** |
-| **Proxy** | Request転送 | 未実装 | **P2** |
-| **Proxy** | Record-Route/Route | 未実装 | **P2** |
-| **セキュリティ** | TLS | 未実装 | **P1** |
-| **セキュリティ** | SRTP | 未実装 | **P1** |
-| **DTMF** | RFC 2833 | 未実装 | **P0** |
-| **コーデック** | 複数コーデック交渉 | 未実装 | **P1** |
-| **コーデック** | G.729, Opus等 | 未実装 | **P2** |
-| **保留** | Hold/Resume | 未実装 | **P1** |
-| **会議** | 3者以上会議 | 未実装 | **P2** |
-| **録音** | MixMonitor相当 | 部分実装 | **P2** |
+| 項目 | RFC | 依存 | 備考 |
+|------|-----|------|------|
+| CANCEL 受信処理 | 3261 §9 | - | 487 応答 |
+| DTMF トーン検出 | ITU-T Q.23 | - | Goertzel |
+| E2E テスト拡充 | - | 上記2項目 | SIPp シナリオ |
 
-### 10.2 機能別の影響度
+### 10.2 P1: 相互接続性・RFC準拠
 
-```
-P0 (致命的 - 汎用SIPとして機能しない):
-├── UAC機能 → 発信ができない
-├── 認証 → セキュリティが確保できない
-└── DTMF → IVR/音声ガイダンスが使えない
+| 項目 | RFC | 依存 | 備考 |
+|------|-----|------|------|
+| OPTIONS 応答 | 3261 §11 | - | ケイパビリティ |
+| RSeq ランダム化 | 3262 §3 | - | RFC準拠 |
+| a=rtpmap パース | 8866 | - | コーデック識別 |
+| RTCP SDES | 3550 §6.5 | - | CNAME必須 |
+| 486 Busy Here | 3261 | - | 同時通話制限 |
+| Timer G/H 厳密化 | 3261 §17.2.1 | - | トランザクション |
 
-P1 (重要 - 基本機能が制限される):
-├── TLS/SRTP → セキュア通信ができない
-├── Hold/Resume → 保留操作ができない
-├── コーデック交渉 → 相互接続性が低い
-└── REGISTER管理 → 端末登録ができない
+### 10.3 P2: 拡張
 
-P2 (標準機能 - 完全なPBX機能に必要):
-├── Proxy機能 → ルーティングができない
-├── 転送 → コール転送ができない
-├── 会議 → 会議通話ができない
-└── 追加コーデック → 特殊用途に対応できない
-```
+| 項目 | RFC | 備考 |
+|------|-----|------|
+| a=fmtp パース | 8866 | コーデックパラメータ |
+| RFC 2833 DTMF | 2833/4733 | アウトオブバンド |
+| RTCP BYE | 3550 | 終了通知 |
+| 複数コーデック交渉 | 3264 | 相互接続性 |
+| IPv6 対応 | 8866 | c=IN IP6 |
+
+### 10.4 Deferred: 後工程
+
+以下は P0〜P2 完了後に着手。Spec策定が必要な項目もあり。
+
+| カテゴリ | 項目 | RFC | 必要な決定事項 |
+|---------|------|-----|---------------|
+| **認証** | Digest認証 | 3261 §22 | credentials設計 |
+| **認証** | 401/407チャレンジ | 3261 | realm/qop方針 |
+| **暗号化** | TLS | 3261 §26 | 証明書管理 |
+| **暗号化** | SRTP | 3711 | キー交換方式 |
+| **UAC** | INVITE送信 | 3261 §17.1.1 | 状態機械設計 |
+| **UAC** | DNS SRV解決 | 3263 | resolverクレート |
+| **Proxy** | 転送機能 | 3261 | フォーキング戦略 |
+| **転送** | REFER | 3515 | NOTIFY送信 |
 
 ---
 
-## 11. 優先度別実装ロードマップ
+## 11. Acceptance Criteria (SIPp検証)
 
-### Phase 1: 最小限のUAC機能 (P0)
+> **正本移行**: 受入条件（AC）の正本は [tests.md](tests.md) に移行しました（2025-12-27 確定、Refs Issue #7 CX-4）。
+> 本セクションは参照用として残しますが、更新は tests.md で行ってください。
 
-```
-目標: 発信ができる状態にする
+### AC-1: 基本着信フロー (実装済み)
 
-1. INVITE Client Transaction (RFC 3261 §17.1.1)
-   - Timer A/B/D の実装
-   - 状態遷移: Calling → Proceeding → Completed/Terminated
+**状態**: ✓ 動作確認済み
 
-2. Non-INVITE Client Transaction (RFC 3261 §17.1.2)
-   - Timer E/F/K の実装
-   - BYE/CANCEL送信対応
+| # | シナリオ | 期待結果 |
+|---|---------|---------|
+| AC-1.1 | INVITE 受信 → 100/180/200 | 200 OK 受信 |
+| AC-1.2 | ACK 受信 → セッション確立 | RTP 双方向 |
+| AC-1.3 | BYE 受信 → 200 OK | 正常終了 |
 
-3. DNS SRV解決 (RFC 3263)
-   - SRV クエリによるtarget/port/priority取得
-   - A/AAAA クエリへのフォールバック
+---
 
-4. CANCEL (RFC 3261 §9)
-   - INVITE中断機能
-```
+### AC-2: 100rel/PRACK (実装済み)
 
-### Phase 2: 認証とDTMF (P0)
+**状態**: ✓ 動作確認済み
 
-```
-目標: セキュアな通信とIVR対応
+| # | シナリオ | 期待結果 |
+|---|---------|---------|
+| AC-2.1 | 183 Reliable送信 | 183 + RSeq 受信 |
+| AC-2.2 | PRACK 送信 → 200 OK | 200 OK (PRACK) |
+| AC-2.3 | 32秒タイムアウト | 504 受信 |
 
-1. Digest認証 (RFC 3261 §22)
-   - 401/407 チャレンジ生成
-   - Authorization/Proxy-Authorization検証
-   - nonce管理
+---
 
-2. RFC 2833 DTMF
-   - RTPペイロードタイプ検出
-   - DTMF イベントパケット生成/受信
-   - duration/volume処理
-```
+### AC-3: Session Timer (実装済み)
 
-### Phase 3: セキュリティとコーデック (P1)
+**状態**: ✓ 動作確認済み
 
-```
-目標: セキュア通信と相互接続性向上
+| # | シナリオ | 期待結果 |
+|---|---------|---------|
+| AC-3.1 | Session-Expires 受信 | 200 OK + Session-Expires |
+| AC-3.2 | Min-SE 下回り | 422 + Min-SE: 90 |
 
-1. TLS対応
-   - SIP over TLS (SIPS URI)
-   - 証明書検証
+---
 
-2. SRTP (RFC 3711)
-   - キー交換 (SDES or DTLS-SRTP)
-   - 暗号化/復号処理
+### AC-4: CANCEL 処理 (P0 - 実装対象)
 
-3. コーデック交渉
-   - rtpmap パース
-   - 優先順位に基づく選択
-   - 動的PT対応
-```
+**状態**: 未実装
 
-### Phase 4: 完全なPBX機能 (P2)
+| # | シナリオ | 期待結果 |
+|---|---------|---------|
+| AC-4.1 | CANCEL 受信 | 200 OK (CANCEL) |
+| AC-4.2 | INVITE への応答 | 487 Request Terminated |
 
-```
-目標: Asterisk相当の機能
+**SIPp シナリオ**: `test/sipp/sip/scenarios/cancel_uac.xml` (要作成)
 
-1. REGISTER管理
-   - バインディングDB
-   - Expires管理
-   - 複数Contact対応
+---
 
-2. 転送機能
-   - REFER (RFC 3515)
-   - Replaces (RFC 3891)
+### AC-5: DTMF トーン検出 (P0 - 実装対象)
 
-3. 会議機能
-   - RTPミキシング
-   - CSRC管理
+**状態**: 未実装
 
-4. Proxy機能
-   - Record-Route/Route処理
-   - フォーキング
-```
+| # | シナリオ | 期待結果 |
+|---|---------|---------|
+| AC-5.1 | DTMF "1" トーン受信 | SessionIn::Dtmf(1) 発火 |
+| AC-5.2 | 全パターン (0-9,*,#) | 正常検出 |
+
+**検証スクリプト**: `test/scripts/send_dtmf_tone.py` (要作成)
+
+---
+
+### AC-6: Digest 認証 (Deferred)
+
+**状態**: Deferred - Spec策定後に実装
+
+---
+
+### AC-7: UAC 発信 (Deferred)
+
+**状態**: Deferred - UAS完了後に着手
 
 ---
 
 ## 付録A: テスト要件
 
-### A.1 相互接続テスト対象
+### A.1 SIPp シナリオ配置
+
+```
+test/sipp/sip/scenarios/
+├── basic_uas.xml           # AC-1: 基本着信 ✓
+├── basic_uas_100rel.xml    # AC-2: 100rel ✓
+├── basic_uas_update.xml    # AC-3: Session Timer ✓
+├── cancel_uac.xml          # AC-4: CANCEL (要作成)
+└── ...
+```
+
+### A.2 相互接続テスト対象
 
 | 製品 | 用途 | 優先度 |
 |-----|------|-------|
 | SIPp | 負荷・シナリオテスト | **必須** |
-| FreeSWITCH | B2BUA連携 | 高 |
-| Asterisk | 既存PBX連携 | 高 |
-| Ohmybox | PSTN接続 | 中 |
-| Ohmybox | クラウドPBX | 中 |
-
-### A.2 RFC準拠テスト
-
-- RFC 4475 (SIP Torture Tests)
-- RFC 3261 Appendix B (State Machines)
+| FreeSWITCH | B2BUA連携 | P1 |
+| Asterisk | 既存PBX連携 | P1 |
 
 ---
 
@@ -499,15 +380,17 @@ P2 (標準機能 - 完全なPBX機能に必要):
 
 - [RFC 3261](../spec/rfc3261.txt) - SIP: Session Initiation Protocol
 - [RFC 3262](../spec/rfc3262.txt) - Reliability of Provisional Responses (100rel)
-- [RFC 3263](../spec/rfc3263.txt) - Locating SIP Servers (DNS)
 - [RFC 3264](../spec/rfc3264.txt) - Offer/Answer Model with SDP
-- [RFC 3311](../spec/rfc3311.txt) - UPDATE Method
 - [RFC 3550](../spec/rfc3550.txt) - RTP
 - [RFC 4028](../spec/rfc4028.txt) - Session Timers
 - [RFC 8866](../spec/rfc8866.txt) - SDP
 
 ---
 
-*文書バージョン: 1.0*
-*作成日: 2025-12-25*
-*次回レビュー: 実装進捗に応じて更新*
+## 変更履歴
+
+| 日付 | バージョン | 変更内容 |
+|------|-----------|---------|
+| 2025-12-25 | 3.0 | UAS優先方針に改訂。認証/暗号化/UAC/ProxyをDeferredに変更 |
+| 2025-12-25 | 2.0 | 仕様駆動形式に改訂。AC追加、成熟度%を廃止 |
+| 2025-12-25 | 1.0 | 初版作成 |

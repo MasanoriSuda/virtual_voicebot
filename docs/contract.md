@@ -24,7 +24,10 @@
 
 ### Transport DTO（HTTPレスポンス等の実体）
 - `recordingUrl` の GET レスポンス（`audio/wav` のバイト列）
-- Range 対応は将来（MVPでは未対応）
+- **Range 対応: MVP 必須**（ブラウザのシーク再生を担保、2025-12-27 確定、Refs Issue #7 CX-2）
+  - `Accept-Ranges: bytes` ヘッダ対応
+  - `Range: bytes=X-Y` リクエストに対し `206 Partial Content` + `Content-Range` を返す
+  - 不正 Range（ファイルサイズ超）には `416 Range Not Satisfiable` を返す
 
 ### Correlation ID Rules
 - 外部DTO（Call/RecordingMeta）は `callId` を唯一の相関キーとする

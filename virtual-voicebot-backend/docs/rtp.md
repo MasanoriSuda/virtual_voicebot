@@ -17,9 +17,11 @@
 - 依存するモジュール:
   - `transport::packet`: RTP/RTCP 生パケットの送受信
 - 依存されるモジュール:
-  - `session`: SDP が決めたメディア設定の受け取り
-  - `ai::asr`: PCM の入力先
-  - `ai::tts`: PCM の供給元
+  - `session`: SDP が決めたメディア設定の受け取り、PCM の受け渡し
+- **禁止**:
+  - `ai::asr` / `ai::tts` への直接依存は禁止（必ず session → app を経由）
+  - PCM は `rtp → session → app → ai::asr` / `ai::tts → app → session → rtp` の経路で流れる
+  - 参照: design.md §4.2.1（2025-12-27 確定、Refs Issue #7 CX-1）
 
 ## 3. 主な責務
 
@@ -42,9 +44,10 @@
    - PCM ⇔ RTP ペイロードの変換 API を提供
    - 将来的なコーデック追加（PCMA/Opus 等）を視野に入れたインタフェース設計
 
-5. ASR/TTS との連携
-   - 受信: RTP → PCM → `ai::asr` へチャンク送信
-   - 送信: `ai::tts` から PCM チャンクを引き取り、RTP にエンコードして送出
+5. session/app との連携（PCM 受け渡し）
+   - 受信: RTP → PCM → `session` へ通知 → `app` 経由で `ai::asr` へ送信
+   - 送信: `app` が `ai::tts` から受け取った PCM を `session` 経由で rtp に渡し、RTP にエンコードして送出
+   - **rtp から ai への直接依存は禁止**（design.md §4.2.1 参照、2025-12-27 確定）
 
 ## 4. ストリームモデル
 
@@ -66,11 +69,11 @@
 3. 該当ストリームを見つける（SSRC or IP/Port で）
 4. 必要なら簡易的なジッタバッファ/整列処理
 5. ペイロードを PCM にデコード
-6. PCM チャンクを `ai::asr` に渡す（イベント or チャネル）
+6. PCM チャンクを `session` に通知（`session` → `app` → `ai::asr` の経路で ASR に到達）
 
 ### 4.3 送信側の流れ
 
-1. `ai::tts` から PCM チャンクを受け取る
+1. `session` から PCM チャンクを受け取る（`app` → `session` → `rtp` の経路で TTS 出力が到達）
 2. コーデックで RTP ペイロードにエンコード
 3. Seq/Timestamp をインクリメント
 4. RTP ヘッダを組み立ててバイト列化
@@ -111,8 +114,9 @@
   - RR 受信時は品質観測ログに残す（将来的にイベント化）。
 
 ### 6.4 上位モジュールとの関係
-- `rtp → ai::asr`: デコード済み PCM を `PcmInputChunk` として渡す。Seq/Timestamp/ジッタ処理は rtp 内で吸収し、上位は PCM のみ扱う。
-- `ai::tts → rtp`: PCM フレームを `PcmOutputChunk` で受け取り、rtp が Seq/Timestamp/SSRC を付与して RTP 化・送信。
+- `rtp → session`: デコード済み PCM を `PcmInputChunk` として session に渡す。session は app 経由で ai::asr に転送する。
+- `session → rtp`: app が ai::tts から受け取った PCM フレームを `PcmOutputChunk` で session 経由で rtp に渡し、rtp が Seq/Timestamp/SSRC を付与して RTP 化・送信。
+- **rtp ↔ ai 直接通信は禁止**（design.md §4.2.1 参照、2025-12-27 確定、Refs Issue #7 CX-1）
 - 抽象化: 上位（session/app/ai）は SSRC/Seq/Timestamp/ジッタを意識せず、PCM とイベントのみを扱う前提。時間管理・整列・廃棄ポリシーは rtp で完結させる。
 
 ## 7. 運用確認（RTCP SR/RR のキャプチャ）

@@ -1,6 +1,20 @@
-# rtp module notes
+# rtp モジュール
 
-- 本モジュールの責務は RTP/RTCP の構造化、ストリーム管理、将来のジッタバッファ/RTCP 対応。
-- 現状のコードは transport→session の直結を維持しており、rtp モジュールへの委譲は未着手。
-- `stream.rs` に Seq/Timestamp/SSRC 管理のプレースホルダを置き、今後の移行先を示す。
-- `rtcp.rs` に RTCP 受信/送信のスタブ I/F を定義し、未実装であることを明記している。
+目的・責務
+- RTP/RTCP パケット処理と音声ストリーム管理を担当する
+- PCM と RTP ペイロードの相互変換を行い、ASR/TTS と連携する
+- SSRC/Seq/Timestamp の生成・管理、簡易ジッタバッファによる整列
+
+他モジュールとの関係
+- transport: RTP/RTCP 生パケットの送受信
+- session: SDP で決定されたメディア設定を受け取り、送信先を設定
+- ai::asr: PCM を ASR に供給
+- ai::tts: TTS から PCM を受け取り RTP にエンコード
+
+注意事項
+- SSRC/Seq/Timestamp は rtp 内で生成・管理し、上位へ漏らさない
+- コーデックは MVP では PCMU (G.711 μ-law) のみ対応
+- RTCP は SR/RR の基本実装あり、SDES(CNAME) は実装予定
+
+詳細設計
+- 正本: [docs/rtp.md](../../docs/rtp.md)

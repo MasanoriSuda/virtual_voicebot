@@ -361,9 +361,11 @@ PCM ⇔ RTP ペイロード変換
 
 上位レイヤとのインタフェース
 
-受信側：PCM フレームを asr に渡せる形で提供
+受信側：PCM フレームを session に渡す（session → app → ai::asr の経路で ASR に到達）
 
-送信側：tts から受け取った PCM フレームを RTP に載せて送信
+送信側：session から受け取った PCM フレームを RTP に載せて送信（app → session → rtp の経路で TTS 出力が到達）
+
+**注意**: rtp から ai への直接依存は禁止（必ず session → app を経由）
 
 非責務：
 
@@ -588,9 +590,17 @@ session → sip
 
 SendProvisionalResponse / SendFinalResponse / SendPrack / SendUpdate など
 
-rtp → ai::asr
+rtp → session
 
-PcmInputChunk（セッションID/ストリームID + PCM データ）
+PcmInputChunk（セッションID/ストリームID + PCM データ）→ session が app へ転送
+
+session → app
+
+PcmReceived（PCM チャンク）+ CallStarted/Ended 等の通話イベント
+
+app → ai::asr
+
+AsrInputPcm（app が session から受け取った PCM を ASR へ送信）
 
 ai::asr → app
 
@@ -608,9 +618,13 @@ app → ai::tts
 
 TtsRequest（読み上げテキスト + オプション）
 
-ai::tts → rtp
+ai::tts → app
 
-PcmOutputChunk（セッションID/ストリームID + PCM データ）
+TtsPcmChunk（セッションID/ストリームID + PCM データ）
+
+app → session
+
+PcmOutputChunk（app が TTS から受け取った PCM を session 経由で rtp へ）
 
 app → session
 
@@ -635,12 +649,15 @@ SessionAction（応答コード、SDP 付き応答指示、BYE 指示など）
 [app → session]     SessionAction (例: 180/200+SDP/Bye) : 高レベルなコール制御指示
 [session → app]     CallStarted/CallEnded/Error, MediaReady : 通話状態/エラーの通知
 
-[rtp → ai::asr]     PcmInputChunk                       : PCM入力をASRへ
+[rtp → session]     PcmInputChunk                       : PCM入力をsessionへ（session→app→ai::asrの経路）
+[session → app]     PcmReceived                         : PCMをappへ通知
+[app → ai::asr]     AsrInputPcm                         : appがPCMをASRへ送信
 [ai::asr → app]     AsrResult                           : 認識結果をappへ
 [app → ai::llm]     LlmRequest                          : コンテキスト付き質問をLLMへ
 [ai::llm → app]     LlmResponse                         : 応答テキスト/アクションをappへ
 [app → ai::tts]     TtsRequest                          : 読み上げテキストをTTSへ
-[ai::tts → rtp]     PcmOutputChunk                      : 生成PCMをrtp送信側へ
+[ai::tts → app]     TtsPcmChunk                         : 生成PCMをappへ
+[app → session]     PcmOutputChunk                      : appがPCMをsessionへ渡す（session→rtpで送出）
 ```
 
 ### 6.3 イベント方向の簡易図
@@ -657,15 +674,16 @@ transport
   │            │              │
   ▼            ▼              ▼
  session  ←────┴──────────────┘
-  ▲   ▲                │
-  │   │                │PcmInputChunk / PcmOutputChunk
-  │   │                ▼
-  │   │               ai (asr/llm/tts)
-  │   │
-  │ SessionAction / Call events
-  ▼
- app
+  ▲   │
+  │   │ PcmInputChunk / PcmOutputChunk
+  │   │ CallStarted / CallEnded / SessionTimeout
+  │   ▼
+ app ←──────────────────────────────→ ai (asr/llm/tts)
+      AsrInputPcm / TtsRequest / LlmRequest
+      AsrResult / TtsPcmChunk / LlmResponse
 ```
+
+**注意**: rtp↔ai の直接通信は禁止。PCM は必ず session→app を経由する（2025-12-27 確定、Refs Issue #7）
 
 ## 7. 並行処理モデル（Tokio）
 
@@ -771,7 +789,7 @@ SIP / RTP / AI の代表的なエラー検知からユーザ影響までを明�
   - 検知レイヤ: ai::asr / ai::llm / ai::tts（各クライアントがリトライ後に失敗判定）
   - 通知イベント: `ai::asr → app` に `AsrError`、`ai::llm → app` に `LlmError`、`ai::tts → app` に `TtsError`（call_id/理由付き）
   - 最終判断レイヤ: app（フォールバック方針を決める）
-    - 基本方針: 初回失敗は謝罪定型を生成し `app → ai::tts → rtp` で返して継続。同一フェーズで連続失敗（例: 2回）で `app → session` に `SessionAction::Bye` を送り終了。
+    - 基本方針: 初回失敗は謝罪定型を生成し `app → ai::tts → app → session → rtp` で返して継続。同一フェーズで連続失敗（回数は config 管理、既定: 2回）で `app → session` に `SessionAction::Bye` を送り終了。
   - UAC への振る舞い: 初回は謝罪音声を返して継続。連続失敗時は謝罪音声の後に BYE（もしくは即 BYE）で切断。
 
 ## 9. 音声対話フロー（概要）
@@ -780,9 +798,9 @@ UAC からの INVITE を sip が受信し、session が新しいセッション�
 
 SDP 交渉完了後、session が rtp を設定し、app に「AI 対話セッション開始」を通知
 
-UAC 音声:
+UAC 音声（受信フロー）:
 
-transport::packet → rtp → PCM フレーム → ai::asr
+transport::packet → rtp → PCM フレーム → session → app → ai::asr
 
 ai::asr が発話テキストを app に通知
 
@@ -794,11 +812,13 @@ LLM に問い合わせ → 応答テキスト/アクション
 
 ai::tts:
 
-PCM フレームを生成し、rtp へ渡す
+PCM フレームを生成し、app へ渡す
 
-rtp:
+app → session → rtp:
 
-RTP パケットにエンコードし、transport::packet 経由で UAC に送信
+app が PCM を session 経由で rtp に渡し、RTP パケットにエンコードして transport::packet 経由で UAC に送信
+
+**注意**: rtp↔ai の直接通信は禁止。PCM は必ず session→app を経由する（2025-12-27 確定、Refs Issue #7 CX-1）
 
 必要なら:
 
@@ -905,7 +925,9 @@ B2BUA 化（別の宛先への転送）
 ### 13.1 命名とID（相関の規則）
 - すべての主要ログ/イベントに `call_id` を付与する（必須）。
 - メディア（RTP/PCM）単位は `stream_id` を併用する（SSRC等のプロトコル内部IDは上位へ漏らさない）。
-- `session_id` と `call_id` の関係を固定する（MVPは `call_id` = `session_id` でもよいが、混在させない）。
+- **MVP**: `call_id == session_id` として統一する（2025-12-27 確定、Refs Issue #7）。
+  - ai.md/app.md の DTO では `session_id` フィールドを使用するが、値は `call_id` と同一。
+  - 将来的に分離する場合は本 docs を先に更新する。
 - 文字列IDの形式（ULID/UUID等）を統一し、生成箇所は `utils::id` に集約する。
 
 ### 13.2 データモデル境界（DTOの規則）

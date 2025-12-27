@@ -1,7 +1,7 @@
 # ドキュメント一覧 (DOCS_INDEX)
 
 **ステータス**: ドラフト
-**最終更新**: 2025-12-25
+**最終更新**: 2025-12-27
 
 ---
 
@@ -14,7 +14,7 @@
 | コーディング規約 | [STYLE.md](../STYLE.md) |
 | アーキテクチャ | [design.md](../virtual-voicebot-backend/docs/design.md) |
 | API契約 | [contract.md](contract.md) |
-| TODO/タスク | [todo.md](../virtual-voicebot-backend/docs/todo.md) |
+| RFCギャップ分析 | [gap-analysis.md](../virtual-voicebot-backend/docs/gap-analysis.md) |
 
 ---
 
@@ -35,8 +35,10 @@
 |---------|------|:----:|
 | [DOCS_POLICY.md](DOCS_POLICY.md) | ドキュメント管理ポリシー | ✓ |
 | [DOCS_INDEX.md](DOCS_INDEX.md) | 本ファイル（ドキュメント一覧） | - |
+| [DOCS_ANALYSIS.md](DOCS_ANALYSIS.md) | ドキュメント整理分析レポート | - |
 | [contract.md](contract.md) | Frontend ↔ Backend API契約 | ✓ |
 | [style/rust.md](style/rust.md) | Rust固有スタイル | - |
+| [reviews/](reviews/) | レビュー結果保存先 | - |
 
 ---
 
@@ -71,26 +73,18 @@
 | [tests_e2e_sipp.md](../virtual-voicebot-backend/docs/tests_e2e_sipp.md) | SIPp E2E手順 | ✓ | アクティブ |
 | [test/README.md](../virtual-voicebot-backend/test/README.md) | E2Eランナー使用方法 | - | 補助 |
 
-### 3.4 タスク管理
+### 3.4 分析ドキュメント
 
 | ファイル | 内容 | 正本 | 状態 |
 |---------|------|:----:|------|
-| [todo.md](../virtual-voicebot-backend/docs/todo.md) | TODO管理 | ✓ | アクティブ |
-| [todo_sip.md](../virtual-voicebot-backend/docs/todo_sip.md) | SIP TODO | - | **完了→アーカイブ候補** |
-| [todo_rtp.md](../virtual-voicebot-backend/docs/todo_rtp.md) | RTP TODO | - | **完了→アーカイブ候補** |
-| [todo_session.md](../virtual-voicebot-backend/docs/todo_session.md) | Session TODO | - | **完了→アーカイブ候補** |
-| [todo_transport.md](../virtual-voicebot-backend/docs/todo_transport.md) | Transport TODO | - | **ほぼ完了** |
-| [todo_ai.md](../virtual-voicebot-backend/docs/todo_ai.md) | AI TODO | - | アクティブ |
-| [todo_app_ai.md](../virtual-voicebot-backend/docs/todo_app_ai.md) | App/AI TODO | - | 要確認 |
-| [todo_media.md](../virtual-voicebot-backend/docs/todo_media.md) | Media TODO | - | 要確認 |
-| [todo_tests_ops.md](../virtual-voicebot-backend/docs/todo_tests_ops.md) | Tests/Ops TODO | - | 要確認 |
+| [gap-analysis.md](../virtual-voicebot-backend/docs/gap-analysis.md) | RFC準拠ギャップ分析・仕様 | ✓ | アクティブ |
 
-### 3.5 分析ドキュメント
+### 3.5 実装計画 (docs/impl/)
 
 | ファイル | 内容 | 正本 | 状態 |
 |---------|------|:----:|------|
-| [gap-analysis.md](../virtual-voicebot-backend/docs/gap-analysis.md) | RFC準拠ギャップ分析 | ✓ | アクティブ |
-| [current-spec.md](../virtual-voicebot-backend/docs/current-spec.md) | 現行仕様 | - | **空→削除候補** |
+| [PLAN.md](../virtual-voicebot-backend/docs/impl/PLAN.md) | 実装ステップ計画 | ✓ | アクティブ |
+| [TODO.md](../virtual-voicebot-backend/docs/impl/TODO.md) | 実装バックログ | ✓ | アクティブ |
 
 ### 3.6 モジュールREADME (src/)
 

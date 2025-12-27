@@ -24,13 +24,18 @@ virtual-voicebot/
 ├── CONTRIBUTING.md              # 開発参加ガイド
 ├── STYLE.md                     # プロジェクト共通スタイル（正本）
 ├── PRINCIPLES.md                # 価値観・原則
+├── CLAUDE.md                    # Claude Code向け指示書
+├── AGENTS.md                    # 共通ルール（backendへの参照含む）
 │
 ├── docs/
 │   ├── DOCS_POLICY.md           # 本ドキュメント
 │   ├── DOCS_INDEX.md            # ドキュメント一覧
+│   ├── DOCS_ANALYSIS.md         # ドキュメント整理分析レポート
 │   ├── contract.md              # Frontend ↔ Backend API契約
-│   └── style/
-│       └── rust.md              # Rust固有スタイル（STYLE.mdに従属）
+│   ├── style/
+│   │   └── rust.md              # Rust固有スタイル（STYLE.mdに従属）
+│   └── reviews/                 # レビュー結果保存先
+│       └── YYYY-MM-DD_issue-N.md
 │
 └── virtual-voicebot-backend/
     ├── README.md                # Backend概要・クイックスタート
@@ -41,11 +46,15 @@ virtual-voicebot/
     │   ├── sip.md               # SIP詳細設計（正本）
     │   ├── rtp.md               # RTP詳細設計（正本）
     │   ├── session.md           # Session詳細設計（正本）
+    │   ├── ai.md                # AI連携設計（正本）
+    │   ├── app.md               # App層設計（正本）
     │   ├── recording.md         # 録音設計（正本）
     │   ├── tests.md             # テスト計画
     │   ├── tests_e2e_sipp.md    # SIPp E2E手順（正本）
-    │   ├── todo.md              # TODO管理（正本）
-    │   └── gap-analysis.md      # RFC準拠ギャップ分析
+    │   ├── gap-analysis.md      # RFC準拠ギャップ分析・仕様（正本）
+    │   └── impl/                # 実装計画
+    │       ├── PLAN.md          # 実装ステップ計画
+    │       └── TODO.md          # 実装バックログ
     │
     ├── src/*/README.md          # モジュール概要（docs/*.mdへのリンク含む）
     └── test/README.md           # E2Eランナー使用方法
@@ -82,11 +91,16 @@ virtual-voicebot/
 | SIP設計 | `docs/sip.md` | `src/sip/README.md` |
 | RTP設計 | `docs/rtp.md` | `src/rtp/README.md` |
 | Session設計 | `docs/session.md` | `src/session/README.md` |
+| AI連携設計 | `docs/ai.md` | `src/ai/README.md`, `docs/voice_bot_flow.md`（補助） |
+| App層設計 | `docs/app.md` | `src/app/README.md` |
 | 録音設計 | `docs/recording.md` | - |
-| TODO管理 | `docs/todo.md` | - |
+| テスト計画/AC | `docs/tests.md` | `docs/tests_e2e_sipp.md` |
+| RFC準拠/仕様 | `docs/gap-analysis.md` | - |
 | SIPp E2E | `docs/tests_e2e_sipp.md` | `test/README.md` |
 | AI/Codex指示 | `AGENTS.md` | - |
 | スタイル | `STYLE.md` | `docs/style/*.md` |
+
+> **2025-12-27 追加**: ai.md, app.md, tests.md を正本に追加（Refs Issue #7 CX-3, CX-4）
 
 ### 3.4 矛盾時の優先順位
 
@@ -112,17 +126,8 @@ virtual-voicebot/
 | パターン | 用途 | 例 |
 |---------|------|-----|
 | `{topic}.md` | 設計・仕様ドキュメント | `sip.md`, `rtp.md` |
-| `todo.md` | TODO管理（単一ファイル） | - |
-| `todo_{module}.md` | **廃止予定** | - |
 | `tests_{type}.md` | テスト関連 | `tests_e2e_sipp.md` |
-
-### 4.3 廃止するパターン
-
-| パターン | 理由 | 代替 |
-|---------|------|------|
-| `todo_{module}.md` | 分散管理で更新漏れ | `todo.md` 内セクション |
-| `current-spec.md` | 空ファイル | 削除 |
-| 重複AGENTS.md | ルートがTBD | backend版を正本 |
+| `gap-analysis.md` | RFC準拠ギャップ分析・仕様 | - |
 
 ---
 
@@ -134,13 +139,7 @@ virtual-voicebot/
 
 参照: `AGENTS.md §8 変更手順`
 
-### 5.2 TODO管理
-
-- `docs/todo.md` を唯一のTODO管理ファイルとする
-- 完了タスクは `[x]` でマークし、定期的にアーカイブセクションに移動
-- モジュール別TODOファイル（todo_sip.md等）は廃止予定
-
-### 5.3 陳腐化防止
+### 5.2 陳腐化防止
 
 - `src/*/README.md` は詳細を持たず、`docs/*.md` へのリンクを中心とする
 - 実装と乖離したドキュメントを発見した場合は、Issueを作成して追跡
@@ -151,7 +150,6 @@ virtual-voicebot/
 
 ### 6.1 アーカイブ対象
 
-- 完了済みの詳細TODOファイル
 - 旧バージョンの設計ドキュメント
 - 開発日誌（advenc_calendar/）
 
@@ -160,7 +158,7 @@ virtual-voicebot/
 **選択肢（要決定）**:
 - A) `docs/archive/` ディレクトリに移動
 - B) git履歴で管理し、ファイル自体は削除
-- C) 現状維持（完了済みも残す）
+- C) 現状維持
 
 ---
 

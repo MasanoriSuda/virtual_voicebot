@@ -1,4 +1,8 @@
-# app / ai インタフェース設計
+# app / ai インタフェース設計（概念フロー）
+
+> **補助資料**: 本ファイルは概念フローの補助資料です。
+> I/F の正本は [ai.md](ai.md) および [app.md](app.md) を参照してください。
+> （2025-12-27 確定、Refs Issue #7 CX-3）
 
 ## 全体方針
 - モデル: イベント/チャネルベースを基本とし、1リクエスト1レスポンスの場面のみ Future 呼び出しを許容するハイブリッド。
@@ -18,9 +22,10 @@
 
 ## TTS I/F（テキスト→音声）
 - 入力: `TtsRequest { session_id, stream_id, text, options? }` を app→ai::tts にチャネル送信。
-- 出力: `TtsPcmChunk { session_id, stream_id, pcm: i16[], sample_rate=8000, is_last }` を ai::tts→app/rtp へストリーミング（20–40ms 程度）。
+- 出力: `TtsPcmChunk { session_id, stream_id, pcm: i16[], sample_rate=8000, is_last }` を ai::tts→app へストリーミング（20–40ms 程度）。app は session 経由で rtp へ渡す。
 - エラー: `TtsError { session_id, reason }` を返し、この発話の失敗を明示。app が謝罪/次発話スキップ/終了を選択。
 - チャネル構成: app→tts（リクエスト）、tts→app（PCM/エラー）の2本。終端は `is_last=true` で明示。
+- **注意**: ai::tts→rtp への直接パスは禁止（design.md §4.2.1 参照）
 
 ## 共通イベント設計
 - app→ai: `AsrInputPcm`, `LlmRequest`, `TtsRequest`
@@ -29,7 +34,9 @@
 - エラー整合: design.md のエラーポリシーに従い、1回目は謝罪音声で継続、連続失敗で BYE を選べるようシグナルする。
 
 ## ストリーミング I/O ライフサイクル
-- ASR開始: session Confirmed で app が PCM を ASR 入力チャネルへ送り始める。通話終了/停止指示でチャネルを閉じる。
-- TTS開始: app が発話テキストを決定した時点でリクエストを送り、PCMチャンクを受領しつつ rtp へ渡す。
+- ASR開始: session Confirmed で app が session から受け取った PCM を ASR 入力チャネルへ送り始める。通話終了/停止指示でチャネルを閉じる。
+- TTS開始: app が発話テキストを決定した時点でリクエストを送り、PCM チャンクを受領しつつ session 経由で rtp へ渡す。
 - 終了条件: 通話終了、app 指示、連続エラーなどで終了シグナル受領時にチャネルを閉じる。
 - バックプレッシャ: 入力キューあふれ時は古い PCM を破棄（ログ）。TTS 出力滞留時は app 側で次発話を抑制する運用（MVP）。
+
+**注意**: rtp↔ai の直接通信は禁止。PCM は必ず `rtp → session → app → ai::asr` / `ai::tts → app → session → rtp` の経路で流れる（design.md §4.2.1 参照、2025-12-27 確定）

@@ -1,4 +1,82 @@
+<!-- SOURCE_OF_TRUTH: テスト計画・受入条件 -->
 # テスト計画
+
+**正本**: 本ファイルが受入条件（AC）の正本です（2025-12-27 確定、Refs Issue #7 CX-4）
+
+---
+
+## 受入条件（Acceptance Criteria）
+
+以下は SIPp 等で検証する受入条件です。gap-analysis.md の優先度に基づいています。
+
+### AC-1: 基本着信フロー ✓
+
+**状態**: 実装済み・動作確認済み
+
+| # | シナリオ | 期待結果 | SIPp |
+|---|---------|---------|------|
+| AC-1.1 | INVITE 受信 → 100/180/200 | 200 OK 受信 | basic_uas.xml |
+| AC-1.2 | ACK 受信 → セッション確立 | RTP 双方向 | basic_uas.xml |
+| AC-1.3 | BYE 受信 → 200 OK | 正常終了 | basic_uas.xml |
+
+### AC-2: 100rel/PRACK ✓
+
+**状態**: 実装済み・動作確認済み
+
+| # | シナリオ | 期待結果 | SIPp |
+|---|---------|---------|------|
+| AC-2.1 | 183 Reliable 送信 | 183 + RSeq 受信 | basic_uas_100rel.xml |
+| AC-2.2 | PRACK 送信 → 200 OK | 200 OK (PRACK) | basic_uas_100rel.xml |
+| AC-2.3 | 32秒タイムアウト | 504 受信 | - |
+
+### AC-3: Session Timer ✓
+
+**状態**: 実装済み・動作確認済み
+
+| # | シナリオ | 期待結果 | SIPp |
+|---|---------|---------|------|
+| AC-3.1 | Session-Expires 受信 | 200 OK + Session-Expires | basic_uas_update.xml |
+| AC-3.2 | Min-SE 下回り | 422 + Min-SE: 90 | basic_uas_update.xml |
+
+### AC-4: CANCEL 処理 (P0)
+
+**状態**: 未実装
+
+| # | シナリオ | 期待結果 | SIPp |
+|---|---------|---------|------|
+| AC-4.1 | CANCEL 受信 | 200 OK (CANCEL) | cancel_uac.xml (要作成) |
+| AC-4.2 | INVITE への応答 | 487 Request Terminated | cancel_uac.xml |
+
+### AC-5: DTMF トーン検出 (P0)
+
+**状態**: 未実装
+
+| # | シナリオ | 期待結果 | 検証スクリプト |
+|---|---------|---------|---------------|
+| AC-5.1 | DTMF "1" トーン受信 | SessionIn::Dtmf(1) 発火 | send_dtmf_tone.py (要作成) |
+| AC-5.2 | 全パターン (0-9,*,#) | 正常検出 | send_dtmf_tone.py |
+
+### AC-6: Digest 認証 (Deferred)
+
+**状態**: Deferred - Spec 策定後に実装
+
+### AC-7: UAC 発信 (Deferred)
+
+**状態**: Deferred - UAS 完了後に着手
+
+### AC-8: HTTP Range 対応 (MVP)
+
+**状態**: 未実装（MVP 必須、Refs Issue #7 CX-2）
+
+| # | シナリオ | 期待結果 |
+|---|---------|---------|
+| AC-8.1 | HEAD/GET | `Accept-Ranges: bytes` |
+| AC-8.2 | `Range: bytes=0-1023` | 206 + Content-Range + Content-Length=1024 |
+| AC-8.3 | `Range: bytes=0-` | 206 または 200 |
+| AC-8.4 | 不正 Range | 416 Range Not Satisfiable |
+| AC-8.5 | 存在しない callId | 404 Not Found |
+
+---
 
 ## テストレベル
 - ユニット: sip/rtp/session/app/ai 各モジュールのロジック単位（必須）。パーサ/ビルダ、状態機械、ジッタ処理、AIクライアントのエラー伝搬など。

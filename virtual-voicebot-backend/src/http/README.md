@@ -3,7 +3,10 @@
 ## 目的
 - Frontend 向けの REST API と SSE を提供する。
 - 録音ファイルの配信（必要なら Range 対応）を提供する。
-- 仕様（契約）は docs/contract.md を正とする。
+
+## 詳細設計
+- API契約（正本）: [docs/contract.md](../../../docs/contract.md)
+- 録音設計: [docs/recording.md](../../docs/recording.md)
 
 ## 責務
 - REST:

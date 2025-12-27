@@ -144,37 +144,12 @@ E2E では以下を満たすこと：
 - Range/404/416 などのケースがテストで担保される
 
 ### SIPp を用いたE2E（段階導入）
-#### 配置（Single Source of Truth）
-- SIPp のシナリオの正は **`test/sipp/sip/scenarios/`** とする（ここを参照して実行する）。
-  - 例: `test/sipp/sip/scenarios/basic_uas.xml`
-- `test/simpletest/` は個人用の作業ディレクトリであり、手順/CIの参照先にしない。
 
-#### 実行（SIPpは cargo test と独立）
-- SIPp は `cargo test` とは別のテストランナーであり、**別コマンド**で実行する。
-- CI では SIP のみ（RTPなし）を SIPp で実行する（段階導入）。
+SIPp E2E テストの詳細は **[docs/tests_e2e_sipp.md](docs/tests_e2e_sipp.md)** を参照してください。
 
-#### docker compose（推奨・CIも同じ）
-- compose ファイルの正は **`test/docker-compose.sipp.yml`** とする。
-- 実行例:
-  - `docker compose -f test/docker-compose.sipp.yml up --build --abort-on-container-exit --exit-code-from sipp`
-  - 終了後: `docker compose -f test/docker-compose.sipp.yml down -v`
-- compose 実行時は `UAS_SIP_HOST=uas` を固定とする（127.0.0.1 は使わない）。
+ここでは要点のみ記載します：
 
-#### ローカル実行（補助）
-- サーバを別途起動している場合:
-  - `sipp <server_ip>:<sip_port> -sf test/sipp/sip/scenarios/basic_uas.xml -m 1 -trace_err -trace_msg`
-  - `UAS_SIP_HOST=127.0.0.1 UAS_SIP_PORT=5060 sipp $UAS_SIP_HOST:$UAS_SIP_PORT -sf test/sipp/sip/scenarios/basic_uas.xml -m 1 -trace_err -trace_msg`
-
-#### 既定値（SIPp実行パラメータ）
-- UAS のSIP待受は当面 `UDP 5060` を既定とする（TCP/TLSは後続）。
-- ローカル実行の既定宛先は `127.0.0.1:5060` とする。
-- compose 実行の既定宛先は `uas:5060` とする（`UAS_SIP_HOST=uas` 固定）。
-- SIPp の宛先は `UAS_SIP_HOST` / `UAS_SIP_PORT` を環境変数で上書き可能とする。
-
-#### 再現性（起動順）
-- docker compose 実行時は「UAS起動待ち」を必ず入れる（healthcheck など）。
-  SIPp がUAS起動前に実行されないことを正とする。
-
-#### 成功条件とログ
-- 成功条件は SIPp の終了コード 0（`--exit-code-from sipp`）とする。
-- 失敗調査のため、SIPp の `-trace_err -trace_msg` 出力をホスト側へ保存する（推奨: `test/artifacts/sipp/`）。
+- **シナリオの正**: `test/sipp/sip/scenarios/`
+- **compose ファイルの正**: `test/docker-compose.sipp.yml`
+- **実行**: `docker compose -f test/docker-compose.sipp.yml up --build --abort-on-container-exit --exit-code-from sipp`
+- **成功条件**: SIPp 終了コード 0
