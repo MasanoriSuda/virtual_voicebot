@@ -8,9 +8,9 @@
 |------|-----|
 | **Status** | Active |
 | **Owner** | TBD |
-| **Last Updated** | 2025-12-27 |
+| **Last Updated** | 2025-12-28 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9) |
 
 ---
 
@@ -48,6 +48,7 @@
 | [Step-07](#step-07-artpmap-パース) | a=rtpmap パース | - | 未着手 |
 | [Step-08](#step-08-rtcp-sdes-cname) | RTCP SDES (CNAME) | - | 未着手 |
 | [Step-09](#step-09-486-busy-here) | 486 Busy Here | - | 未着手 |
+| [Step-12](#step-12-timer-ghij-実装) | Timer G/H/I/J 実装 | - | 未着手 |
 
 ### P2: 拡張（汎用 SIP）
 
@@ -55,6 +56,7 @@
 |------|------|------|------|
 | [Step-10](#step-10-afmtp-パース) | a=fmtp パース | → Step-07 | 未着手 |
 | [Step-11](#step-11-rfc-2833-dtmf-受信) | RFC 2833 DTMF 受信 | → Step-02 | 未着手 |
+| [Step-13](#step-13-rtp-extensioncsrc-サポート) | RTP extension/CSRC サポート | - | 未着手 |
 
 ---
 
@@ -471,6 +473,93 @@ cargo test rtp::dtmf
 
 ---
 
+## Step-12: Timer G/H/I/J 実装
+
+**目的**: RFC 3261 §17.2.1/§17.2.2 準拠のトランザクションタイマーを実装
+
+**RFC参照**: RFC 3261 §17.2.1 (INVITE サーバートランザクション), §17.2.2 (非 INVITE サーバートランザクション)
+
+**関連**: [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9) PR-RFC-3
+
+### 背景
+
+- **Timer G**: INVITE final response 再送間隔（UDP の場合）
+- **Timer H**: ACK 待機タイムアウト（64*T1）
+- **Timer I**: 確認済み状態の保持期間（T4）
+- **Timer J**: 非 INVITE 最終応答後の待機期間（64*T1）
+
+### DoD (Definition of Done)
+
+- [ ] Timer G 実装（T1 から 2*T1, 4*T1... と倍増、最大 T2）
+- [ ] Timer H 実装（64*T1 後にトランザクション終了）
+- [ ] Timer I 実装（T4 後に Confirmed → Terminated）
+- [ ] Timer J 実装（64*T1 後に Completed → Terminated）
+- [ ] トランザクション状態遷移図との整合性確認
+- [ ] Unit test 追加
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/sip/transaction.rs` | Timer G/H/I/J ロジック追加 |
+| `src/sip/mod.rs` | タイマー発火ハンドリング |
+
+### 変更上限
+
+- **行数**: <=200行
+- **ファイル数**: <=3
+
+### 検証方法
+
+```bash
+cargo test sip::transaction
+# E2E: INVITE → no ACK シナリオで Timer H 動作確認
+```
+
+---
+
+## Step-13: RTP extension/CSRC サポート
+
+**目的**: RTP ヘッダの拡張フィールド (X bit) と CSRC リストをパースする
+
+**RFC参照**: RFC 3550 §5.1
+
+**関連**: [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9) PR-RFC-4
+
+### 背景
+
+- **CC (CSRC Count)**: ミキサー環境で複数ソースを識別
+- **X bit**: 拡張ヘッダの存在を示す
+- 現状は CC=0, X=0 前提でパースしているため、拡張ヘッダ付きパケットを正しく処理できない
+
+### DoD (Definition of Done)
+
+- [ ] RTP ヘッダの CC フィールドをパース
+- [ ] CSRC リスト (CC*4 バイト) を読み飛ばし
+- [ ] X bit = 1 の場合、拡張ヘッダをパース/スキップ
+- [ ] Unit test 追加（拡張ヘッダ付きパケット）
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/rtp/packet.rs` | RTP ヘッダパーサ拡張 |
+| `src/rtp/rx.rs` | 拡張ヘッダ対応 |
+
+### 変更上限
+
+- **行数**: <=100行
+- **ファイル数**: <=2
+
+### 検証方法
+
+```bash
+cargo test rtp::packet
+# 拡張ヘッダ付き RTP パケットでテスト
+```
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -486,6 +575,7 @@ cargo test rtp::dtmf
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2025-12-28 | 1.3 | Issue #9 統合: Step-12 (Timer G/H/I/J), Step-13 (RTP extension/CSRC) 追加 |
 | 2025-12-27 | 1.2 | UAS 優先に再構成、Deferred Steps 追加、Step 番号を依存順に並び替え |
 | 2025-12-25 | 1.1 | RFC 2833 を P2 に変更、DTMF トーン検出 (Goertzel) を P0 で追加 |
 | 2025-12-25 | 1.0 | 初版作成 |

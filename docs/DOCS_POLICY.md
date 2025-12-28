@@ -39,6 +39,7 @@ virtual-voicebot/
 │
 └── virtual-voicebot-backend/
     ├── README.md                # Backend概要・クイックスタート
+    ├── CLAUDE.md                # Claude Code向けバックエンド開発ガイド（正本）
     ├── AGENTS.md                # AI/Codex向け指示書（正本）
     │
     ├── docs/
@@ -98,6 +99,8 @@ virtual-voicebot/
 | RFC準拠/仕様 | `docs/gap-analysis.md` | - |
 | SIPp E2E | `docs/tests_e2e_sipp.md` | `test/README.md` |
 | AI/Codex指示 | `AGENTS.md` | - |
+| Claude Code共通 | `CLAUDE.md`（root） | - |
+| Claude Code Backend | `virtual-voicebot-backend/CLAUDE.md` | - |
 | スタイル | `STYLE.md` | `docs/style/*.md` |
 
 > **2025-12-27 追加**: ai.md, app.md, tests.md を正本に追加（Refs Issue #7 CX-3, CX-4）

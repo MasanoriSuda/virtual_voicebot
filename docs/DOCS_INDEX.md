@@ -1,7 +1,7 @@
 # ドキュメント一覧 (DOCS_INDEX)
 
 **ステータス**: ドラフト
-**最終更新**: 2025-12-27
+**最終更新**: 2025-12-28
 
 ---
 
@@ -15,6 +15,10 @@
 | アーキテクチャ | [design.md](../virtual-voicebot-backend/docs/design.md) |
 | API契約 | [contract.md](contract.md) |
 | RFCギャップ分析 | [gap-analysis.md](../virtual-voicebot-backend/docs/gap-analysis.md) |
+| プロダクト要求 | [PRD.md](../virtual-voicebot-backend/docs/PRD.md) |
+| 機能設計 | [FDD.md](../virtual-voicebot-backend/docs/FDD.md) |
+| 技術仕様 | [TSD.md](../virtual-voicebot-backend/docs/TSD.md) |
+| 開発ガイドライン | [DEVELOPMENT_GUIDE.md](../virtual-voicebot-backend/docs/DEVELOPMENT_GUIDE.md) |
 
 ---
 
@@ -23,6 +27,7 @@
 | ファイル | 内容 | 正本 |
 |---------|------|:----:|
 | [README.md](../README.md) | リポジトリ概要、サブプロジェクト構成 | - |
+| [CLAUDE.md](../CLAUDE.md) | AI/Claude Code 向け共通ガイド | ✓ |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | 開発参加ガイド | ✓ |
 | [STYLE.md](../STYLE.md) | プロジェクト共通スタイルガイド | ✓ |
 | [PRINCIPLES.md](../PRINCIPLES.md) | 価値観・原則 | ✓ |
@@ -49,6 +54,7 @@
 | ファイル | 内容 | 正本 |
 |---------|------|:----:|
 | [README.md](../virtual-voicebot-backend/README.md) | Backend概要、クイックスタート | - |
+| [CLAUDE.md](../virtual-voicebot-backend/CLAUDE.md) | AI/Claude Code 向けバックエンド開発ガイド | ✓ |
 | [AGENTS.md](../virtual-voicebot-backend/AGENTS.md) | AI/Codex向け指示書 | ✓ |
 
 ### 3.2 設計ドキュメント (docs/)
@@ -64,6 +70,10 @@
 | [recording.md](../virtual-voicebot-backend/docs/recording.md) | 録音設計 | ✓ | アクティブ |
 | [voice_bot_flow.md](../virtual-voicebot-backend/docs/voice_bot_flow.md) | 対話フロー | - | 要確認 |
 | [mvp.md](../virtual-voicebot-backend/docs/mvp.md) | MVP定義 | - | 要確認 |
+| [PRD.md](../virtual-voicebot-backend/docs/PRD.md) | プロダクト要求仕様書 | ✓ | アクティブ |
+| [FDD.md](../virtual-voicebot-backend/docs/FDD.md) | 機能設計書 | ✓ | アクティブ |
+| [TSD.md](../virtual-voicebot-backend/docs/TSD.md) | 技術仕様書 | ✓ | アクティブ |
+| [DEVELOPMENT_GUIDE.md](../virtual-voicebot-backend/docs/DEVELOPMENT_GUIDE.md) | 開発ガイドライン | ✓ | アクティブ |
 
 ### 3.3 テストドキュメント
 
