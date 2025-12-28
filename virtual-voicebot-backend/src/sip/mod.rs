@@ -32,6 +32,7 @@ use crate::sip::transaction::{
 };
 use crate::sip::tx::{SipTransportRequest, SipTransportTx};
 use crate::transport::{SipInput, TransportPeer};
+use rand::Rng;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -90,6 +91,7 @@ struct InviteContext {
     req: SipRequest,
     reliable: Option<ReliableProvisional>,
     expected_rack: Option<RAckHeader>,
+    last_rseq: Option<u32>,
     session_timer: Option<SessionTimerConfig>,
     final_ok: Option<FinalOkRetransmit>,
     final_ok_payload: Option<Vec<u8>>,
@@ -214,6 +216,28 @@ fn parse_session_expires(value: &str) -> Option<(u64, Option<Refresher>)> {
 
 fn parse_min_se(value: &str) -> Option<u64> {
     value.trim().parse::<u64>().ok()
+}
+
+const RSEQ_MIN: u32 = 1;
+const RSEQ_MAX: u32 = 0x7FFF_FFFF;
+
+fn next_rseq(ctx: &mut InviteContext) -> Option<u32> {
+    let mut rng = rand::thread_rng();
+    next_rseq_with_rng(ctx, &mut rng)
+}
+
+fn next_rseq_with_rng<R: Rng + ?Sized>(ctx: &mut InviteContext, rng: &mut R) -> Option<u32> {
+    let rseq = match ctx.last_rseq {
+        Some(prev) => {
+            if prev >= RSEQ_MAX {
+                return None;
+            }
+            prev + 1
+        }
+        None => rng.gen_range(RSEQ_MIN..=RSEQ_MAX),
+    };
+    ctx.last_rseq = Some(rseq);
+    Some(rseq)
 }
 
 enum SessionTimerError {
@@ -383,6 +407,7 @@ impl SipCore {
             req: req.clone(),
             reliable: None,
             expected_rack: None,
+            last_rseq: None,
             session_timer: session_timer.clone(),
             final_ok: None,
             final_ok_payload: None,
@@ -605,6 +630,7 @@ impl SipCore {
         call_id: &CallId,
         peer: TransportPeer,
         payload: Vec<u8>,
+        rseq: u32,
     ) {
         let Some(ctx) = self.invites.get_mut(call_id) else {
             return;
@@ -614,7 +640,6 @@ impl SipCore {
         }
 
         let stop = Arc::new(AtomicBool::new(false));
-        let rseq = 1;
         let expected_rack = ctx
             .req
             .header_value("CSeq")
@@ -756,14 +781,25 @@ impl SipCore {
                         response_provisional_from_request(&ctx.req, 180, "Ringing")
                     {
                         let reliable = supports_100rel(&ctx.req);
+                        let mut rseq = None;
+                        let mut reliable_send = reliable;
                         if reliable {
-                            resp.headers.push(SipHeader::new("Require", "100rel"));
-                            resp.headers.push(SipHeader::new("RSeq", "1"));
+                            rseq = next_rseq(ctx);
+                            if let Some(value) = rseq {
+                                resp.headers.push(SipHeader::new("Require", "100rel"));
+                                resp.headers.push(SipHeader::new("RSeq", value.to_string()));
+                            } else {
+                                log::warn!(
+                                    "[sip 100rel] RSeq max reached; sending non-100rel provisional call_id={}",
+                                    call_id
+                                );
+                                reliable_send = false;
+                            }
                         }
                         let bytes = resp.to_bytes();
                         let peer = ctx.tx.peer;
                         ctx.tx.remember_provisional(bytes.clone());
-                        Some((peer, bytes, reliable))
+                        Some((peer, bytes, reliable_send, rseq))
                     } else {
                         None
                     }
@@ -771,9 +807,11 @@ impl SipCore {
                     None
                 };
 
-                if let Some((peer, bytes, reliable)) = provision {
+                if let Some((peer, bytes, reliable, rseq)) = provision {
                     if reliable {
-                        self.start_reliable_provisional(call_id, peer, bytes.clone());
+                        if let Some(rseq) = rseq {
+                            self.start_reliable_provisional(call_id, peer, bytes.clone(), rseq);
+                        }
                     }
                     self.send_payload(peer, bytes);
                 }
@@ -895,5 +933,69 @@ impl SipCore {
             alive
         });
         events
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    fn dummy_peer() -> TransportPeer {
+        TransportPeer::Udp("127.0.0.1:5060".parse().unwrap())
+    }
+
+    fn dummy_invite_context() -> InviteContext {
+        let req = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com").build();
+        InviteContext {
+            tx: InviteServerTransaction::new(dummy_peer()),
+            req,
+            reliable: None,
+            expected_rack: None,
+            last_rseq: None,
+            session_timer: None,
+            final_ok: None,
+            final_ok_payload: None,
+        }
+    }
+
+    #[test]
+    fn rseq_random_and_increment() {
+        let mut ctx = dummy_invite_context();
+        let mut rng = StdRng::seed_from_u64(7);
+        let first = next_rseq_with_rng(&mut ctx, &mut rng).expect("rseq");
+        assert!((RSEQ_MIN..=RSEQ_MAX).contains(&first));
+        let second = next_rseq_with_rng(&mut ctx, &mut rng).expect("rseq");
+        assert_eq!(second, first + 1);
+    }
+
+    #[test]
+    fn rseq_overflow_returns_none() {
+        let mut ctx = dummy_invite_context();
+        ctx.last_rseq = Some(RSEQ_MAX);
+        let mut rng = StdRng::seed_from_u64(1);
+        assert!(next_rseq_with_rng(&mut ctx, &mut rng).is_none());
+        assert_eq!(ctx.last_rseq, Some(RSEQ_MAX));
+    }
+
+    #[test]
+    fn retransmit_preserves_rseq_payload() {
+        let mut tx = InviteServerTransaction::new(dummy_peer());
+        let resp = SipResponseBuilder::new(180, "Ringing")
+            .header("Via", "SIP/2.0/UDP example.com")
+            .header("From", "<sip:alice@example.com>")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .header("Require", "100rel")
+            .header("RSeq", "777")
+            .build();
+        let bytes = resp.to_bytes();
+        tx.remember_provisional(bytes.clone());
+        match tx.on_retransmit() {
+            Some(InviteTxAction::Retransmit(retransmit)) => assert_eq!(retransmit, bytes),
+            _ => panic!("expected retransmit"),
+        }
     }
 }

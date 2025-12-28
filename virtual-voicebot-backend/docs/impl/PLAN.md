@@ -43,7 +43,7 @@
 
 | Step | 概要 | 依存 | 状態 |
 |------|------|------|------|
-| [Step-05](#step-05-rseq-ランダム化) | RSeq ランダム化 | - | 未着手 |
+| [Step-05](#step-05-rseq-ランダム化) | RSeq ランダム化 | - | 完了 |
 | [Step-06](#step-06-options-応答) | OPTIONS 応答 | - | 未着手 |
 | [Step-07](#step-07-artpmap-パース) | a=rtpmap パース | - | 未着手 |
 | [Step-08](#step-08-rtcp-sdes-cname) | RTCP SDES (CNAME) | - | 未着手 |
@@ -241,9 +241,9 @@ python test/scripts/send_dtmf_tone.py --target <ip:port> --digit 5 --duration 20
 
 ### DoD (Definition of Done)
 
-- [ ] RSeq 初期値を乱数生成（1〜2^31-1）
-- [ ] 既存の 100rel テストがパス
-- [ ] Unit test で乱数範囲を確認
+- [x] RSeq 初期値を乱数生成（1〜2^31-1）
+- [x] 既存の 100rel テストがパス
+- [x] Unit test で乱数範囲を確認
 
 ### 対象パス
 
