@@ -296,6 +296,33 @@ pub fn response_simple_from_request(
     )
 }
 
+const OPTIONS_ALLOW: &str = "INVITE, ACK, BYE, OPTIONS, UPDATE, PRACK";
+const OPTIONS_SUPPORTED: &str = "100rel, timer";
+
+pub fn response_options_from_request(req: &SipRequest) -> Option<SipResponse> {
+    let via = req.header_value("Via")?;
+    let from = req.header_value("From")?;
+    let mut to = req.header_value("To")?.to_string();
+    let call_id = req.header_value("Call-ID")?;
+    let cseq = req.header_value("CSeq")?;
+
+    if !to.to_ascii_lowercase().contains("tag=") {
+        to = format!("{to};tag=rustbot");
+    }
+
+    Some(
+        SipResponseBuilder::new(200, "OK")
+            .header("Via", via)
+            .header("From", from)
+            .header("To", to)
+            .header("Call-ID", call_id)
+            .header("CSeq", cseq)
+            .header("Allow", OPTIONS_ALLOW)
+            .header("Supported", OPTIONS_SUPPORTED)
+            .build(),
+    )
+}
+
 impl fmt::Display for SipResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut out = String::new();

@@ -24,7 +24,8 @@ pub use protocols::*;
 
 use crate::session::types::{CallId, Sdp, SessionOut};
 use crate::sip::builder::{
-    response_final_with_sdp, response_provisional_from_request, response_simple_from_request,
+    response_final_with_sdp, response_options_from_request, response_provisional_from_request,
+    response_simple_from_request,
 };
 use crate::sip::transaction::{
     InviteServerTransaction, InviteTxAction, InviteTxState, NonInviteServerTransaction,
@@ -352,6 +353,7 @@ impl SipCore {
             SipMethod::Invite => self.handle_invite(req, headers, peer),
             SipMethod::Ack => self.handle_ack(headers.call_id),
             SipMethod::Bye => self.handle_non_invite(req, headers, peer, 200, "OK", true),
+            SipMethod::Options => self.handle_options(req, headers, peer),
             SipMethod::Register => self.handle_non_invite(req, headers, peer, 200, "OK", false),
             SipMethod::Update => self.handle_update(req, headers, peer),
             SipMethod::Prack => self.handle_prack(req, headers, peer),
@@ -499,6 +501,32 @@ impl SipCore {
         } else {
             vec![]
         }
+    }
+
+    fn handle_options(
+        &mut self,
+        req: SipRequest,
+        headers: CoreHeaderSnapshot,
+        peer: TransportPeer,
+    ) -> Vec<SipEvent> {
+        let tx = self
+            .non_invites
+            .entry(headers.call_id.clone())
+            .or_insert_with(|| NonInviteServerTransaction::new(peer, req.clone()));
+
+        if let Some(resp) = tx.on_retransmit() {
+            self.send_payload(peer, resp);
+            return vec![];
+        }
+
+        if let Some(resp) = response_options_from_request(&req) {
+            let bytes = resp.to_bytes();
+            tx.on_final_sent(bytes.clone());
+            tx.last_request = Some(req);
+            self.send_payload(peer, bytes);
+        }
+
+        vec![]
     }
 
     fn handle_prack(
@@ -941,6 +969,7 @@ mod tests {
     use super::*;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use tokio::sync::mpsc::unbounded_channel;
 
     fn dummy_peer() -> TransportPeer {
         TransportPeer::Udp("127.0.0.1:5060".parse().unwrap())
@@ -997,5 +1026,58 @@ mod tests {
             Some(InviteTxAction::Retransmit(retransmit)) => assert_eq!(retransmit, bytes),
             _ => panic!("expected retransmit"),
         }
+    }
+
+    #[test]
+    fn options_response_includes_allow_and_supported() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut core = SipCore::new(
+            SipConfig {
+                advertised_ip: "127.0.0.1".to_string(),
+                sip_port: 5060,
+                advertised_rtp_port: 4000,
+            },
+            tx,
+        );
+
+        let req = SipRequestBuilder::new(SipMethod::Options, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 OPTIONS")
+            .build();
+        let input = SipInput {
+            peer: dummy_peer(),
+            data: req.to_bytes(),
+        };
+
+        let events = core.handle_input(&input);
+        assert!(events.is_empty());
+
+        let sent = rx.try_recv().expect("options response");
+        let resp_text = String::from_utf8(sent.payload).expect("utf8 response");
+        let resp = match parse_sip_message(&resp_text).expect("parse response") {
+            SipMessage::Response(resp) => resp,
+            _ => panic!("expected response"),
+        };
+        assert_eq!(resp.status_code, 200);
+
+        let allow = resp
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("Allow"))
+            .map(|h| h.value.as_str());
+        for method in ["INVITE", "ACK", "BYE", "OPTIONS", "UPDATE", "PRACK"] {
+            assert!(header_has_token(allow, method));
+        }
+
+        let supported = resp
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("Supported"))
+            .map(|h| h.value.as_str());
+        assert!(header_has_token(supported, "100rel"));
+        assert!(header_has_token(supported, "timer"));
     }
 }

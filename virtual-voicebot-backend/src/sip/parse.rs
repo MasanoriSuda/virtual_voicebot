@@ -85,18 +85,18 @@ fn parse_head(input: &str) -> Result<(StartLine, Vec<SipHeader>)> {
 
 fn parse_start_line(input: &str) -> IResult<&str, StartLine> {
     alt((
-        map(terminated(parse_request_line, parse_crlf), |v| {
-            StartLine::Request {
-                method: v.0,
-                uri: v.1,
-                version: v.2,
-            }
-        }),
         map(terminated(parse_status_line, parse_crlf), |v| {
             StartLine::Response {
                 version: v.0,
                 status: v.1,
                 reason: v.2,
+            }
+        }),
+        map(terminated(parse_request_line, parse_crlf), |v| {
+            StartLine::Request {
+                method: v.0,
+                uri: v.1,
+                version: v.2,
             }
         }),
     ))(input)
