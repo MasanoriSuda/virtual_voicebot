@@ -21,7 +21,7 @@
 **原則**:
 - 1 Step = 1 PR
 - 各 Step は <=200行 / <=5ファイル
-- Spec変更が必要なものは TODO.md の「Spec待ち」へ分離
+- Spec変更が必要なものは Deferred Steps へ分離
 - 各 Step に DoD（Definition of Done）を明記
 
 ---
@@ -44,11 +44,15 @@
 | Step | 概要 | 依存 | 状態 |
 |------|------|------|------|
 | [Step-05](#step-05-rseq-ランダム化) | RSeq ランダム化 | - | 完了 |
-| [Step-06](#step-06-options-応答) | OPTIONS 応答 | - | 未着手 |
+| [Step-06](#step-06-options-応答) | OPTIONS 応答 | - | 完了 |
 | [Step-07](#step-07-artpmap-パース) | a=rtpmap パース | - | 未着手 |
 | [Step-08](#step-08-rtcp-sdes-cname) | RTCP SDES (CNAME) | - | 未着手 |
 | [Step-09](#step-09-486-busy-here) | 486 Busy Here | - | 未着手 |
 | [Step-12](#step-12-timer-ghij-実装) | Timer G/H/I/J 実装 | - | 未着手 |
+| - | 183 Session Progress | - | 実装済み |
+| - | 複数 Reliable Provisional | - | 未着手 |
+| - | Contact URI 完全パース | - | 未着手 |
+| - | IPv6 対応 (c=IN IP6) | - | 未着手 |
 
 ### P2: 拡張（汎用 SIP）
 
@@ -57,24 +61,66 @@
 | [Step-10](#step-10-afmtp-パース) | a=fmtp パース | → Step-07 | 未着手 |
 | [Step-11](#step-11-rfc-2833-dtmf-受信) | RFC 2833 DTMF 受信 | → Step-02 | 未着手 |
 | [Step-13](#step-13-rtp-extensioncsrc-サポート) | RTP extension/CSRC サポート | - | 未着手 |
+| - | a=ptime パース | - | 未着手 |
+| - | RTCP BYE | - | 未着手 |
+| - | RTCP 動的送信間隔 | - | 未着手 |
+| - | RFC 3389 Comfort Noise | - | 未着手 |
+| - | 5xx サーバーエラー応答 | - | 未着手 |
 
 ---
 
 ## Deferred Steps（後工程）
 
-以下は UAS 完了後に着手する項目です。削除せず、Spec 策定後に Active へ昇格させます。
+以下は UAS 完了後に着手する項目です。実装前に仕様/設計の決定が必要です。
+Spec 策定後に Active へ昇格させます。
 
-| ID | 概要 | RFC | 必要な決定事項 |
+### UAC 機能（発信）
+
+| ID | 項目 | RFC | 必要な決定事項 |
 |----|------|-----|---------------|
 | DEF-01 | UAC INVITE 送信 | 3261 §17.1.1 | UAC トランザクション状態機械の設計 |
 | DEF-02 | UAC ACK/BYE 送信 | 3261 | ダイアログ管理の設計 |
-| DEF-03 | DNS SRV/NAPTR 解決 | 3263 | resolver クレート選定、キャッシュ戦略 |
-| DEF-04 | Digest 認証 (UAS) | 3261 §22 | credentials ストア設計、nonce 管理 |
-| DEF-05 | 401/407 チャレンジ | 3261 | realm/qop 設定方針 |
-| DEF-06 | TLS トランスポート | 3261 §26 | 証明書管理、SIPS URI 対応 |
-| DEF-07 | SRTP | 3711 | キー交換方式 (SDES vs DTLS-SRTP) |
-| DEF-08 | Proxy 機能 | 3261 | Stateful/Stateless、フォーキング戦略 |
-| DEF-09 | REFER/Replaces | 3515/3891 | 転送ロジック、Refer-To 処理 |
+| DEF-03 | DNS SRV 解決 | 3263 | resolver クレート選定、キャッシュ戦略 |
+| DEF-04 | DNS NAPTR 解決 | 3263 | トランスポート自動選択ロジック |
+
+### 認証
+
+| ID | 項目 | RFC | 必要な決定事項 |
+|----|------|-----|---------------|
+| DEF-05 | Digest 認証 (UAS) | 3261 §22 | credentials ストア設計、nonce 管理 |
+| DEF-06 | 401/407 チャレンジ | 3261 | realm/qop 設定方針 |
+| DEF-07 | 403 Forbidden | 3261 | 認証失敗時のポリシー |
+
+### セキュリティ
+
+| ID | 項目 | RFC | 必要な決定事項 |
+|----|------|-----|---------------|
+| DEF-08 | TLS トランスポート | 3261 §26 | 証明書管理、SIPS URI 対応 |
+| DEF-09 | SRTP | 3711 | キー交換方式 (SDES vs DTLS-SRTP) |
+
+### セッション管理
+
+| ID | 項目 | RFC | 必要な決定事項 |
+|----|------|-----|---------------|
+| DEF-10 | re-INVITE 送信 | 4028 | refresher=uas 時のタイマー設計 |
+| DEF-11 | UPDATE 送信 | 3311 | セッション更新トリガー設計 |
+| DEF-12 | Hold/Resume | 3264 | a=sendonly/recvonly 切り替え設計 |
+| DEF-13 | 複数コーデック交渉 | 3264 | コーデック優先度、動的 PT 管理 |
+
+### Proxy 機能
+
+| ID | 項目 | RFC | 必要な決定事項 |
+|----|------|-----|---------------|
+| DEF-14 | Proxy 機能 | 3261 | Stateful/Stateless、フォーキング戦略 |
+| DEF-15 | Record-Route/Route | 3261 | ルーティングテーブル設計 |
+| DEF-16 | REGISTER バインディング | 3261 | バインディング DB、Expires 管理 |
+
+### 転送
+
+| ID | 項目 | RFC | 必要な決定事項 |
+|----|------|-----|---------------|
+| DEF-17 | REFER | 3515 | Refer-To 処理、NOTIFY 送信 |
+| DEF-18 | Replaces | 3891 | ダイアログ置換ロジック |
 
 ---
 
@@ -568,6 +614,7 @@ cargo test rtp::packet
 | 進行中 | PR 作成中 |
 | レビュー中 | PR レビュー待ち |
 | 完了 | マージ済み |
+| 実装済み | 既に実装されている |
 
 ---
 
@@ -575,6 +622,7 @@ cargo test rtp::packet
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2025-12-29 | 1.4 | TODO.md 統合: P1/P2 追加項目、Deferred 詳細化（TODO.md 廃止） |
 | 2025-12-28 | 1.3 | Issue #9 統合: Step-12 (Timer G/H/I/J), Step-13 (RTP extension/CSRC) 追加 |
 | 2025-12-27 | 1.2 | UAS 優先に再構成、Deferred Steps 追加、Step 番号を依存順に並び替え |
 | 2025-12-25 | 1.1 | RFC 2833 を P2 に変更、DTMF トーン検出 (Goertzel) を P0 で追加 |

@@ -54,8 +54,7 @@ virtual-voicebot/
     │   ├── tests_e2e_sipp.md    # SIPp E2E手順（正本）
     │   ├── gap-analysis.md      # RFC準拠ギャップ分析・仕様（正本）
     │   └── impl/                # 実装計画
-    │       ├── PLAN.md          # 実装ステップ計画
-    │       └── TODO.md          # 実装バックログ
+    │       └── PLAN.md          # 実装計画（バックログ統合）
     │
     ├── src/*/README.md          # モジュール概要（docs/*.mdへのリンク含む）
     └── test/README.md           # E2Eランナー使用方法
