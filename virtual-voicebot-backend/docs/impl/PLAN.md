@@ -8,9 +8,9 @@
 |------|-----|
 | **Status** | Active |
 | **Owner** | TBD |
-| **Last Updated** | 2025-12-28 |
+| **Last Updated** | 2025-12-30 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9) |
 
 ---
 
@@ -121,6 +121,79 @@ Spec 策定後に Active へ昇格させます。
 |----|------|-----|---------------|
 | DEF-17 | REFER | 3515 | Refer-To 処理、NOTIFY 送信 |
 | DEF-18 | Replaces | 3891 | ダイアログ置換ロジック |
+
+---
+
+## Architecture Improvements（アーキテクチャ改善）
+
+**関連**: [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8)
+
+> ※設計/仕様変更を伴うため、各 ARCH は Spec 策定後に Step 化（Deferred Steps 扱い）する。
+
+**現状評価**: 総合 62/100
+
+| 観点 | スコア | 主な課題 |
+|------|--------|---------|
+| Clean Architecture | 55/100 | 依存方向逆転、境界曖昧 |
+| オブジェクト指向 | 58/100 | 手続き的処理、カプセル化不足 |
+| トレイト活用 | 40/100 | 具象依存、ポート未定義 |
+| デザインパターン | 70/100 | 一部適用済み、全体設計限定的 |
+
+### ARCH-01: 外部I/Oのポート化
+
+**目的**: ASR/LLM/TTS、HTTP、ファイルI/O を trait で抽象化し、core から切り離す
+
+**対象ファイル**: `src/ai/mod.rs`, `src/ai/*.rs`, `src/http/mod.rs`, `src/recording/mod.rs`, `src/session/session.rs`
+
+**効果**: Clean Architecture スコア向上、テスト容易性向上
+
+**状態**: 未着手
+
+### ARCH-02: 純粋な状態遷移の抽出
+
+**目的**: SIP/Session の状態遷移を純粋関数化し、I/O は外側で実行
+
+**対象ファイル**: `src/sip/mod.rs`, `src/sip/transaction.rs`, `src/session/session.rs`
+
+**効果**: テスト容易性向上、設計の明確化
+
+**状態**: 未着手
+
+### ARCH-03: Session の責務分割
+
+**目的**: Session が抱える責務（録音・RTP・タイマ・app連携）をサブコンポーネントに分割
+
+**分割案**:
+- `Timer`: セッションタイマー管理
+- `Media`: RTP 送受信
+- `Recorder`: 録音制御
+- `Notifier`: app 層への通知
+
+**対象ファイル**: `src/session/session.rs`
+
+**効果**: 単一責任の原則、可読性・保守性向上
+
+**状態**: 未着手
+
+### ARCH-04: コンポジションルートの強化
+
+**目的**: Session 内での依存生成をやめ、main.rs で依存を組み立てる
+
+**対象ファイル**: `src/main.rs`, `src/sip/mod.rs`, `src/session/session.rs`
+
+**効果**: 依存関係の明確化、DI パターンの適用
+
+**状態**: 未着手
+
+### ARCH-05: 設定/環境依存の集中
+
+**目的**: env 参照や config を各モジュールに散らさず、config で集約して注入
+
+**対象ファイル**: `src/config.rs`, `src/sip/mod.rs`, `src/main.rs`, `src/ai/*.rs`
+
+**効果**: テスト容易性向上、移植性向上
+
+**状態**: 未着手
 
 ---
 
@@ -622,6 +695,7 @@ cargo test rtp::packet
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2025-12-30 | 1.5 | Issue #8 統合: Architecture Improvements セクション追加（ARCH-01〜05） |
 | 2025-12-29 | 1.4 | TODO.md 統合: P1/P2 追加項目、Deferred 詳細化（TODO.md 廃止） |
 | 2025-12-28 | 1.3 | Issue #9 統合: Step-12 (Timer G/H/I/J), Step-13 (RTP extension/CSRC) 追加 |
 | 2025-12-27 | 1.2 | UAS 優先に再構成、Deferred Steps 追加、Step 番号を依存順に並び替え |
