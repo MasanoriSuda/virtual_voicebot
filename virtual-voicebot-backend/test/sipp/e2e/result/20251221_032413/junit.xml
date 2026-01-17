@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="regression:sipp/e2e" tests="1" failures="0" errors="0">
+  <testcase name="sip00003" time="25.597">
+    <system-out>title: recording http e2e
+command: cargo test -q --test recording_http_e2e
+stdout: /home/msuda/workspace/virtual_voicebot_4/virtual_voicebot/virtual-voicebot-backend/test/sipp/e2e/result/20251221_032413/sip00003/stdout.log
+stderr: /home/msuda/workspace/virtual_voicebot_4/virtual_voicebot/virtual-voicebot-backend/test/sipp/e2e/result/20251221_032413/sip00003/stderr.log
+</system-out>
+  </testcase>
+</testsuite>

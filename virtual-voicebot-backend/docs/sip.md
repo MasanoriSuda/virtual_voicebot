@@ -49,7 +49,9 @@
 ## 4. トランザクション詳細設計（UAS）
 
 ### 4.1 INVITE サーバトランザクション
-- RFC 範囲: RFC 3261 17.2.1（UDP/UAS）。MVP は UDP のみ、100rel/PRACK/UPDATE は無効。
+- RFC 範囲: RFC 3261 17.2.1（UDP/UAS）。MVP は UDP のみ。
+  - INVITE に `Supported/Require: 100rel` がある場合は 180 に `Require: 100rel` と `RSeq: 1` を付与する。
+  - PRACK は受信時に 200 OK を返す（RAck の検証/紐付けは未実装）。
 - 状態: `Proceeding` / `Completed` / `Confirmed` / `Terminated`
 - 主なイベント:
   - 受信: `INVITE`（新規/再送）、`ACK`
@@ -61,7 +63,7 @@
 | --- | --- | --- | --- |
 | (新規) | INVITE 受信 | Proceeding | 100/180 を送信（任意） |
 | Proceeding | 再送 INVITE | Proceeding | 最新の 1xx を再送 |
-| Proceeding | 2xx 送信 | Terminated | 2xx 送信。2xx はダイアログ層で ACK 管理（トランザクションは即終了） |
+| Proceeding | 2xx 送信 | Terminated | 2xx 送信。ACK 到着まで 2xx 再送を UAS コアで管理（トランザクションは即終了） |
 | Proceeding | 3xx–6xx 送信 | Completed | 3xx–6xx 送信、Timer G/H 開始 |
 | Completed | 再送 INVITE | Completed | 直近の最終応答を再送 |
 | Completed | Timer G 発火 | Completed | 最終応答を再送（T1 倍増、上限 T2） |
@@ -143,9 +145,9 @@
 
 - MVP でサポートする:
   - UDP 上の INVITE/ACK/BYE のみ
-  - 100/180/200 のみ（PRACK/UPDATE/Session Timer は無効）
+  - 100/180/200 のみ（INVITE が 100rel 対応なら 180 に Require/RSeq を付与、PRACK は受信時に 200 OK）
 - NEXT で追加する:
-  - 100rel/PRACK
+  - PRACK の RAck 検証/紐付け
+  - 100rel の再送タイマ/再送制御
   - UPDATE
   - Session Timer (4028)
-

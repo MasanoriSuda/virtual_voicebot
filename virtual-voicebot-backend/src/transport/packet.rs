@@ -1,32 +1,37 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use log::{debug, info, warn};
-use tokio::net::UdpSocket;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::time::{Duration, Instant};
+use tokio_rustls::TlsAcceptor;
 
-use crate::rtp::parse_rtp_packet;
-use crate::session::{SessionIn, SessionMap};
-use crate::sip::{parse_sip_message, SipMessage, SipMethod};
-
-/// UDPで受けた「生パケット」
-#[derive(Debug, Clone)]
-pub struct RawPacket {
-    pub src: SocketAddr,
-    pub dst_port: u16,
-    pub data: Vec<u8>,
-}
+use crate::config;
+use crate::rtp::rtcp::RtcpEventTx;
+use crate::rtp::rx::{RawRtp, RtpReceiver};
+use crate::session::SessionMap;
+use crate::transport::{tls, ConnId, TransportPeer, TransportSendRequest};
 
 /// packet層 → SIP層 に渡す入力
 #[derive(Debug, Clone)]
 pub struct SipInput {
-    pub src: SocketAddr,
+    pub peer: TransportPeer,
     pub data: Vec<u8>,
 }
 
 /// RTPポート → call_id のマップ
 pub type RtpPortMap = Arc<Mutex<HashMap<u16, String>>>;
+
+#[derive(Clone)]
+struct TcpConn {
+    peer: SocketAddr,
+    tx: UnboundedSender<Vec<u8>>,
+}
+
+type TcpConnMap = Arc<Mutex<HashMap<ConnId, TcpConn>>>;
 
 /// packet層のメインループ
 ///
@@ -34,24 +39,55 @@ pub type RtpPortMap = Arc<Mutex<HashMap<u16, String>>>;
 /// - RTPソケット (40000など) を受信して SessionIn::RtpIn を各セッションに送る
 pub async fn run_packet_loop(
     sip_sock: UdpSocket,
+    sip_tcp_listener: Option<TcpListener>,
     rtp_sock: UdpSocket,
     sip_tx: UnboundedSender<SipInput>,
+    mut sip_send_rx: tokio::sync::mpsc::UnboundedReceiver<TransportSendRequest>,
     session_map: SessionMap,
     rtp_port_map: RtpPortMap,
-    local_ip: String,
-    advertised_rtp_port: u16,
+    rtcp_tx: Option<RtcpEventTx>,
 ) -> std::io::Result<()> {
-    let sip_port = sip_sock.local_addr()?.port();
+    let _sip_port = sip_sock.local_addr()?.port();
     let _rtp_port = rtp_sock.local_addr()?.port();
 
-    let sip_task = tokio::spawn(run_sip_udp_loop(
-        sip_sock,
-        sip_tx,
-        local_ip, // used for SIPレスポンスのSDP/Contact生成。将来的にsip側へ移譲予定。
-        sip_port,
-        advertised_rtp_port,
-    ));
-    let rtp_task = tokio::spawn(run_rtp_udp_loop(rtp_sock, session_map, rtp_port_map));
+    let tcp_conns: TcpConnMap = Arc::new(Mutex::new(HashMap::new()));
+    let conn_seq = Arc::new(AtomicU64::new(1));
+    let tcp_idle = config::timeouts().sip_tcp_idle;
+
+    let rtp_rx = RtpReceiver::new(session_map.clone(), rtp_port_map.clone(), rtcp_tx);
+
+    if let Some(listener) = sip_tcp_listener {
+        let sip_tx = sip_tx.clone();
+        let tcp_conns = tcp_conns.clone();
+        let conn_seq = conn_seq.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                run_sip_tcp_accept_loop(listener, sip_tx, tcp_conns, conn_seq, tcp_idle).await
+            {
+                log::error!("[packet] SIP TCP loop error: {:?}", e);
+            }
+        });
+    }
+
+    if let Some(settings) = config::tls_settings() {
+        let acceptor = tls::build_tls_acceptor(settings)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let listener = TcpListener::bind((settings.bind_ip.as_str(), settings.port)).await?;
+        let sip_tx = sip_tx.clone();
+        let tcp_conns = tcp_conns.clone();
+        let conn_seq = conn_seq.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_sip_tls_accept_loop(listener, acceptor, sip_tx, tcp_conns, conn_seq, tcp_idle).await {
+                log::error!("[packet] SIP TLS loop error: {:?}", e);
+            }
+        });
+    }
+
+    let sip_task =
+        tokio::spawn(async move {
+            run_sip_udp_loop(sip_sock, sip_tx, &mut sip_send_rx, tcp_conns).await
+        });
+    let rtp_task = tokio::spawn(run_rtp_udp_loop(rtp_sock, rtp_rx));
 
     let (_r1, _r2) = tokio::join!(sip_task, rtp_task);
     Ok(())
@@ -61,192 +97,70 @@ pub async fn run_packet_loop(
 async fn run_sip_udp_loop(
     sock: UdpSocket,
     sip_tx: UnboundedSender<SipInput>,
-    local_ip: String,
-    sip_port: u16,
-    advertised_rtp_port: u16,
+    sip_send_rx: &mut UnboundedReceiver<TransportSendRequest>,
+    tcp_conns: TcpConnMap,
 ) -> std::io::Result<()> {
+    let local_addr = sock.local_addr()?;
+    let local_port = local_addr.port();
     let mut buf = vec![0u8; 2048];
 
     loop {
-        let (len, src) = sock.recv_from(&mut buf).await?;
-        let data = buf[..len].to_vec();
+        tokio::select! {
+            recv_res = sock.recv_from(&mut buf) => {
+                let (len, src) = recv_res?;
+                let data = buf[..len].to_vec();
 
-        maybe_send_immediate_sip_response(
-            &sock,
-            src,
-            &data,
-            &local_ip,
-            sip_port,
-            advertised_rtp_port,
-        )
-        .await;
+                log::info!("[sip <-] {} -> {} len={}", src, local_addr, data.len());
 
-        // ここではSIP判定をせず「SIPポートで受けたUDP=全てSIP」とする
-        let input = SipInput { src, data };
-        if let Err(e) = sip_tx.send(input) {
-            eprintln!("[packet] failed to send to SIP handler: {:?}", e);
-        }
-    }
-}
-
-// 現状の即時返信処理をまとめたヘルパ（後で sip/session へ移譲予定）
-async fn maybe_send_immediate_sip_response(
-    sock: &UdpSocket,
-    src: SocketAddr,
-    data: &[u8],
-    local_ip: &str,
-    sip_port: u16,
-    advertised_rtp_port: u16,
-) {
-    if let Ok(text) = String::from_utf8(data.to_vec()) {
-        info!("[sip recv] from {} len={}:\n{}", src, data.len(), text);
-        if let Ok(SipMessage::Request(req)) = parse_sip_message(&text) {
-            if matches!(req.method, SipMethod::Invite) {
-                let sdp_ip = if local_ip == "0.0.0.0" {
-                    src.ip().to_string()
-                } else {
-                    local_ip.to_string()
+                // ここではSIP判定をせず「SIPポートで受けたUDP=全てSIP」とする
+                let input = SipInput {
+                    peer: TransportPeer::Udp(src),
+                    data,
                 };
-
-                if let Some(resp) = build_provisional_response(&req, 100, "Trying") {
-                    let _ = sock.send_to(resp.as_bytes(), src).await.ok();
+                if let Err(e) = sip_tx.send(input) {
+                    log::warn!("[packet] failed to send to SIP handler: {:?}", e);
                 }
-                if let Some(resp) = build_provisional_response(&req, 180, "Ringing") {
-                    let _ = sock.send_to(resp.as_bytes(), src).await.ok();
-                }
-                if let Some(resp) =
-                    build_final_response(&req, 200, "OK", &sdp_ip, sip_port, advertised_rtp_port)
-                {
-                    info!("[packet] Sending 200 OK with SDP:\n{}", resp);
-                    let _ = sock.send_to(resp.as_bytes(), src).await.ok();
-                }
-            } else if matches!(req.method, SipMethod::Bye) {
-                if let Some(resp) = build_simple_response(&req, 200, "OK") {
-                    let _ = sock.send_to(resp.as_bytes(), src).await.ok();
-                }
-            } else if matches!(req.method, SipMethod::Register) {
-                if let Some(resp) = build_simple_response(&req, 200, "OK") {
-                    info!("[packet] Sending 200 OK for REGISTER to {}", src);
-                    let _ = sock.send_to(resp.as_bytes(), src).await.ok();
+            }
+            Some(req) = sip_send_rx.recv() => {
+                match req.peer {
+                    TransportPeer::Udp(dst) => {
+                        // 現状は単一ソケット運用のため src_port は informational
+                        if req.src_port != local_port {
+                            log::debug!("[sip send] requested src_port {} differs from bound {}", req.src_port, local_port);
+                        }
+                        log::info!(
+                            "[sip ->] {} -> {} len={}",
+                            local_addr,
+                            dst,
+                            req.payload.len()
+                        );
+                        let _ = sock.send_to(&req.payload, dst).await.ok();
+                    }
+                    TransportPeer::Tcp(conn_id) => {
+                        let tx = tcp_conns
+                            .lock()
+                            .unwrap()
+                            .get(&conn_id)
+                            .map(|conn| conn.tx.clone());
+                        if let Some(tx) = tx {
+                            let _ = tx.send(req.payload);
+                        } else {
+                            log::warn!("[sip send] unknown tcp conn_id={}", conn_id);
+                        }
+                    }
                 }
             }
         }
     }
-}
-
-fn build_provisional_response(
-    req: &crate::sip::SipRequest,
-    code: u16,
-    reason: &str,
-) -> Option<String> {
-    let via = req.header_value("Via")?;
-    let from = req.header_value("From")?;
-    let mut to = req.header_value("To")?.to_string();
-    let call_id = req.header_value("Call-ID")?;
-    let cseq = req.header_value("CSeq")?;
-
-    // provisional/2xx には To-tag を付けるのが無難
-    if !to.to_ascii_lowercase().contains("tag=") {
-        to = format!("{to};tag=rustbot");
-    }
-
-    Some(format!(
-        "SIP/2.0 {code} {reason}\r\n\
-Via: {via}\r\n\
-From: {from}\r\n\
-To: {to}\r\n\
-Call-ID: {call_id}\r\n\
-CSeq: {cseq}\r\n\
-Content-Length: 0\r\n\r\n"
-    ))
-}
-
-fn build_final_response(
-    req: &crate::sip::SipRequest,
-    code: u16,
-    reason: &str,
-    local_ip: &str,
-    sip_port: u16,
-    rtp_port: u16,
-) -> Option<String> {
-    let via = req.header_value("Via")?;
-    let from = req.header_value("From")?;
-    let mut to = req.header_value("To")?.to_string();
-    let call_id = req.header_value("Call-ID")?;
-    let cseq = req.header_value("CSeq")?;
-
-    if !to.to_ascii_lowercase().contains("tag=") {
-        to = format!("{to};tag=rustbot");
-    }
-
-    let sdp = format!(
-        concat!(
-            "v=0\r\n",
-            "o=rustbot 1 1 IN IP4 {ip}\r\n",
-            "s=Rust PCMU Bot\r\n",
-            "c=IN IP4 {ip}\r\n",
-            "t=0 0\r\n",
-            "m=audio {rtp} RTP/AVP 0\r\n",
-            "a=rtpmap:0 PCMU/8000\r\n",
-            "a=sendrecv\r\n",
-        ),
-        ip = local_ip,
-        rtp = rtp_port
-    );
-
-    let content_length = sdp.len();
-
-    Some(format!(
-        "SIP/2.0 {code} {reason}\r\n\
-Via: {via}\r\n\
-From: {from}\r\n\
-To: {to}\r\n\
-Call-ID: {call_id}\r\n\
-CSeq: {cseq}\r\n\
-Contact: <sip:rustbot@{ip}:{sport}>\r\n\
-Content-Type: application/sdp\r\n\
-Content-Length: {len}\r\n\r\n\
-{sdp}",
-        ip = local_ip,
-        sport = sip_port,
-        len = content_length,
-        sdp = sdp
-    ))
-}
-
-fn build_simple_response(req: &crate::sip::SipRequest, code: u16, reason: &str) -> Option<String> {
-    let via = req.header_value("Via")?;
-    let from = req.header_value("From")?;
-    let mut to = req.header_value("To")?.to_string();
-    let call_id = req.header_value("Call-ID")?;
-    let cseq = req.header_value("CSeq")?;
-
-    if !to.to_ascii_lowercase().contains("tag=") {
-        to = format!("{to};tag=rustbot");
-    }
-
-    Some(format!(
-        "SIP/2.0 {code} {reason}\r\n\
-Via: {via}\r\n\
-From: {from}\r\n\
-To: {to}\r\n\
-Call-ID: {call_id}\r\n\
-CSeq: {cseq}\r\n\
-Content-Length: 0\r\n\r\n"
-    ))
 }
 
 /// RTP用 UDP ループ
 ///
 /// 責務: UDPソケットからの受信・簡易RTPパース・sessionへの直接通知のみ。
 /// ここでは rtp モジュールのストリーム管理/RTCP は未導入で、将来の委譲前提で現挙動を維持する。
-async fn run_rtp_udp_loop(
-    sock: UdpSocket,
-    session_map: SessionMap,
-    rtp_port_map: RtpPortMap,
-) -> std::io::Result<()> {
+async fn run_rtp_udp_loop(sock: UdpSocket, rtp_rx: RtpReceiver) -> std::io::Result<()> {
     let local_port = sock.local_addr()?.port();
-    println!("[packet] RTP socket bound on port {}", local_port);
+    log::info!("[packet] RTP socket bound on port {}", local_port);
 
     let mut buf = vec![0u8; 2048];
 
@@ -254,56 +168,243 @@ async fn run_rtp_udp_loop(
         let (len, src) = sock.recv_from(&mut buf).await?;
         let data = buf[..len].to_vec();
 
-        let raw = RawPacket {
+        let raw = RawRtp {
             src,
             dst_port: local_port,
             data,
         };
 
-        // テスト用途: local_port に対応する call_id を引く（rtp モジュール委譲前の暫定マップ）
-        let call_id_opt = {
-            let map = rtp_port_map.lock().unwrap();
-            map.get(&raw.dst_port).cloned()
-        };
+        // rtp レイヤへ委譲（解析と session への転送）
+        rtp_rx.handle_raw(raw);
+    }
+}
 
-        if let Some(call_id) = call_id_opt {
-            // 対応するセッションを探して RTP入力イベントを投げる（rtp→session 経由は後続タスク）
-            let sess_tx_opt = {
-                let map = session_map.lock().unwrap();
-                map.get(&call_id).cloned()
-            };
+async fn run_sip_tcp_accept_loop(
+    listener: TcpListener,
+    sip_tx: UnboundedSender<SipInput>,
+    tcp_conns: TcpConnMap,
+    conn_seq: Arc<AtomicU64>,
+    idle_timeout: Duration,
+) -> std::io::Result<()> {
+    let local_addr = listener.local_addr()?;
+    log::info!("[packet] SIP TCP listener bound on {}", local_addr);
 
-            if let Some(sess_tx) = sess_tx_opt {
-                match parse_rtp_packet(&raw.data) {
-                    Ok(pkt) => {
-                        debug!(
-                            "[packet] RTP len={} from {} mapped to call_id={} pt={} seq={}",
-                            len, raw.src, call_id, pkt.payload_type, pkt.sequence_number
-                        );
-                        let _ = sess_tx.send(SessionIn::RtpIn {
-                            ts: pkt.timestamp,
-                            payload: pkt.payload,
-                        });
-                    }
-                    Err(e) => {
-                        warn!(
-                            "[packet] RTP parse error for call_id={} from {}: {:?}",
-                            call_id, raw.src, e
-                        );
+    loop {
+        let (stream, peer) = listener.accept().await?;
+        let conn_id = conn_seq.fetch_add(1, Ordering::Relaxed);
+        log::info!("[sip tcp] accepted conn_id={} peer={}", conn_id, peer);
+
+        let sip_tx = sip_tx.clone();
+        let tcp_conns = tcp_conns.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle_sip_tcp_conn(conn_id, peer, stream, sip_tx, tcp_conns, idle_timeout).await {
+                log::warn!("[sip tcp] conn_id={} error: {:?}", conn_id, e);
+            }
+        });
+    }
+}
+
+async fn handle_sip_tcp_conn(
+    conn_id: ConnId,
+    peer: SocketAddr,
+    stream: TcpStream,
+    sip_tx: UnboundedSender<SipInput>,
+    tcp_conns: TcpConnMap,
+    idle_timeout: Duration,
+) -> std::io::Result<()> {
+    handle_sip_stream_conn(
+        conn_id,
+        peer,
+        stream,
+        sip_tx,
+        tcp_conns,
+        idle_timeout,
+        "tcp",
+    )
+    .await
+}
+
+async fn run_sip_tls_accept_loop(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    sip_tx: UnboundedSender<SipInput>,
+    tcp_conns: TcpConnMap,
+    conn_seq: Arc<AtomicU64>,
+    idle_timeout: Duration,
+) -> std::io::Result<()> {
+    let local_addr = listener.local_addr()?;
+    log::info!("[packet] SIP TLS listener bound on {}", local_addr);
+
+    loop {
+        let (stream, peer) = listener.accept().await?;
+        let conn_id = conn_seq.fetch_add(1, Ordering::Relaxed);
+        log::info!("[sip tls] accepted conn_id={} peer={}", conn_id, peer);
+
+        let sip_tx = sip_tx.clone();
+        let tcp_conns = tcp_conns.clone();
+        let acceptor = acceptor.clone();
+        tokio::spawn(async move {
+            match acceptor.accept(stream).await {
+                Ok(tls_stream) => {
+                    if let Err(e) = handle_sip_stream_conn(
+                        conn_id,
+                        peer,
+                        tls_stream,
+                        sip_tx,
+                        tcp_conns,
+                        idle_timeout,
+                        "tls",
+                    )
+                    .await
+                    {
+                        log::warn!("[sip tls] conn_id={} error: {:?}", conn_id, e);
                     }
                 }
-            } else {
-                warn!(
-                    "[packet] RTP for unknown session (call_id={}), from {}",
-                    call_id, raw.src
-                );
+                Err(e) => {
+                    log::warn!("[sip tls] conn_id={} handshake error: {:?}", conn_id, e);
+                }
             }
-        } else {
-            // 未登録ポート → いまはログだけ
-            warn!(
-                "[packet] RTP on port {} without call_id mapping, from {}",
-                raw.dst_port, raw.src
-            );
+        });
+    }
+}
+
+async fn handle_sip_stream_conn<S>(
+    conn_id: ConnId,
+    peer: SocketAddr,
+    stream: S,
+    sip_tx: UnboundedSender<SipInput>,
+    tcp_conns: TcpConnMap,
+    idle_timeout: Duration,
+    label: &'static str,
+) -> std::io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    tcp_conns
+        .lock()
+        .unwrap()
+        .insert(conn_id, TcpConn { peer, tx: write_tx });
+
+    const MAX_BUFFER: usize = 256 * 1024;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut tmp = vec![0u8; 4096];
+    let mut idle_deadline = Instant::now() + idle_timeout;
+
+    loop {
+        let idle_sleep = tokio::time::sleep_until(idle_deadline);
+        tokio::pin!(idle_sleep);
+        tokio::select! {
+            _ = &mut idle_sleep => {
+                log::info!("[sip {}] idle timeout conn_id={} peer={}", label, conn_id, peer);
+                break;
+            }
+            read_res = reader.read(&mut tmp) => {
+                match read_res {
+                    Ok(0) => {
+                        log::info!("[sip {}] conn_id={} closed by peer {}", label, conn_id, peer);
+                        break;
+                    }
+                    Ok(n) => {
+                        buf.extend_from_slice(&tmp[..n]);
+                        idle_deadline = Instant::now() + idle_timeout;
+                        if buf.len() > MAX_BUFFER {
+                            log::warn!(
+                                "[sip {}] conn_id={} buffer overflow ({} bytes)",
+                                label,
+                                conn_id,
+                                buf.len()
+                            );
+                            break;
+                        }
+                        for msg in extract_sip_messages(&mut buf) {
+                            log::info!(
+                                "[sip <-] {} conn_id={} peer={} len={}",
+                                label,
+                                conn_id,
+                                peer,
+                                msg.len()
+                            );
+                            let input = SipInput {
+                                peer: TransportPeer::Tcp(conn_id),
+                                data: msg,
+                            };
+                            if let Err(e) = sip_tx.send(input) {
+                                log::warn!(
+                                    "[sip {}] conn_id={} send to sip handler failed: {:?}",
+                                    label,
+                                    conn_id,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[sip {}] conn_id={} read error: {:?}",
+                            label,
+                            conn_id,
+                            e
+                        );
+                        break;
+                    }
+                }
+            }
+            Some(payload) = write_rx.recv() => {
+                if let Err(e) = writer.write_all(&payload).await {
+                    log::warn!(
+                        "[sip {}] conn_id={} write error: {:?}",
+                        label,
+                        conn_id,
+                        e
+                    );
+                    break;
+                }
+            }
+            else => break,
         }
     }
+
+    tcp_conns.lock().unwrap().remove(&conn_id);
+    Ok(())
+}
+
+fn extract_sip_messages(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut messages = Vec::new();
+    loop {
+        let Some(header_end) = find_header_end(buf) else {
+            break;
+        };
+        let header_len = header_end + 4;
+        let content_len = parse_content_length(&buf[..header_len]).unwrap_or(0);
+        let total_len = header_len.saturating_add(content_len);
+        if buf.len() < total_len {
+            break;
+        }
+        let msg = buf.drain(..total_len).collect::<Vec<u8>>();
+        messages.push(msg);
+    }
+    messages
+}
+
+fn find_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+fn parse_content_length(header_bytes: &[u8]) -> Option<usize> {
+    let text = std::str::from_utf8(header_bytes).ok()?;
+    for line in text.split("\r\n") {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("Content-Length") {
+            return value.trim().parse::<usize>().ok();
+        }
+    }
+    Some(0)
 }

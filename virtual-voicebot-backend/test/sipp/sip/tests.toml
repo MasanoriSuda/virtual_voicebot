@@ -1,0 +1,27 @@
+[[cases]]
+id = "sip00001"
+title = "sipp basic uas (compose)"
+kind = "sipp_compose"
+compose_file = "../../docker-compose.sipp.yml"
+scenario = "scenarios/basic_uas.xml"
+
+[[cases]]
+id = "sip00002"
+title = "sipp uas 100rel/prack (compose)"
+kind = "sipp_compose"
+compose_file = "../../docker-compose.sipp.yml"
+scenario = "scenarios/basic_uas_100rel.xml"
+
+[[cases]]
+id = "sip00004"
+title = "sipp uas 100rel bad rack (compose)"
+kind = "sipp_compose"
+compose_file = "../../docker-compose.sipp.yml"
+scenario = "scenarios/basic_uas_100rel_bad_rack.xml"
+
+[[cases]]
+id = "sip00005"
+title = "sipp uas update/session-expires (compose)"
+kind = "sipp_compose"
+compose_file = "../../docker-compose.sipp.yml"
+scenario = "scenarios/basic_uas_update.xml"

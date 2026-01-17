@@ -1,4 +1,7 @@
 /virtual-voicebot-backend/target
+/virtual-voicebot-backend/storage/recordings
+/virtual-voicebot-backend/advenc_calendar
+/virtual-voicebot-backend/spec
 
 # Node / Next.js
 node_modules/

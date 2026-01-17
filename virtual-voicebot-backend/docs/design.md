@@ -1,5 +1,9 @@
 # uas-voice-bot: Design Document
 
+> **I/F 正本の優先順位（2025-12-28 追加、Refs Issue #7）**
+> - app↔session/ai I/F の詳細は `app.md` / `ai.md` が正本
+> - 本ドキュメントと矛盾する場合は各正本を優先
+
 ## 1. 目的と概要
 
 `uas-voice-bot` は、Rust で実装された SIP UAS ベースの音声対話ボットです。
@@ -14,14 +18,22 @@
 
 ---
 
-## 2. 対応 RFC とスコープ
+## 2. 参照RFC とスコープ
 
-### 2.1 対応予定 RFC
+### 2.1 参照RFC
 
+#### Signaling (SIP)
 - **RFC 3261**: SIP: Session Initiation Protocol
 - **RFC 3262**: Reliability of Provisional Responses (100rel/PRACK)
 - **RFC 3311**: The Session Initiation Protocol (SIP) UPDATE Method
 - **RFC 4028**: Session Timers in the Session Initiation Protocol (SIP)
+- **RFC 3263**: Session Initiation Protocol (SIP): Locating SIP Servers（DNSによるSIPサーバ探索）
+
+#### Media / SDP
+- **RFC 3264**: An Offer/Answer Model with the Session Description Protocol (SDP)（SDP Offer/Answer）
+- **RFC 8866**: SDP: Session Description Protocol（SDP本体。RFC 4566 を obsolete）
+- **RFC 3550**: RTP: A Transport Protocol for Real-Time Applications（RTP/RTCP）
+
 
 ### 2.2 段階的スコープ
 
@@ -39,11 +51,23 @@
 - RFC 4028: Session Timer 対応
 - 複数セッション・高負荷環境でのスケール
 
+### 2.3 確定事項・未決事項
+
+**確定事項（2025-12-28 更新、Refs Issue #7）**:
+- **UAS 優先**: MVP は UAS のみで運用する。Registrar/Proxy 機能は将来検討（RFC3261 10/16）
+
+**未決事項（今後決める）**:
+- SIPS/TLS を運用要件として想定するか（RFC3261 12.1.1, 18.2）
+- Forking を扱う必要があるか（複数2xx/複数ダイアログ）（RFC3261 13.1）
+- 認証（401/407）をスコープに入れるか（RFC3261 8.2/22系）
+- OPTIONSの「INVITEと同等の可否」判定に使うアプリ状態（Busy等）の定義（RFC3261 11.2）
+
 ---
 
 ## 3. ディレクトリ構成
 
 プロジェクト全体の構成は以下とする。
+※以下は設計上の目安（将来的な分割を含む）で、MVPでは `session/session.rs` や `app/mod.rs`、`http/mod.rs` に集約される場合がある。必要なタイミングで段階的に分割する。
 
 ```text
 virtual-voicebot-backend/
@@ -112,11 +136,11 @@ virtual-voicebot-backend/
    │  ├─ llm.rs
    │  └─ tts.rs
    │
-   ├─ http/               # Frontend向け REST/SSE/録音配信
+   ├─ http/               # Frontend向け参照/録音配信（MVP: 録音配信のみ）
    │  ├─ README.md
    │  ├─ mod.rs
-   │  ├─ routes.rs        # ルーティング（calls/utterances/events/recordings）
-   │  └─ sse.rs           # SSEストリーム（ping/イベント配信）
+   │  ├─ routes.rs        # 参照系ルーティング（将来/必要時）
+   │  └─ sse.rs           # SSEストリーム（将来/必要時、backend→frontend）
    │
    ├─ media/              # 録音生成・管理（保存/メタデータ）
    │  ├─ README.md
@@ -155,7 +179,7 @@ rtp：RTP/RTCP、コーデック、ストリーム
 
 トランスポートレイヤ
 
-transport::packet：UDP/TCP ソケット、生パケット I/O
+transport::packet：UDP/TCP ソケット、生パケット I/O（送信指示型 TransportSendRequest を提供し、sip/session 型に依存しない）
 
 テキスト図：
 
@@ -212,16 +236,25 @@ app  ──→ session ──→ sip ──→ transport
 ### 4.3 Frontend 連携（HTTP/SSE）レイヤ
 
 本プロジェクトは SIP/RTP（Zoiper）向けのネットワーク入口に加えて、
-Frontend 向けの HTTP/SSE 入口を持つ。
+Frontend 向けの HTTP 入口（録音配信）を持つ。SSE は backend→frontend の通知用途として将来導入する前提とする。
 
 - SIP/RTP 経路: `transport` → (`sip` / `rtp`) → `session` → `app` → `ai`
-- Frontend 経路: `http` → （通話ログ/録音情報の参照） → Frontend 表示
+- Frontend 経路（MVP）: backend → frontend（Call Events の push/emit。frontend は受信して取り込む。詳細は `docs/contract.md`）
+- 録音再生: frontend → backend（`Call.recordingUrl` の GET）
+
+MVP の http は `Call.recordingUrl` の GET（録音配信）のみを必須とする。
+参照系 REST API / SSE は将来の拡張であり、追加する場合は `docs/contract.md` の合意を正とする。
 
 Frontend ↔ Backend の API 契約は `docs/contract.md` を正とする。
 録音の保存と配信に関する内部設計は `docs/recording.md` を正とする。
 
 ※ 重要: `http` は通話制御や SIP/RTP の内部状態機械には立ち入らず、
-参照用に整形されたデータ（Call/Utterance/recording metadata）を提供することに徹する。
+参照/配信用に整形されたデータを提供することに徹する。Frontend から通話制御や入力を行う契約は持たない。
+
+Read Model 方針（MVP）：
+- Call read model store は未実装とする（`recordingUrl` は純関数で算出可能なため）。
+- 将来の参照API/SSE導入時に、http から参照する専用ストアを追加する。
+- app/session はストアを直接持たず、イベントで更新する。
 
 ## 5. 各モジュールの責務
 
@@ -303,7 +336,7 @@ sip 側が適切な Via/To/From/CSeq 等を補完し、テキスト化・送信�
 
 補足（トランザクション詳細の要約、詳細は docs/sip.md）：
 
-- INVITE サーバトランザクション: Proceeding → Completed → Confirmed → Terminated。2xx 送信時は即 Terminated、3xx–6xx 送信時は Timer G/H、ACK 受信で Confirmed→Timer I→Terminated。
+- INVITE サーバトランザクション: Proceeding → Completed → Confirmed → Terminated。2xx 送信時はトランザクション自体は Terminated としつつ、ACK 到着まで 2xx を再送する（UASコアで管理）。3xx–6xx 送信時は Timer G/H、ACK 受信で Confirmed→Timer I→Terminated。
 - 非 INVITE サーバトランザクション: Trying → Proceeding → Completed → Terminated。最終応答送信で Timer J、発火で Terminated。
 - UAS で使うタイマは G/H/I（INVITE）と J（非 INVITE）。発火時は TransactionTimeout を session へ通知。
 - sip→transport 送信は「構造化メッセージ＋宛先」を送信キューへ渡し、テキスト化と送信は transport 層が担当。
@@ -335,9 +368,11 @@ PCM ⇔ RTP ペイロード変換
 
 上位レイヤとのインタフェース
 
-受信側：PCM フレームを asr に渡せる形で提供
+受信側：PCM フレームを session に渡す（session → app → ai::asr の経路で ASR に到達）
 
-送信側：tts から受け取った PCM フレームを RTP に載せて送信
+送信側：session から受け取った PCM フレームを RTP に載せて送信（app → session → rtp の経路で TTS 出力が到達）
+
+**注意**: rtp から ai への直接依存は禁止（必ず session → app を経由）
 
 非責務：
 
@@ -352,7 +387,7 @@ PCM ⇔ RTP ペイロード変換
 - RTCP は SR/RR のインタフェースのみ定義（実装は後続スプリント）。品質通知は将来的にイベント化。
 - 上位（session/app/ai）は SSRC/Seq/Timestamp/ジッタを意識せず、PCMイベントだけ扱う。
 
-補足（app/ai I/F の要約、詳細は docs/voice_bot_flow.md）：
+補足（app/ai I/F の要約、詳細は app.md/ai.md（正本）、voice_bot_flow.md（補助））：
 
 - ASR/TTS はチャネルベースのストリーミング、LLM は 1リクエスト1レスポンスの Future を基本とするハイブリッド。
 - app→ai: AsrInputPcm / LlmRequest / TtsRequest、ai→app: AsrResult/AsrError / LlmResponse/LlmError / TtsPcmChunk/TtsError。
@@ -498,21 +533,26 @@ SIP/RTP/セッションを直接操作しない
 
 通話の開始・終了を決定しない（app / session 側の責務）
 
-### 5.7 http モジュール（REST/SSE/録音配信）
+### 5.7 http モジュール（録音配信/参照API）
 
 目的：
-Frontend 向けに通話履歴・会話ログ・録音再生を提供するための HTTP API と SSE を提供する。
+Frontend 向けに録音再生を提供し、参照系 API / SSE は将来/必要時に提供する。
 
 責務：
-- `docs/contract.md` に基づく REST API を提供（例: calls / utterances）
-- `docs/contract.md` に基づく SSE を提供（call.started / utterance.partial/final / summary.updated / ping）
-- 録音配信 API を提供（`Call.recordingUrl` が参照する URL を配信）
+- `docs/contract.md` の `recordingUrl` が参照する録音配信（MVP 必須）
+- （将来/必要時）参照系の REST API を read-only で提供
+- （将来/必要時）backend→frontend の通知に限定した SSE を提供
 - （推奨）ブラウザ再生のための Range 対応（可能な範囲で）
 
 非責務：
+- Frontend からの通話制御/入力の受け口を持たない（契約外）
 - SIP/RTP のパースや RFC ロジックを扱わない（sip/rtp の責務）
 - セッション状態機械やコール制御判断をしない（session/app の責務）
 - 録音ファイルの生成・ミックス・エンコードをしない（media の責務）
+
+MVP 方針：
+- http は録音配信（recordingUrl の GET）のみ提供する。
+- 参照系 REST API / SSE は実装しない（必要になった時点で contract/design を更新して追加する）。
 
 ### 5.8 media モジュール（録音生成・保存）
 
@@ -524,6 +564,7 @@ Frontend 向けに通話履歴・会話ログ・録音再生を提供するた�
 - `storage/recordings/<callId>/` 配下に録音実体を保存する（例: mixed.wav）
 - 録音メタデータ（meta.json）を生成・更新する
 - 録音の 0秒基準（recording timeline）を確立し、将来 `Utterance.startSec/endSec` と同期できるようにする
+- 将来拡張: mixed/caller/bot の複数トラック、mp3/opus などへのエンコード、外部ストレージ（S3 等）へのアップロード
 
 非責務：
 - HTTP 配信をしない（http の責務）
@@ -538,6 +579,7 @@ Frontend 向けに通話履歴・会話ログ・録音再生を提供するた�
 ## 6. モジュール間インタフェース（イベント指向）
 
 実装上は、モジュール間のやりとりは 構造体/enum ベースのイベント と 非同期チャネル を基本とする。
+※Frontend 連携（backend→frontend の ingest/push）は外部経路（contract）であり、本章の内部モジュールイベント（sip/rtp/session/app/ai）には含めない。
 
 ### 6.1 主なイベントの流れ（例）
 
@@ -555,9 +597,17 @@ session → sip
 
 SendProvisionalResponse / SendFinalResponse / SendPrack / SendUpdate など
 
-rtp → ai::asr
+rtp → session
 
-PcmInputChunk（セッションID/ストリームID + PCM データ）
+PcmInputChunk（セッションID/ストリームID + PCM データ）→ session が app へ転送
+
+session → app
+
+PcmReceived（PCM チャンク）+ CallStarted/Ended 等の通話イベント
+
+app → ai::asr
+
+AsrInputPcm（app が session から受け取った PCM を ASR へ送信）
 
 ai::asr → app
 
@@ -575,13 +625,19 @@ app → ai::tts
 
 TtsRequest（読み上げテキスト + オプション）
 
-ai::tts → rtp
+ai::tts → app
 
-PcmOutputChunk（セッションID/ストリームID + PCM データ）
+TtsPcmChunk（セッションID/ストリームID + PCM データ）
 
 app → session
 
-SessionAction（応答コード、SDP 付き応答指示、BYE 指示など）
+PcmOutputChunk（app が TTS から受け取った PCM を session 経由で rtp へ）
+
+app → session
+
+BotAudioReady / HangupRequested（TTS音声送信指示 / BYE送信指示、app.md §2 参照）
+
+> **旧名廃止（2025-12-28）**: SessionAction は廃止。BotAudioReady/HangupRequested を使用すること。
 
 ※具体的な型名/フィールドは実装時に調整するが、このレベルの分解を維持する。
 
@@ -596,18 +652,21 @@ SessionAction（応答コード、SDP 付き応答指示、BYE 指示など）
 [session → sip]     SendProvisionalResponse (100/180等), SendFinalResponse (200/4xx/5xx),
                     SendPrack, SendUpdate               : 応答/再送/UPDATE送信の指示（構造体ベース）
 
-[rtp → session]     RtpIn (ts, payload, ssrc/pt/seq)    : RTP受信のペイロード通知
-[session → rtp]     StartRtpTx/StopRtpTx, RtpOutFrame   : 送信開始/停止とPCM→RTP化の指示
+[rtp → session]     PcmInputChunk                       : デコード済みPCMのみをsessionへ通知（rtp.md §6.4 参照）
+[session → rtp]     StartRtpTx/StopRtpTx, PcmOutputChunk : 送信開始/停止とPCM送出の指示
 
-[app → session]     SessionAction (例: 180/200+SDP/Bye) : 高レベルなコール制御指示
-[session → app]     CallStarted/CallEnded/Error, MediaReady : 通話状態/エラーの通知
+[app → session]     BotAudioReady/HangupRequested       : TTS音声送信指示/BYE送信指示（app.md §2 参照）
+[session → app]     CallStarted/PcmReceived/CallEnded/SessionTimeout : 通話状態の通知（app.md §2 参照）
 
-[rtp → ai::asr]     PcmInputChunk                       : PCM入力をASRへ
+[rtp → session]     PcmInputChunk                       : PCM入力をsessionへ（session→app→ai::asrの経路）
+[session → app]     PcmReceived                         : PCMをappへ通知
+[app → ai::asr]     AsrInputPcm                         : appがPCMをASRへ送信
 [ai::asr → app]     AsrResult                           : 認識結果をappへ
 [app → ai::llm]     LlmRequest                          : コンテキスト付き質問をLLMへ
 [ai::llm → app]     LlmResponse                         : 応答テキスト/アクションをappへ
 [app → ai::tts]     TtsRequest                          : 読み上げテキストをTTSへ
-[ai::tts → rtp]     PcmOutputChunk                      : 生成PCMをrtp送信側へ
+[ai::tts → app]     TtsPcmChunk                         : 生成PCMをappへ
+[app → session]     PcmOutputChunk                      : appがPCMをsessionへ渡す（session→rtpで送出）
 ```
 
 ### 6.3 イベント方向の簡易図
@@ -624,15 +683,16 @@ transport
   │            │              │
   ▼            ▼              ▼
  session  ←────┴──────────────┘
-  ▲   ▲                │
-  │   │                │PcmInputChunk / PcmOutputChunk
-  │   │                ▼
-  │   │               ai (asr/llm/tts)
-  │   │
-  │ SessionAction / Call events
-  ▼
- app
+  ▲   │
+  │   │ PcmInputChunk / PcmOutputChunk
+  │   │ CallStarted / CallEnded / SessionTimeout
+  │   ▼
+ app ←──────────────────────────────→ ai (asr/llm/tts)
+      AsrInputPcm / TtsRequest / LlmRequest
+      AsrResult / TtsPcmChunk / LlmResponse
 ```
+
+**注意**: rtp↔ai の直接通信は禁止。PCM は必ず session→app を経由する（2025-12-27 確定、Refs Issue #7）
 
 ## 7. 並行処理モデル（Tokio）
 
@@ -704,7 +764,7 @@ SIP レベルの実際のメッセージ送信は sip に依頼
 
 一定時間 RTP が来ない場合：
 
-RtpTimeout イベントを session や app に通知
+RtpTimeout イベントを session に通知（app へは session 経由で転送）
 
 パケット異常（SSRC 不一致など）：
 
@@ -738,7 +798,7 @@ SIP / RTP / AI の代表的なエラー検知からユーザ影響までを明�
   - 検知レイヤ: ai::asr / ai::llm / ai::tts（各クライアントがリトライ後に失敗判定）
   - 通知イベント: `ai::asr → app` に `AsrError`、`ai::llm → app` に `LlmError`、`ai::tts → app` に `TtsError`（call_id/理由付き）
   - 最終判断レイヤ: app（フォールバック方針を決める）
-    - 基本方針: 初回失敗は謝罪定型を生成し `app → ai::tts → rtp` で返して継続。同一フェーズで連続失敗（例: 2回）で `app → session` に `SessionAction::Bye` を送り終了。
+    - 基本方針: 初回失敗は謝罪定型を生成し `app → ai::tts → app → session → rtp` で返して継続。同一フェーズで連続失敗（回数は config 管理、既定: 2回）で `app → session` に `HangupRequested` を送り終了。
   - UAC への振る舞い: 初回は謝罪音声を返して継続。連続失敗時は謝罪音声の後に BYE（もしくは即 BYE）で切断。
 
 ## 9. 音声対話フロー（概要）
@@ -747,9 +807,9 @@ UAC からの INVITE を sip が受信し、session が新しいセッション�
 
 SDP 交渉完了後、session が rtp を設定し、app に「AI 対話セッション開始」を通知
 
-UAC 音声:
+UAC 音声（受信フロー）:
 
-transport::packet → rtp → PCM フレーム → ai::asr
+transport::packet → rtp → PCM フレーム → session → app → ai::asr
 
 ai::asr が発話テキストを app に通知
 
@@ -761,11 +821,13 @@ LLM に問い合わせ → 応答テキスト/アクション
 
 ai::tts:
 
-PCM フレームを生成し、rtp へ渡す
+PCM フレームを生成し、app へ渡す
 
-rtp:
+app → session → rtp:
 
-RTP パケットにエンコードし、transport::packet 経由で UAC に送信
+app が PCM を session 経由で rtp に渡し、RTP パケットにエンコードして transport::packet 経由で UAC に送信
+
+**注意**: rtp↔ai の直接通信は禁止。PCM は必ず session→app を経由する（2025-12-27 確定、Refs Issue #7 CX-1）
 
 必要なら:
 
@@ -799,3 +861,170 @@ B2BUA 化（別の宛先への転送）
 - 変更依頼では「まず該当 docs を更新 → その内容に沿ってコードを変更」と指示する。
 - レビュー依頼では「docs に整合しているか」を観点に含める。
 
+## 12. アーキテクチャ原則（実装ガイド）
+
+本プロジェクトは「イベント駆動 + レイヤ分離」によって、SIP/RTP（プロトコル）と対話（アプリ）とAI（外部統合）を疎結合に保つ。
+実装・改修・コード生成（Codex含む）では、以下の原則を**必ず**守る。
+
+### 12.1 クリーンアーキテクチャ（依存方向の厳守）
+- 依存は下向きのみ（`app → session → (sip, rtp) → transport`、および `app → ai`）。
+- 逆方向の直接参照は禁止。逆方向の通知は **イベント/メッセージ** に限定する。
+- 迷ったら「責務を上に上げる（app/sessionへ寄せる）」か「イベント化」する。
+- `http` は参照提供に徹し、通話制御や状態機械（sip/session）に立ち入らない。
+- `media` は生成/保存に徹し、配信（http）と混ぜない。
+
+### 12.2 Ports & Adapters（差し替え可能性の担保）
+- `ai::{asr,llm,tts}` は実装差し替えが前提（ローカル/クラウド、ベンダ差し替え）。
+- app から見えるI/Fは **Port（trait）** として定義し、具体実装は **Adapter** として ai 内に閉じる。
+- session から ai を直接呼ばない（必ず app を経由）。AIの成否による判断は app の責務。
+- 外部I/O（HTTPクライアント、APIキー、リトライ等）は Adapter 側に閉じ込め、上位は純粋な「要求/応答」を扱う。
+
+例（概念）:
+- `trait AsrPort { async fn push_pcm(...); }`
+- `trait LlmPort { async fn complete(...); }`
+- `trait TtsPort { async fn synthesize_stream(...); }`
+
+### 12.3 イベント駆動（結合度を上げない接続）
+- モジュール間は原則 **非同期チャネル + enumイベント** で接続する。
+- 共有可変状態より、イベントで状態遷移させる（「通知」と「判断」を分離）。
+- イベントは以下を必須とする：
+  - 相関ID（`call_id` / `session_id` / `stream_id` のいずれか）
+  - 発生源（どのレイヤから来たか分かること）
+  - 終端（`End/Done`）やエラー理由（失敗時）
+- イベントは「重複して届いても壊れない（冪等）」設計を基本とする（SIP再送・ネットワーク重複を前提）。
+
+### 12.4 状態機械ファースト（State Machine First）
+- SIP（トランザクション/ダイアログ）、セッション、対話（dialog）は **状態が本体**。
+- if文を散らさず、`enum` と遷移関数で状態を表現し、遷移を1箇所に集約する。
+- 「許可されないイベント」を受けた場合の方針を明示する（ログ＋無視 / エラー終了など）。
+- 重要な状態（early/confirmed/terminated 等）と遷移トリガ（INVITE/ACK/BYE、タイムアウト等）を docs に残す。
+
+### 12.5 並行処理モデル（Actor/タスク設計の統一）
+- 原則：`1セッション = 1タスク`（sessionタスクがイベントを `select!` で処理）。
+- タスク境界を跨ぐ共有ロック（巨大Mutex）で整合性を取らない。状態はセッションタスク内に閉じる。
+- `tokio::spawn` は方針に従って最小限にし、「どの単位でタスクを切るか」を設計通りに守る。
+- rtp送信/受信は（スケール要件に応じて）専用タスク＋キューで吸収し、上位はPCMイベントだけを見る。
+
+### 12.6 タイムアウトとキャンセル（リアルタイム会話の前提）
+- ASR/LLM/TTS は遅延・失敗・キャンセルが起きる前提で設計する。
+- すべての外部呼び出しにタイムアウトを設定し、失敗時のフォールバック方針を app の policy に集約する。
+- 「割り込み（ユーザが話し始めた等）」が起きた場合の扱い（TTS停止、LLM中断など）を app の状態機械で定義する。
+- “無言になる”状態を避けるため、AI失敗時の定型応答（謝罪など）を用意する（継続/終了判断は app）。
+
+### 12.7 観測可能性（Observability）を仕様として扱う
+- ログは必ず相関ID（`call_id`/`session_id`）付きで出す（後追い解析できることが最重要）。
+- 最低限、次のレイテンシを計測できる構造にする：
+  - RTP受信 → ASR確定
+  - ASR確定 → LLM応答
+  - LLM応答 → TTS最初のPCM送出
+- 重要イベント（CallStarted/Ended、ASR final、LLM応答、TTS開始/終了、BYE送出等）は構造化ログで残す。
+
+### 12.8 アンチパターン（禁止事項）
+- app/http/ai が sip/rtp の内部構造（Via/To/From、SSRC/Seq/Timestamp 等）を直接触ること。
+- session が ai を直接呼ぶこと（必ず app 経由）。
+- http が通話制御（応答コード決定、BYE、RTP制御）を行うこと。
+- “便利だから” を理由に utils に何でも詰めること（肥大化の温床）。
+- 例外的に境界を跨ぐ必要が出た場合は、まず docs（本design）を更新し、イベント/Portを追加して解決する。
+
+## 13. プロジェクト規約
+
+この章は「設計の一貫性を保つための規則」を定める。
+例外が必要な場合は、必ず本docsを先に更新し、レビュー観点に含める。
+
+### 13.1 命名とID（相関の規則）
+- すべての主要ログ/イベントに `call_id` を付与する（必須）。
+- メディア（RTP/PCM）単位は `stream_id` を併用する（SSRC等のプロトコル内部IDは上位へ漏らさない）。
+- **MVP**: `call_id == session_id` として統一する（2025-12-27 確定、Refs Issue #7）。
+  - ai.md/app.md の DTO では `session_id` フィールドを使用するが、値は `call_id` と同一。
+  - 将来的に分離する場合は本 docs を先に更新する。
+- 文字列IDの形式（ULID/UUID等）を統一し、生成箇所は `utils::id` に集約する。
+
+### 13.2 データモデル境界（DTOの規則）
+- レイヤを跨ぐデータは「境界用DTO」として定義し、プロトコル内部構造（SIPヘッダ、RTP seq等）を混ぜない。
+- DTOは以下のどちらかに分類する：
+  - (A) 内部イベント用（非同期チャネルで流す）
+  - (B) 外部公開用（httpが返すレスポンス）
+- 内部イベントDTOと外部公開DTOを混ぜない（変換は http 側の整形層で行う）。
+
+### 13.3 エラー分類（失敗の扱いの規則）
+- エラーは「どの層で検知されたか」で分類し、上位に上げるほど抽象化する。
+  - sip/rtp: プロトコル/メディアの異常（入力不正、タイムアウト等）
+  - ai: 外部依存の失敗（タイムアウト、認証、レート制限等）
+  - app/session: ポリシー判断（継続/終了、謝罪返答等）
+- 原則として「検知した層が復旧（リトライ等）まで実施」し、「継続/終了の最終判断は app/session」が行う。
+- パニック（panic）はバグとして扱い、回復手段にしない（落とすより、エラーイベントで上げる）。
+
+### 13.4 タイムアウト規約（リアルタイムの規則）
+- 外部I/O（ASR/LLM/TTS、録音書き出し、HTTPクライアント）は必ず timeout を持つ。
+- タイムアウト値は config で一元管理し、ハードコードしない。
+- 「無音が続いた」「相手が話し始めた」など、会話上の割り込み条件は app の状態機械で定義する。
+
+### 13.5 リトライ規約（再試行の規則）
+- リトライは ai モジュールに閉じる（上位は「成功/失敗」だけ扱う）。
+- リトライ回数とバックオフは config 管理とする。
+- リトライ可能/不可能（例：認証失敗は不可）を明示し、無限リトライは禁止。
+
+### 13.6 設定（config）の規則
+- ポート、IP、コーデック許可、ASR/LLM/TTSのエンドポイント、タイムアウト等は config に集約する。
+- config は「起動時に読み、以降は不変」を原則にする（ホットリロードはMVPではやらない）。
+- 機密情報（APIキー等）は環境変数/secret管理とし、ログに出さない。
+
+### 13.7 ログ規約（運用の規則）
+- ログは構造化ログを推奨し、最低限 `call_id`/`session_id` を含める。
+- PII（個人情報）になりうる文字起こし/LLM入力/出力は、保存の可否とマスキング方針を決める。
+- “音声ボットが無言になった”を追えるよう、重要イベントは必ずログに残す（CallStarted/Ended、ASR final、LLM応答、TTS開始/終了、BYE送出など）。
+
+### 13.8 テスト方針（品質の規則）
+- プロトコル層（sip/rtp）はユニットテストを優先（パース/ビルド、ジッタ整列、デコード等）。
+- app は状態機械のテストを優先（入力イベント→期待する出力イベント: BotAudioReady/HangupRequested 等）。
+- 統合テストは「擬似UAC（INVITE→RTP→BYE）」の最小シナリオを用意し、回帰を防ぐ。
+
+### 13.9 変更手順（ドキュメント駆動の規則）
+- 仕様/責務/依存方向に関わる変更は、必ず docs/design.md を先に更新する（Single Source of Truth）。
+- コードが docs と矛盾する場合、正は docs とし、コードを追従させる。
+- Codex/AIに依頼する場合も同様に「まず docs 更新 → その内容に沿って実装」を徹底する。
+
+## 14. 追加で採用するソフトウェア原則（このプロジェクト向け）
+
+### 14.1 Separation of Concerns（関心の分離）
+- 「通話制御（SIP）」「メディア（RTP）」「対話（app）」「AI統合（ai）」「録音（media）」「配信（http）」を混ぜない。
+- 1つの変更理由（変更要因）につき、影響範囲が1レイヤ/1モジュールに収まることを目指す。
+
+### 14.2 Information Hiding（情報隠蔽）
+- 下位の詳細（SIPヘッダ、RTPのSeq/Timestamp/SSRC、ジッタ等）を上位に漏らさない。
+- 上位は「意味のあるイベント（CallStarted/AsrFinal/TtsChunk等）」だけを扱う。
+
+### 14.3 Principle of Least Knowledge（Law of Demeter）
+- 上位は下位の“内部構造”をたどらない。欲しい結果はイベント/Port経由で取得する。
+- 例：appがsip::messageのヘッダを直接編集しない、sessionがaiのHTTP層を触らない。
+
+### 14.4 Design by Contract（契約による設計）
+- レイヤ境界のDTO/イベントは「入力条件」「出力保証」「例外（エラー）」をdocsで明文化する。
+- 重要なフィールド（call_id/stream_id、終端フラグ等）は必須とし、欠落は即エラーにする。
+
+### 14.5 Robustness Principle（堅牢性：受信に寛容、送信に厳格）
+- 受信（特にSIP/RTP）は不正・欠落・順序乱れを前提に“壊れない”設計にする。
+- 送信（SIP応答、RTP送出、httpレスポンス）は仕様に厳密に従う（曖昧なデータを出さない）。
+- ただし「受信に寛容」は無制限ではなく、危険な入力は拒否する（ログ＋400/破棄など）。
+
+### 14.6 Backpressure（逆流圧：詰まりを伝播させる）
+- RTP→ASR、LLM→TTS→RTPは詰まりやすい。無制限キューは禁止。
+- チャネル容量を制限し、詰まったら「間引き」「最新優先」「切断」などの方針を app policy に置く。
+- “遅延が伸び続ける”より“少し欠ける”ほうが会話品質は良い、を原則とする。
+MVP のデフォルト方針：
+- RTP→ASR：最新優先（遅延を増やす古いPCMは破棄）
+- TTS→RTP：割り込み優先（新しい発話で古い送出を停止）
+- LLM：同一セッションで in-flight は1つ（同時実行しない）
+
+### 14.7 Idempotency / Determinism（冪等性 / 決定性）
+- 同じイベントを複数回処理しても破綻しない（SIP再送、二重BYE、重複RTPなど）。
+- 状態機械は「同じ入力→同じ出力」になりやすい形に寄せ、ログ解析可能にする。
+
+### 14.8 Simplicity First（KISS / YAGNI）
+- MVPでは必要最小限のRFC・機能に絞る（“将来のため”の複雑化をしない）。
+- 追加機能は「イベント追加」「Port追加」「状態遷移追加」で段階的に導入する。
+
+### 14.9 Security & Privacy by Design（最小限）
+- 音声・文字起こし・LLM入出力はPIIになりうる前提で扱う。
+- 保存するなら期間/権限/マスキングを決め、外部送信（クラウドASR/LLM）可否を明示する。
+- ログに原文（全文）を出さない方針を推奨（必要ならデバッグフラグで限定的に）。

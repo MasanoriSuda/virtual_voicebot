@@ -35,7 +35,7 @@ virtual-voicebot-backend/
 
 ## 役割分担（責務）
 - **media モジュール（src/media/）**: PCM 等の音声を受け取り、録音ファイルを生成・保存。`storage/recordings/<callId>/` 配下の生成と更新を担当し、録音タイムラインの 0 秒基準を決めてメタに保存。
-- **http モジュール（src/http/）**: `docs/contract.md` に沿って録音を配信。ブラウザの `<audio>` 再生・シークのため、可能であれば HTTP Range に対応する。
+- **http モジュール（src/http/）**: `docs/contract.md` に沿って録音を配信。ブラウザの `<audio>` 再生・シークのため、HTTP Range に対応する（**MVP 必須**）。
 - **session / rtp**: 録音の開始/停止などライフサイクルの指示を出す。RTP/RTCP の詳細処理は rtp が担当し、録音は media に委譲する。
 
 ## 録音のライフサイクル（MVP）
@@ -70,7 +70,10 @@ virtual-voicebot-backend/
 
 ## 配信（MVP）
 - **contract との整合**: `Call.recordingUrl` は録音再生に利用できる URL を返す。MVP では backend が直接配信し、将来短寿命の署名付き URL に置き換える可能性がある。
-- **Range 対応（推奨）**: ブラウザのシーク再生を安定させるため、可能なら Range ヘッダに対応。MVP で難しければ「先頭からの再生のみ（シーク制限）」と明記。
+- **Range 対応: MVP 必須**（2025-12-27 確定、Refs Issue #7 CX-2）
+  - ブラウザのシーク再生を安定させるため、HTTP Range ヘッダに対応する
+  - `Accept-Ranges: bytes` / `206 Partial Content` / `416 Range Not Satisfiable` を実装する
+  - 詳細は `docs/contract.md` の Transport DTO を参照
 
 ## 将来拡張（Future）
 - 外部ストレージ（S3/MinIO/R2）へアップロードし、配信は署名付き URL/CDN へ移行

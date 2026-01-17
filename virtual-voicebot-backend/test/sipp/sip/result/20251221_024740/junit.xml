@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="regression:sipp/sip" tests="1" failures="1" errors="0">
+  <testcase name="sip00001" time="49.234">
+    <failure message="exit=Some(1)">time=&quot;2025-12-21T02:48:04+09:00&quot; level=warning msg=&quot;The \&quot;UAS_SIP_HOST\&quot; variable is not set. Defaulting to a blank string.&quot;
+time=&quot;2025-12-21T02:48:04+09:00&quot; level=warning msg=&quot;The \&quot;UAS_SIP_PORT\&quot; variable is not set. Defaulting to a blank string.&quot;
+time=&quot;2025-12-21T02:48:04+09:00&quot; level=warning msg=&quot;/home/msuda/workspace/virtual_voicebot_4/virtual_voicebot/virtual-voicebot-backend/test/docker-compose.sipp.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion&quot;
+ sipp Pulling 
+ sipp Error pull access denied for virtual-voicebot-backend-sipp, repository does not exist or may require &apos;docker login&apos;: denied: requested access to the resource is denied
+Dockerfile:50
+
+--------------------
+
+  49 |     
+
+  50 | &gt;&gt;&gt; RUN apt-get update &amp;&amp; \
+
+  51 | &gt;&gt;&gt;     apt-get install -y software-properties-common &amp;&amp; \
+
+  52 | &gt;&gt;&gt;     add-apt-repository universe &amp;&amp; \
+
+  53 | &gt;&gt;&gt;     apt-get update &amp;&amp; \
+
+  54 | &gt;&gt;&gt;     apt-get install -y \
+
+  55 | &gt;&gt;&gt;         ca-certificates \
+
+  56 | &gt;&gt;&gt;         git \
+
+  57 | &gt;&gt;&gt;         sipp \
+
+  58 | &gt;&gt;&gt;         python3 \
+
+  59 | &gt;&gt;&gt;         python3-pip \
+
+  60 | &gt;&gt;&gt;         python3-venv \
+
+  61 | &gt;&gt;&gt;     &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+  62 |     
+
+--------------------
+
+failed to solve: process &quot;/bin/sh -c apt-get update &amp;&amp;     apt-get install -y software-properties-common &amp;&amp;     add-apt-repository universe &amp;&amp;     apt-get update &amp;&amp;     apt-get install -y         ca-certificates         git         sipp         python3         python3-pip         python3-venv     &amp;&amp; rm -rf /var/lib/apt/lists/*&quot; did not complete successfully: exit code: 100
+
+</failure>
+    <system-out>title: sipp basic uas (compose)
+command: docker compose -f /home/msuda/workspace/virtual_voicebot_4/virtual_voicebot/virtual-voicebot-backend/test/sipp/sip/../../docker-compose.sipp.yml up --build --abort-on-container-exit --exit-code-from sipp
+stdout: /home/msuda/workspace/virtual_voicebot_4/virtual_voicebot/virtual-voicebot-backend/test/sipp/sip/result/20251221_024740/sip00001/stdout.log
+stderr: /home/msuda/workspace/virtual_voicebot_4/virtual_voicebot/virtual-voicebot-backend/test/sipp/sip/result/20251221_024740/sip00001/stderr.log
+</system-out>
+  </testcase>
+</testsuite>

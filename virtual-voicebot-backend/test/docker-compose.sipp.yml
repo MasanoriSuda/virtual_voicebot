@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  uas:
+    image: virtual-voicebot-backend-sipp
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      SIP_BIND_IP: "0.0.0.0"
+      SIP_PORT: "5060"
+      RTP_PORT: "10000"
+      LOCAL_IP: "0.0.0.0"
+      ADVERTISED_IP: "uas"
+      ADVERTISED_RTP_PORT: "10000"
+    expose:
+      - "5060/udp"
+
+  sipp:
+    image: virtual-voicebot-backend-sipp
+    depends_on:
+      - uas
+    tty: true
+    stdin_open: true
+    environment:
+      UAS_SIP_HOST: "uas"
+      UAS_SIP_PORT: "5060"
+      SIPP_SCENARIO: ${SIPP_SCENARIO:-/workspace/test/sipp/sip/scenarios/basic_uas.xml}
+    working_dir: /workspace/result
+    volumes:
+      - ./sipp/sip/scenarios:/workspace/test/sipp/sip/scenarios:ro
+      - ${RESULT_DIR:-./sipp/sip/result/manual/sipp}:/workspace/result
+    command: >
+      sh -lc 'SCENARIO="${SIPP_SCENARIO}";
+      mkdir -p /workspace/result;
+      for i in $(seq 1 30); do
+        sipp ${UAS_SIP_HOST}:${UAS_SIP_PORT} -sf "$SCENARIO" -m 1 -timeout 5000 -trace_err -trace_msg -trace_stat -stf /workspace/result/trace_stat.csv && exit 0;
+        sleep 1;
+      done;
+      exit 1'

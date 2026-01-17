@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use std::fmt::{self, Write};
 
+use crate::session::types::Sdp;
 use crate::sip::message::{SipHeader, SipMethod, SipRequest, SipResponse};
 
 /// 追加で使いやすい Builder スタイル
@@ -125,6 +126,8 @@ fn method_to_str(method: &SipMethod) -> &str {
         SipMethod::Cancel => "CANCEL",
         SipMethod::Options => "OPTIONS",
         SipMethod::Register => "REGISTER",
+        SipMethod::Update => "UPDATE",
+        SipMethod::Prack => "PRACK",
         SipMethod::Unknown(token) => token.as_str(),
     }
 }
@@ -144,6 +147,28 @@ pub fn build_request(
         headers,
         body,
     }
+}
+
+pub fn build_register_request(
+    request_uri: impl Into<String>,
+    via: impl Into<String>,
+    from: impl Into<String>,
+    to: impl Into<String>,
+    call_id: impl Into<String>,
+    cseq: u32,
+    contact: impl Into<String>,
+    expires: u32,
+) -> SipRequest {
+    SipRequestBuilder::new(SipMethod::Register, request_uri)
+        .header("Via", via)
+        .header("Max-Forwards", "70")
+        .header("From", from)
+        .header("To", to)
+        .header("Call-ID", call_id)
+        .header("CSeq", format!("{cseq} REGISTER"))
+        .header("Contact", contact)
+        .header("Expires", expires.to_string())
+        .build()
 }
 
 pub fn build_response(
@@ -190,6 +215,148 @@ impl SipRequest {
     }
 }
 
+/// リクエストヘッダから 1xx/空ボディレスポンスを組み立てる（To-tag を付与）。
+pub fn response_provisional_from_request(
+    req: &SipRequest,
+    code: u16,
+    reason: &str,
+) -> Option<SipResponse> {
+    let via = req.header_value("Via")?;
+    let from = req.header_value("From")?;
+    let mut to = req.header_value("To")?.to_string();
+    let call_id = req.header_value("Call-ID")?;
+    let cseq = req.header_value("CSeq")?;
+
+    if !to.to_ascii_lowercase().contains("tag=") {
+        to = format!("{to};tag=rustbot");
+    }
+
+    Some(
+        SipResponseBuilder::new(code, reason)
+            .header("Via", via)
+            .header("From", from)
+            .header("To", to)
+            .header("Call-ID", call_id)
+            .header("CSeq", cseq)
+            .build(),
+    )
+}
+
+/// リクエストヘッダ＋SDPから 2xx 応答を組み立てる。
+pub fn response_final_with_sdp(
+    req: &SipRequest,
+    code: u16,
+    reason: &str,
+    contact_ip: &str,
+    sip_port: u16,
+    answer: &Sdp,
+) -> Option<SipResponse> {
+    let via = req.header_value("Via")?;
+    let from = req.header_value("From")?;
+    let mut to = req.header_value("To")?.to_string();
+    let call_id = req.header_value("Call-ID")?;
+    let cseq = req.header_value("CSeq")?;
+
+    if !to.to_ascii_lowercase().contains("tag=") {
+        to = format!("{to};tag=rustbot");
+    }
+
+    let sdp = format!(
+        concat!(
+            "v=0\r\n",
+            "o=rustbot 1 1 IN IP4 {ip}\r\n",
+            "s=Rust PCMU Bot\r\n",
+            "c=IN IP4 {ip}\r\n",
+            "t=0 0\r\n",
+            "m=audio {rtp} RTP/AVP {pt}\r\n",
+            "a=rtpmap:{pt} {codec}\r\n",
+            "a=sendrecv\r\n",
+        ),
+        ip = answer.ip,
+        rtp = answer.port,
+        pt = answer.payload_type,
+        codec = answer.codec
+    );
+    let contact_scheme = contact_scheme_from_uri(&req.uri);
+
+    Some(
+        SipResponseBuilder::new(code, reason)
+            .header("Via", via)
+            .header("From", from)
+            .header("To", to)
+            .header("Call-ID", call_id)
+            .header("CSeq", cseq)
+            .header(
+                "Contact",
+                format!("{contact_scheme}:rustbot@{contact_ip}:{sip_port}"),
+            )
+            .body(sdp.as_bytes(), Some("application/sdp"))
+            .build(),
+    )
+}
+
+fn contact_scheme_from_uri(uri: &str) -> &'static str {
+    if uri.trim_start().to_ascii_lowercase().starts_with("sips:") {
+        "sips"
+    } else {
+        "sip"
+    }
+}
+
+/// BYE/REGISTER など 2xx 空ボディ応答。
+pub fn response_simple_from_request(
+    req: &SipRequest,
+    code: u16,
+    reason: &str,
+) -> Option<SipResponse> {
+    let via = req.header_value("Via")?;
+    let from = req.header_value("From")?;
+    let mut to = req.header_value("To")?.to_string();
+    let call_id = req.header_value("Call-ID")?;
+    let cseq = req.header_value("CSeq")?;
+
+    if !to.to_ascii_lowercase().contains("tag=") {
+        to = format!("{to};tag=rustbot");
+    }
+
+    Some(
+        SipResponseBuilder::new(code, reason)
+            .header("Via", via)
+            .header("From", from)
+            .header("To", to)
+            .header("Call-ID", call_id)
+            .header("CSeq", cseq)
+            .build(),
+    )
+}
+
+const OPTIONS_ALLOW: &str = "INVITE, ACK, BYE, OPTIONS, UPDATE, PRACK";
+const OPTIONS_SUPPORTED: &str = "100rel, timer";
+
+pub fn response_options_from_request(req: &SipRequest) -> Option<SipResponse> {
+    let via = req.header_value("Via")?;
+    let from = req.header_value("From")?;
+    let mut to = req.header_value("To")?.to_string();
+    let call_id = req.header_value("Call-ID")?;
+    let cseq = req.header_value("CSeq")?;
+
+    if !to.to_ascii_lowercase().contains("tag=") {
+        to = format!("{to};tag=rustbot");
+    }
+
+    Some(
+        SipResponseBuilder::new(200, "OK")
+            .header("Via", via)
+            .header("From", from)
+            .header("To", to)
+            .header("Call-ID", call_id)
+            .header("CSeq", cseq)
+            .header("Allow", OPTIONS_ALLOW)
+            .header("Supported", OPTIONS_SUPPORTED)
+            .build(),
+    )
+}
+
 impl fmt::Display for SipResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut out = String::new();
@@ -205,6 +372,35 @@ impl fmt::Display for SipResponse {
         out.push_str("\r\n");
 
         f.write_str(&out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::types::Sdp;
+
+    #[test]
+    fn response_final_with_sdp_uses_sips_contact() {
+        let req = SipRequestBuilder::new(SipMethod::Invite, "sips:alice@example.com")
+            .header("Via", "SIP/2.0/TLS example.com;branch=z9hG4bK-1")
+            .header("From", "<sips:alice@example.com>;tag=alice")
+            .header("To", "<sips:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let answer = Sdp::pcmu("127.0.0.1", 4000);
+
+        let resp = response_final_with_sdp(&req, 200, "OK", "127.0.0.1", 5061, &answer)
+            .expect("response");
+        let contact = resp
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("Contact"))
+            .map(|h| h.value.clone())
+            .expect("contact header");
+
+        assert!(contact.starts_with("sips:"));
     }
 }
 

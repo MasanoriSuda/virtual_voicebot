@@ -1,9 +1,59 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
+use hound::{SampleFormat, WavSpec, WavWriter};
+use std::path::Path;
+
+use crate::ports::ai::AsrChunk;
 
 /// ASR 呼び出しの薄いラッパ（挙動は ai::transcribe_and_log と同じ）。
 /// app からはこの関数を経由させる想定だが、現状の呼び出し順・回数は変えない。
 pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
     super::transcribe_and_log(wav_path).await
+}
+
+/// μ-law チャンクを WAV にまとめ、既存ASRを呼ぶ（挙動は従来と同じ）
+pub async fn transcribe_chunks(call_id: &str, chunks: &[AsrChunk]) -> Result<String> {
+    let mut pcmu: Vec<u8> = Vec::new();
+    for ch in chunks {
+        pcmu.extend_from_slice(&ch.pcm_mulaw);
+        if ch.end {
+            break;
+        }
+    }
+    let wav_path = format!("/tmp/asr_input_{}.wav", call_id);
+    write_mulaw_to_wav(&pcmu, &wav_path)?;
+    super::transcribe_and_log(&wav_path).await
+}
+
+fn write_mulaw_to_wav(payloads: &[u8], path: impl AsRef<Path>) -> Result<()> {
+    let spec = WavSpec {
+        channels: 1,
+        sample_rate: 8000,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
+    };
+    let mut writer = WavWriter::create(path, spec)?;
+    for &b in payloads {
+        writer.write_sample(mulaw_to_linear16(b))?;
+    }
+    writer.finalize()?;
+    Ok(())
+}
+
+fn mulaw_to_linear16(mu: u8) -> i16 {
+    const BIAS: i16 = 0x84;
+    let mu = !mu;
+    let sign = (mu & 0x80) != 0;
+    let segment = (mu & 0x70) >> 4;
+    let mantissa = mu & 0x0F;
+
+    let mut value = ((mantissa as i16) << 4) + 0x08;
+    value <<= segment as i16;
+    value -= BIAS;
+    if sign {
+        -value
+    } else {
+        value
+    }
 }

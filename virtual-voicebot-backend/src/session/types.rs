@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 // types.rs
+use std::time::Duration;
+
 #[derive(Clone, Debug)]
 pub struct Sdp {
     pub ip: String,
@@ -42,42 +44,77 @@ impl MediaConfig {
 /// sip/session 間で受け取るイベント（上位: sip・rtp・app からの入力）
 #[derive(Debug)]
 pub enum SessionIn {
-    Invite {
+    /// SIP側からのINVITE入力
+    SipInvite {
         call_id: CallId,
         from: String,
         to: String,
         offer: Sdp,
+        session_expires: Option<Duration>,
     },
-    Ack,
-    Bye,
-    RtpIn {
+    /// SIP側からのACK
+    SipAck,
+    /// SIP側からのBYE
+    SipBye,
+    /// SIPトランザクションタイムアウト通知
+    SipTransactionTimeout {
+        call_id: CallId,
+    },
+    /// RTP入力（メディア/PCM経路）
+    MediaRtpIn {
         ts: u32,
         payload: Vec<u8>,
     },
-    BotAudio {
-        pcm48k: Vec<i16>,
+    /// app から返ってきたボット応答音声（WAVファイルパス）
+    AppBotAudioFile {
+        path: String,
     },
-    TimerTick,
+    /// app からの終了指示
+    AppHangup,
+    /// Session Timer (keepalive 含む) の失効
+    SessionTimerFired,
+    /// keepalive tick
+    MediaTimerTick,
+    /// Session-Expires による更新（INVITE/UPDATE）
+    SipSessionExpires {
+        expires: Duration,
+    },
     Abort(anyhow::Error),
 }
 
 /// session → 上位（sip/rtp/app/metrics）への通知/指示
 #[derive(Debug)]
 pub enum SessionOut {
-    SendSip180,
-    SendSip200 {
+    /// SIP provisional (100)
+    SipSend100,
+    /// SIP provisional (180)
+    SipSend180,
+    /// SIP final (200 + SDP)
+    SipSend200 {
         answer: Sdp,
     },
-    SendSipBye200,
-    StartRtpTx {
+    /// SIP BYEに対する200
+    SipSendBye200,
+    /// RTP送信開始指示
+    RtpStartTx {
         dst_ip: String,
         dst_port: u16,
         pt: u8,
     },
-    StopRtpTx,
-    BotSynthesize {
+    /// RTP送信停止指示
+    RtpStopTx,
+    /// app/tts への合成依頼（将来用のスタブ）
+    AppRequestTts {
         text: String,
     }, // → VOICEVOXへ
+    /// Session Timer 失効を app 等へ通知
+    AppSessionTimeout,
+    /// app が生成したボット音声（WAVパス）を session へ戻す
+    AppSendBotAudioFile {
+        path: String,
+    },
+    /// app からの切断指示
+    AppRequestHangup,
     Metrics {
         name: &'static str,
         value: i64,
@@ -93,6 +130,24 @@ pub(crate) enum SessState {
     Established,
     Terminating,
     Terminated,
+}
+
+pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
+    match event {
+        SessionIn::SipBye
+        | SessionIn::AppHangup
+        | SessionIn::SessionTimerFired
+        | SessionIn::Abort(_) => SessState::Terminated,
+        SessionIn::SipInvite { .. } => match current {
+            SessState::Idle => SessState::Early,
+            _ => current,
+        },
+        SessionIn::SipAck => match current {
+            SessState::Early => SessState::Established,
+            _ => current,
+        },
+        _ => current,
+    }
 }
 
 use std::collections::HashMap;
@@ -112,12 +167,8 @@ impl SessionRegistry {
         Self { inner }
     }
 
-    pub fn insert(
-        &self,
-        call_id: CallId,
-        tx: UnboundedSender<SessionIn>,
-    ) -> Option<UnboundedSender<SessionIn>> {
-        self.inner.lock().unwrap().insert(call_id, tx)
+    pub fn insert(&self, call_id: CallId, tx: UnboundedSender<SessionIn>) {
+        self.inner.lock().unwrap().insert(call_id, tx);
     }
 
     pub fn get(&self, call_id: &CallId) -> Option<UnboundedSender<SessionIn>> {
