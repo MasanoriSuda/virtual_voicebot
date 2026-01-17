@@ -40,7 +40,13 @@ impl Config {
         let ingest_call_url = std::env::var("INGEST_CALL_URL").ok();
         let recording_base_url = std::env::var("RECORDING_BASE_URL")
             .ok()
-            .or_else(|| Some(format!("http://{}", recording_http_addr)));
+            .or_else(|| {
+                if let Some(port) = recording_http_addr.strip_prefix("0.0.0.0:") {
+                    Some(format!("http://{}:{}", advertised_ip, port))
+                } else {
+                    Some(format!("http://{}", recording_http_addr))
+                }
+            });
 
         Ok(Self {
             sip_bind_ip,

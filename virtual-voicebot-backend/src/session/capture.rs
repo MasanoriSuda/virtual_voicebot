@@ -40,3 +40,18 @@ impl AudioCapture {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restart_capture_after_buffer() {
+        let mut capture = AudioCapture::new(Duration::from_millis(0));
+        capture.start();
+        assert!(capture.ingest(&[1, 2, 3]).is_some());
+
+        capture.start();
+        assert!(capture.ingest(&[4, 5]).is_some());
+    }
+}

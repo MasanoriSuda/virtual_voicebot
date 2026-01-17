@@ -244,6 +244,7 @@ impl Session {
                             call_id: self.call_id.clone(),
                             pcm_mulaw: buffer,
                         });
+                        self.capture.start();
                     }
                     let _ = self.session_out_tx.send((
                         self.call_id.clone(),
