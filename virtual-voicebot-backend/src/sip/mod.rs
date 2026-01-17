@@ -1028,29 +1028,7 @@ impl SipCore {
                             let bytes = resp.to_bytes();
                             tx.on_final_sent(bytes.clone());
                             let peer = tx.peer;
-                            let final_resp = tx.last_final.clone();
-                            let expires = tx.expires_at;
                             self.send_payload(peer, bytes.clone());
-                            // Timer J 相当の再送（送信キュー経由）
-                            if let Some(final_resp) = final_resp {
-                                let transport_tx = self.transport_tx.clone();
-                                let src_port = self.cfg.sip_port;
-                                tokio::spawn(async move {
-                                    let mut interval = std::time::Duration::from_millis(500);
-                                    while Instant::now() < expires {
-                                        let _ = transport_tx.send(SipTransportRequest {
-                                            peer,
-                                            src_port,
-                                            payload: final_resp.clone(),
-                                        });
-                                        sleep(interval).await;
-                                        interval = std::cmp::min(
-                                            interval * 2,
-                                            std::time::Duration::from_secs(4),
-                                        );
-                                    }
-                                });
-                            }
                         }
                     }
                 }
