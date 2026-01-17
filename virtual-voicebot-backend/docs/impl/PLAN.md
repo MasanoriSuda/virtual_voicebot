@@ -8,9 +8,9 @@
 |------|-----|
 | **Status** | Active |
 | **Owner** | TBD |
-| **Last Updated** | 2026-01-14 |
+| **Last Updated** | 2026-01-18 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18) |
 
 ---
 
@@ -56,7 +56,7 @@
 | [Step-06](#step-06-options-応答) | OPTIONS 応答 | - | 完了 |
 | [Step-07](#step-07-artpmap-パース) | a=rtpmap パース | - | 未着手 |
 | [Step-08](#step-08-rtcp-sdes-cname) | RTCP SDES (CNAME) | - | 未着手 |
-| [Step-09](#step-09-486-busy-here) | 486 Busy Here | - | 未着手 |
+| [Step-09](#step-09-486-busy-here) | 486 Busy Here (Issue #18) | - | 完了 |
 | [Step-12](#step-12-timer-ghij-実装) | Timer G/H/I/J 実装 | - | 未着手 |
 | - | 183 Session Progress | - | 実装済み |
 | - | 複数 Reliable Provisional | - | 未着手 |
@@ -625,23 +625,31 @@ cargo test rtp::rtcp
 
 ## Step-09: 486 Busy Here
 
-**目的**: 同時通話数制限時に 486 Busy Here を返す
+**目的**: 通話中に新規 INVITE を受信した場合、486 Busy Here を返す
 
 **RFC参照**: RFC 3261 §21.4.7
+
+**関連**: [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18)
+
+### 背景
+
+ボイスボットは同時に 1 通話のみ対応する設計。通話中に別の INVITE が来た場合は 486 Busy Here で拒否し、発信者に「話し中」を伝える。
 
 ### DoD (Definition of Done)
 
 - [ ] 486 レスポンスビルダー追加
-- [ ] SipCore に同時セッション制限オプション追加
-- [ ] 制限超過時に 486 を返す
+- [ ] INVITE 受信時にアクティブセッション有無をチェック
+- [ ] アクティブセッション存在時に 486 を返す
+- [ ] max_sessions 設定追加（デフォルト: 1）
 - [ ] Unit test 追加
+- [ ] SIPp シナリオで E2E 検証
 
 ### 対象パス
 
 | ファイル | 変更内容 |
 |---------|---------|
 | `src/sip/builder.rs` | 486 ビルダー追加 |
-| `src/sip/mod.rs` | 制限チェック追加 |
+| `src/sip/mod.rs` | INVITE 受信時のセッション数チェック追加 |
 | `src/config.rs` | max_sessions 設定追加 |
 
 ### 変更上限
@@ -653,7 +661,18 @@ cargo test rtp::rtcp
 
 ```bash
 cargo test sip::
-# E2E: 複数 INVITE 同時送信で確認
+# E2E: 通話中に別の INVITE を送信し 486 応答を確認
+```
+
+### シーケンス
+
+```
+Call A (active)          Voicebot           Call B (new)
+    |                       |                    |
+    |<--- RTP (通話中) ---->|                    |
+    |                       |<--- INVITE --------|
+    |                       |---- 486 Busy ----->|
+    |                       |                    |
 ```
 
 ---
@@ -1000,6 +1019,7 @@ cargo test sip::register
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-18 | 1.8 | Issue #18 統合: Step-09（486 Busy Here）詳細化、シーケンス図追加 |
 | 2026-01-14 | 1.7 | Issue #13 統合: Step-14〜17（TLS/REGISTER/認証）追加、P0 最優先に昇格 |
 | 2025-12-30 | 1.6 | Issue #8 統合: Code Quality Improvements セクション追加（CQ-01〜05）、ARCH-01 サブステップ化 |
 | 2025-12-30 | 1.5 | Issue #8 統合: Architecture Improvements セクション追加（ARCH-01〜05） |

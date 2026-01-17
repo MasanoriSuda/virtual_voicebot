@@ -91,6 +91,7 @@ pub struct SipCore {
     non_invites: HashMap<CallId, NonInviteServerTransaction>,
     register: Option<Arc<Mutex<RegisterClient>>>,
     register_notify: Option<Arc<Notify>>,
+    active_call_id: Option<CallId>,
 }
 
 struct InviteContext {
@@ -388,6 +389,7 @@ impl SipCore {
             non_invites: std::collections::HashMap::new(),
             register,
             register_notify,
+            active_call_id: None,
         };
         core.maybe_send_register();
         core
@@ -523,6 +525,20 @@ impl SipCore {
             return vec![];
         }
 
+        if let Some(active) = &self.active_call_id {
+            if active != &headers.call_id {
+                log::info!(
+                    "[sip] busy (active call_id={}), rejecting {}",
+                    active,
+                    headers.call_id
+                );
+                if let Some(resp) = response_simple_from_request(&req, 486, "Busy Here") {
+                    self.send_payload(peer, resp.to_bytes());
+                }
+                return vec![];
+            }
+        }
+
         let session_timer = match session_timer_from_request(&req) {
             Ok(timer) => timer,
             Err(SessionTimerError::Invalid) => {
@@ -555,6 +571,7 @@ impl SipCore {
             final_ok: None,
             final_ok_payload: None,
         };
+        self.active_call_id = Some(headers.call_id.clone());
         self.invites.insert(headers.call_id.clone(), ctx);
 
         let offer = parse_offer_sdp(&req.body).unwrap_or_else(|| Sdp::pcmu("0.0.0.0", 0));
@@ -1022,6 +1039,9 @@ impl SipCore {
                 }
             }
             SessionOut::SipSendBye200 => {
+                if self.active_call_id.as_ref() == Some(call_id) {
+                    self.active_call_id = None;
+                }
                 if let Some(tx) = self.non_invites.get_mut(call_id) {
                     if let Some(req) = tx.last_request.clone() {
                         if let Some(resp) = response_simple_from_request(&req, 200, "OK") {
@@ -1198,5 +1218,56 @@ mod tests {
             .map(|h| h.value.as_str());
         assert!(header_has_token(supported, "100rel"));
         assert!(header_has_token(supported, "timer"));
+    }
+
+    #[test]
+    fn invite_when_busy_returns_486() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut core = SipCore::new(
+            SipConfig {
+                advertised_ip: "127.0.0.1".to_string(),
+                sip_port: 5060,
+                advertised_rtp_port: 4000,
+            },
+            tx,
+        );
+
+        let req1 = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let input1 = SipInput {
+            peer: dummy_peer(),
+            data: req1.to_bytes(),
+        };
+
+        let events = core.handle_input(&input1);
+        assert_eq!(events.len(), 1);
+
+        let req2 = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:carol@example.com>;tag=carol")
+            .header("To", "<sip:dave@example.com>")
+            .header("Call-ID", "call-2")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let input2 = SipInput {
+            peer: dummy_peer(),
+            data: req2.to_bytes(),
+        };
+
+        let events = core.handle_input(&input2);
+        assert!(events.is_empty());
+
+        let sent = rx.try_recv().expect("busy response");
+        let resp_text = String::from_utf8(sent.payload).expect("utf8 response");
+        let resp = match parse_sip_message(&resp_text).expect("parse response") {
+            SipMessage::Response(resp) => resp,
+            _ => panic!("expected response"),
+        };
+        assert_eq!(resp.status_code, 486);
     }
 }
