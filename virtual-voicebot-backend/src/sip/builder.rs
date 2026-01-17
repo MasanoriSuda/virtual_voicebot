@@ -149,6 +149,28 @@ pub fn build_request(
     }
 }
 
+pub fn build_register_request(
+    request_uri: impl Into<String>,
+    via: impl Into<String>,
+    from: impl Into<String>,
+    to: impl Into<String>,
+    call_id: impl Into<String>,
+    cseq: u32,
+    contact: impl Into<String>,
+    expires: u32,
+) -> SipRequest {
+    SipRequestBuilder::new(SipMethod::Register, request_uri)
+        .header("Via", via)
+        .header("Max-Forwards", "70")
+        .header("From", from)
+        .header("To", to)
+        .header("Call-ID", call_id)
+        .header("CSeq", format!("{cseq} REGISTER"))
+        .header("Contact", contact)
+        .header("Expires", expires.to_string())
+        .build()
+}
+
 pub fn build_response(
     status_code: u16,
     reason_phrase: impl Into<String>,
@@ -255,6 +277,7 @@ pub fn response_final_with_sdp(
         pt = answer.payload_type,
         codec = answer.codec
     );
+    let contact_scheme = contact_scheme_from_uri(&req.uri);
 
     Some(
         SipResponseBuilder::new(code, reason)
@@ -263,10 +286,21 @@ pub fn response_final_with_sdp(
             .header("To", to)
             .header("Call-ID", call_id)
             .header("CSeq", cseq)
-            .header("Contact", format!("sip:rustbot@{contact_ip}:{sip_port}"))
+            .header(
+                "Contact",
+                format!("{contact_scheme}:rustbot@{contact_ip}:{sip_port}"),
+            )
             .body(sdp.as_bytes(), Some("application/sdp"))
             .build(),
     )
+}
+
+fn contact_scheme_from_uri(uri: &str) -> &'static str {
+    if uri.trim_start().to_ascii_lowercase().starts_with("sips:") {
+        "sips"
+    } else {
+        "sip"
+    }
 }
 
 /// BYE/REGISTER など 2xx 空ボディ応答。
@@ -338,6 +372,35 @@ impl fmt::Display for SipResponse {
         out.push_str("\r\n");
 
         f.write_str(&out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::types::Sdp;
+
+    #[test]
+    fn response_final_with_sdp_uses_sips_contact() {
+        let req = SipRequestBuilder::new(SipMethod::Invite, "sips:alice@example.com")
+            .header("Via", "SIP/2.0/TLS example.com;branch=z9hG4bK-1")
+            .header("From", "<sips:alice@example.com>;tag=alice")
+            .header("To", "<sips:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let answer = Sdp::pcmu("127.0.0.1", 4000);
+
+        let resp = response_final_with_sdp(&req, 200, "OK", "127.0.0.1", 5061, &answer)
+            .expect("response");
+        let contact = resp
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("Contact"))
+            .map(|h| h.value.clone())
+            .expect("contact header");
+
+        assert!(contact.starts_with("sips:"));
     }
 }
 

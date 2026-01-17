@@ -4,6 +4,7 @@ mod config;
 mod http;
 mod logging;
 mod media;
+mod ports;
 mod recording;
 mod rtp;
 mod session;
@@ -31,6 +32,11 @@ async fn main() -> anyhow::Result<()> {
     let sip_bind_ip = cfg.sip_bind_ip;
     let sip_port = cfg.sip_port;
     let rtp_port_cfg = cfg.rtp_port;
+    let advertised_ip = cfg.advertised_ip;
+    let advertised_rtp_port = cfg.advertised_rtp_port;
+    let recording_http_addr = cfg.recording_http_addr;
+    let ingest_call_url = cfg.ingest_call_url;
+    let recording_base_url = cfg.recording_base_url;
 
     // --- セッションとRTPポート管理の共有マップ ---
     let session_map: SessionMap = Arc::new(Mutex::new(HashMap::new()));
@@ -51,15 +57,6 @@ async fn main() -> anyhow::Result<()> {
     let sip_tcp_listener = TcpListener::bind((sip_bind_ip.as_str(), sip_port)).await?;
     let rtp_sock = UdpSocket::bind(("0.0.0.0", rtp_port_cfg)).await?;
     let rtp_port = rtp_sock.local_addr()?.port();
-    let local_ip = cfg.local_ip;
-    let advertised_ip = std::env::var("ADVERTISED_IP").unwrap_or_else(|_| local_ip.clone());
-    let advertised_rtp_port = std::env::var("ADVERTISED_RTP_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(rtp_port);
-    let recording_http_addr =
-        std::env::var("RECORDING_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:18080".to_string());
-
     log::info!(
         "Listening SIP UDP on {}, SIP TCP on {}, RTP on {}",
         sip_sock.local_addr()?,
@@ -97,6 +94,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- SIP処理ループ: packet層からのSIP入力をセッションへ結線 ---
+    let ai_port = Arc::new(ai::DefaultAiPort::new());
+    let ingest_port = Arc::new(http::ingest::HttpIngestPort::new(
+        config::timeouts().ingest_http,
+    ));
+    let storage_port = Arc::new(recording::storage::FileStoragePort::new());
     let mut sip_core = SipCore::new(
         SipConfig {
             advertised_ip: advertised_ip.clone(),
@@ -105,8 +107,17 @@ async fn main() -> anyhow::Result<()> {
         },
         sip_send_tx,
     );
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
+            res = &mut shutdown => {
+                if let Err(err) = res {
+                    log::warn!("[main] shutdown signal error: {:?}", err);
+                }
+                sip_core.shutdown();
+                break;
+            }
             Some(input) = sip_rx.recv() => {
                 let events = sip_core.handle_input(&input);
                 for ev in events {
@@ -121,14 +132,14 @@ async fn main() -> anyhow::Result<()> {
                             log::info!("[main] new INVITE, call_id={}", call_id);
 
                             let rtp_handle = RtpTxHandle::new();
-                            let ingest_url = std::env::var("INGEST_CALL_URL").ok();
-                            let recording_base_url = std::env::var("RECORDING_BASE_URL")
-                                .ok()
-                                .or_else(|| {
-                                    // デフォルトは録音HTTPサーバのアドレス
-                                    Some(format!("http://{}", recording_http_addr))
-                                });
+                            let ingest_url = ingest_call_url.clone();
+                            let recording_base_url = recording_base_url.clone();
 
+                            let app_tx = app::spawn_app_worker(
+                                call_id.clone(),
+                                session_out_tx.clone(),
+                                ai_port.clone(),
+                            );
                             let sess_tx = spawn_session(
                                 call_id.clone(),
                                 from.clone(),
@@ -136,9 +147,12 @@ async fn main() -> anyhow::Result<()> {
                                 session_registry.clone(),
                                 MediaConfig::pcmu(advertised_ip.clone(), rtp_port),
                                 session_out_tx.clone(),
+                                app_tx,
                                 rtp_handle.clone(),
                                 ingest_url,
                                 recording_base_url,
+                                ingest_port.clone(),
+                                storage_port.clone(),
                             );
 
                             {

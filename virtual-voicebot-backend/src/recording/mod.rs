@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 pub const RECORDINGS_DIR: &str = "storage/recordings";
 
+pub mod storage;
+
 pub fn recording_dir_name(call_id: &str) -> String {
     call_id.to_string()
 }

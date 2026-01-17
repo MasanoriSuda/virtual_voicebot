@@ -20,6 +20,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_transcribe as transcribe;
 
 use crate::config;
+use crate::ports::ai::{AiFuture, AiPort, AsrChunk};
 
 #[derive(Serialize)]
 struct OllamaChatRequest {
@@ -217,6 +218,28 @@ async fn call_ollama(question: &str) -> Result<String> {
     Ok(answer)
 }
 
+pub struct DefaultAiPort;
+
+impl DefaultAiPort {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl AiPort for DefaultAiPort {
+    fn transcribe_chunks(&self, call_id: String, chunks: Vec<AsrChunk>) -> AiFuture<Result<String>> {
+        Box::pin(async move { asr::transcribe_chunks(&call_id, &chunks).await })
+    }
+
+    fn generate_answer(&self, text: String) -> AiFuture<Result<String>> {
+        Box::pin(async move { llm::generate_answer(&text).await })
+    }
+
+    fn synth_to_wav(&self, text: String, path: Option<String>) -> AiFuture<Result<String>> {
+        Box::pin(async move { tts::synth_to_wav(&text, path.as_deref()).await })
+    }
+}
+
 /// ずんだもん TTS の呼び出し。I/F はテキストと出力 WAV パス（従来どおり）。
 pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
     let client = http_client(config::timeouts().ai_http)?;
@@ -257,11 +280,12 @@ pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
 async fn call_gemini(question: &str) -> Result<String> {
     let client = http_client(config::timeouts().ai_http)?;
 
-    let api_key =
-        std::env::var("GEMINI_API_KEY").map_err(|_| anyhow!("GEMINI_API_KEY must be set"))?;
-
-    let model =
-        std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash-lite".to_string());
+    let ai_cfg = config::ai_config();
+    let api_key = ai_cfg
+        .gemini_api_key
+        .as_deref()
+        .ok_or_else(|| anyhow!("GEMINI_API_KEY must be set"))?;
+    let model = ai_cfg.gemini_model.as_str();
 
     let url = format!(
         "https://generativelanguage.googleapis.com/v1/models/{}:generateContent?key={}",
@@ -301,18 +325,15 @@ async fn call_gemini(question: &str) -> Result<String> {
 }
 
 fn aws_transcribe_enabled() -> bool {
-    std::env::var("USE_AWS_TRANSCRIBE")
-        .map(|v| {
-            let lower = v.to_ascii_lowercase();
-            lower == "1" || lower == "true" || lower == "yes"
-        })
-        .unwrap_or(false)
+    config::ai_config().use_aws_transcribe
 }
 
 async fn transcribe_with_aws(wav_path: &str) -> Result<String> {
-    let bucket = std::env::var("AWS_TRANSCRIBE_BUCKET")
-        .map_err(|_| anyhow!("AWS_TRANSCRIBE_BUCKET must be set when USE_AWS_TRANSCRIBE=1"))?;
-    let prefix = std::env::var("AWS_TRANSCRIBE_PREFIX").unwrap_or_else(|_| "voicebot".to_string());
+    let ai_cfg = config::ai_config();
+    let bucket = ai_cfg.aws_transcribe_bucket.as_deref().ok_or_else(|| {
+        anyhow!("AWS_TRANSCRIBE_BUCKET must be set when USE_AWS_TRANSCRIBE=1")
+    })?;
+    let prefix = ai_cfg.aws_transcribe_prefix.as_str();
 
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
     let job_name = format!("voicebot-{}", timestamp);
@@ -320,7 +341,7 @@ async fn transcribe_with_aws(wav_path: &str) -> Result<String> {
     let normalized_prefix = if prefix.is_empty() {
         String::new()
     } else if prefix.ends_with('/') {
-        prefix
+        prefix.to_string()
     } else {
         format!("{}/", prefix)
     };
@@ -338,7 +359,7 @@ async fn transcribe_with_aws(wav_path: &str) -> Result<String> {
     info!("Uploading audio to s3://{}/{}", bucket, object_key);
     s3_client
         .put_object()
-        .bucket(&bucket)
+        .bucket(bucket)
         .key(&object_key)
         .body(body_stream)
         .content_type("audio/wav")

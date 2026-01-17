@@ -1,29 +1,30 @@
 #![allow(dead_code)]
 // session.rs
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-use tokio::sync::{
-    mpsc::{UnboundedReceiver, UnboundedSender},
-    oneshot,
-};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::{Duration, Instant};
 
 use crate::session::types::Sdp;
 use crate::session::types::*;
 
-use crate::app::{self, AppEvent};
-use crate::config;
+use crate::app::AppEvent;
+use crate::http::ingest::IngestPort;
 use crate::media::Recorder;
 use crate::recording;
+use crate::recording::storage::StoragePort;
 use crate::rtp::tx::RtpTxHandle;
+use crate::session::capture::AudioCapture;
+use crate::session::timers::SessionTimers;
 use anyhow::Error;
 use log::{debug, info, warn};
-use reqwest::Client;
 use serde_json::json;
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
 // MVPのシンプルなSession Timer。必要に応じて設計に合わせて短縮/設定化する。
 const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
+const CAPTURE_WINDOW: Duration = Duration::from_secs(10);
 
 const INTRO_WAV_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -43,9 +44,11 @@ pub struct Session {
     ingest_url: Option<String>,
     recording_base_url: Option<String>,
     ingest_sent: bool,
+    ingest_port: Arc<dyn IngestPort>,
+    storage_port: Arc<dyn StoragePort>,
     peer_sdp: Option<Sdp>,
     local_sdp: Option<Sdp>,
-    tx_up: UnboundedSender<SessionOut>,
+    session_out_tx: UnboundedSender<(CallId, SessionOut)>,
     tx_in: UnboundedSender<SessionIn>,
     app_tx: UnboundedSender<AppEvent>,
     media_cfg: MediaConfig,
@@ -54,15 +57,11 @@ pub struct Session {
     started_at: Option<Instant>,
     started_wall: Option<std::time::SystemTime>,
     rtp_last_sent: Option<Instant>,
-    keepalive_stop: Option<oneshot::Sender<()>>,
-    session_timer_stop: Option<oneshot::Sender<()>>,
-    session_timer_deadline: Option<Instant>,
-    session_expires: Duration,
+    timers: SessionTimers,
     sending_audio: bool,
     // バッファ/タイマ
     speaking: bool,
-    capture_started: Option<Instant>,
-    capture_payloads: Vec<u8>,
+    capture: AudioCapture,
     intro_sent: bool,
 }
 
@@ -71,15 +70,17 @@ impl Session {
         call_id: CallId,
         from_uri: String,
         to_uri: String,
-        tx_up: UnboundedSender<SessionOut>,
+        session_out_tx: UnboundedSender<(CallId, SessionOut)>,
+        app_tx: UnboundedSender<AppEvent>,
         media_cfg: MediaConfig,
         rtp_tx: RtpTxHandle,
         ingest_url: Option<String>,
         recording_base_url: Option<String>,
+        ingest_port: Arc<dyn IngestPort>,
+        storage_port: Arc<dyn StoragePort>,
     ) -> SessionHandle {
         let (tx_in, rx_in) = tokio::sync::mpsc::unbounded_channel();
         let call_id_clone = call_id.clone();
-        let (app_tx, app_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
         let mut s = Self {
             state: SessState::Idle,
             call_id,
@@ -88,28 +89,25 @@ impl Session {
             ingest_url,
             recording_base_url,
             ingest_sent: false,
+            ingest_port,
+            storage_port,
             peer_sdp: None,
             local_sdp: None,
-            tx_up,
+            session_out_tx,
             tx_in: tx_in.clone(),
             app_tx,
             media_cfg,
             rtp_tx,
-            recorder: Recorder::new(call_id_clone.clone()),
+            recorder: Recorder::new(call_id_clone),
             started_at: None,
             started_wall: None,
             rtp_last_sent: None,
-            keepalive_stop: None,
-            session_timer_stop: None,
-            session_timer_deadline: None,
-            session_expires: SESSION_TIMEOUT,
+            timers: SessionTimers::new(SESSION_TIMEOUT),
             sending_audio: false,
             speaking: false,
-            capture_started: None,
-            capture_payloads: Vec::new(),
+            capture: AudioCapture::new(CAPTURE_WINDOW),
             intro_sent: false,
         };
-        app::spawn_app_worker(s.call_id.clone(), app_rx, s.tx_up.clone());
         tokio::spawn(async move {
             s.run(rx_in).await;
         });
@@ -118,6 +116,8 @@ impl Session {
 
     async fn run(&mut self, mut rx: UnboundedReceiver<SessionIn>) {
         while let Some(ev) = rx.recv().await {
+            let next_state = next_session_state(self.state, &ev);
+            let mut advance_state = true;
             match (self.state, ev) {
                 (SessState::Idle, SessionIn::SipInvite { offer, session_expires, .. }) => {
                     self.peer_sdp = Some(offer);
@@ -126,14 +126,22 @@ impl Session {
                     }
                     let answer = self.build_answer_pcmu8k();
                     self.local_sdp = Some(answer.clone());
-                    let _ = self.tx_up.send(SessionOut::SipSend100);
-                    let _ = self.tx_up.send(SessionOut::SipSend180);
-                    let _ = self.tx_up.send(SessionOut::SipSend200 { answer });
-                    self.state = SessState::Early;
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::SipSend100));
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::SipSend180));
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
                 }
                 (SessState::Early, SessionIn::SipAck) => {
                     // 相手SDPからRTP宛先を確定して送信開始
                     if self.intro_sent {
+                        advance_state = false;
+                    }
+                    if !advance_state {
                         continue;
                     }
                     self.started_at = Some(Instant::now());
@@ -146,15 +154,19 @@ impl Session {
                     }
 
                     let (ip, port) = self.peer_rtp_dst();
-                    let dst_addr: SocketAddr = match format!("{ip}:{port}").parse() {
-                        Ok(a) => a,
+                    let dst_addr = match format!("{ip}:{port}").parse() {
+                        Ok(a) => Some(a),
                         Err(e) => {
                             warn!(
                                 "[session {}] invalid RTP destination {}:{} ({:?})",
                                 self.call_id, ip, port, e
                             );
-                            continue;
+                            advance_state = false;
+                            None
                         }
+                    };
+                    let Some(dst_addr) = dst_addr else {
+                        continue;
                     };
 
                     // rtp側でソケットを持つように変更
@@ -162,14 +174,15 @@ impl Session {
                     self.rtp_tx
                         .start(self.call_id.clone(), dst_addr, 0, 0x12345678, 0, 0);
 
-                    let _ = self.tx_up.send(SessionOut::RtpStartTx {
-                        dst_ip: ip.clone(),
-                        dst_port: port,
-                        pt: 0,
-                    }); // PCMU
-                    self.state = SessState::Established;
-                    self.capture_started = None;
-                    self.capture_payloads.clear();
+                    let _ = self.session_out_tx.send((
+                        self.call_id.clone(),
+                        SessionOut::RtpStartTx {
+                            dst_ip: ip.clone(),
+                            dst_port: port,
+                            pt: 0,
+                        },
+                    )); // PCMU
+                    self.capture.reset();
                     self.intro_sent = true;
 
                     self.align_rtp_clock();
@@ -185,6 +198,7 @@ impl Session {
                         &self.rtp_tx,
                         &self.call_id,
                         &mut self.recorder,
+                        self.storage_port.as_ref(),
                     )
                     .await
                     {
@@ -204,8 +218,7 @@ impl Session {
                     }
                     self.sending_audio = false;
 
-                    self.capture_started = Some(Instant::now());
-                    self.capture_payloads.clear();
+                    self.capture.start();
                     info!(
                         "[session {}] capture window started after intro playback",
                         self.call_id
@@ -221,26 +234,24 @@ impl Session {
                         payload.len()
                     );
                     self.recorder.push_rx_mulaw(&payload);
-                    if let Some(start) = self.capture_started {
-                        self.capture_payloads.extend_from_slice(&payload);
-                        if start.elapsed() >= Duration::from_secs(10) {
-                            info!(
-                                "[session {}] buffered audio ready for app ({} bytes)",
-                                self.call_id,
-                                self.capture_payloads.len()
-                            );
-                            let _ = self.app_tx.send(AppEvent::AudioBuffered {
-                                call_id: self.call_id.clone(),
-                                pcm_mulaw: self.capture_payloads.clone(),
-                            });
-                            self.capture_started = None;
-                            self.capture_payloads.clear();
-                        }
+                    if let Some(buffer) = self.capture.ingest(&payload) {
+                        info!(
+                            "[session {}] buffered audio ready for app ({} bytes)",
+                            self.call_id,
+                            buffer.len()
+                        );
+                        let _ = self.app_tx.send(AppEvent::AudioBuffered {
+                            call_id: self.call_id.clone(),
+                            pcm_mulaw: buffer,
+                        });
                     }
-                    let _ = self.tx_up.send(SessionOut::Metrics {
-                        name: "rtp_in",
-                        value: payload.len() as i64,
-                    });
+                    let _ = self.session_out_tx.send((
+                        self.call_id.clone(),
+                        SessionOut::Metrics {
+                            name: "rtp_in",
+                            value: payload.len() as i64,
+                        },
+                    ));
                 }
                 (SessState::Established, SessionIn::MediaTimerTick) => {
                     if let Err(e) = self.send_silence_frame().await {
@@ -258,12 +269,15 @@ impl Session {
                     }
                     self.send_ingest("ended").await;
                     self.rtp_tx.stop(&self.call_id);
-                    let _ = self.tx_up.send(SessionOut::RtpStopTx);
-                    let _ = self.tx_up.send(SessionOut::SipSendBye200);
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::SipSendBye200));
                     let _ = self.app_tx.send(AppEvent::CallEnded {
                         call_id: self.call_id.clone(),
                     });
-                    self.state = SessState::Terminated;
                 }
                 (_, SessionIn::SipTransactionTimeout { call_id: _ }) => {
                     warn!("[session {}] transaction timeout notified", self.call_id);
@@ -288,6 +302,7 @@ impl Session {
                             &self.rtp_tx,
                             &self.call_id,
                             &mut self.recorder,
+                            self.storage_port.as_ref(),
                         )
                         .await
                         {
@@ -316,12 +331,15 @@ impl Session {
                     }
                     self.send_ingest("ended").await;
                     self.rtp_tx.stop(&self.call_id);
-                    let _ = self.tx_up.send(SessionOut::RtpStopTx);
-                    let _ = self.tx_up.send(SessionOut::SipSendBye200);
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::SipSendBye200));
                     let _ = self.app_tx.send(AppEvent::CallEnded {
                         call_id: self.call_id.clone(),
                     });
-                    self.state = SessState::Terminated;
                 }
                 (_, SessionIn::SipSessionExpires { expires }) => {
                     self.update_session_expires(expires);
@@ -337,12 +355,15 @@ impl Session {
                         );
                     }
                     self.send_ingest("ended").await;
-                    let _ = self.tx_up.send(SessionOut::RtpStopTx);
-                    let _ = self.tx_up.send(SessionOut::AppSessionTimeout);
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::AppSessionTimeout));
                     let _ = self.app_tx.send(AppEvent::CallEnded {
                         call_id: self.call_id.clone(),
                     });
-                    self.state = SessState::Terminated;
                 }
                 (_, SessionIn::Abort(e)) => {
                     warn!("call {} abort: {e:?}", self.call_id);
@@ -356,13 +377,17 @@ impl Session {
                     }
                     self.send_ingest("failed").await;
                     self.rtp_tx.stop(&self.call_id);
-                    let _ = self.tx_up.send(SessionOut::RtpStopTx);
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::RtpStopTx));
                     let _ = self.app_tx.send(AppEvent::CallEnded {
                         call_id: self.call_id.clone(),
                     });
-                    self.state = SessState::Terminated;
                 }
                 _ => { /* それ以外は無視 or ログ */ }
+            }
+            if advance_state {
+                self.state = next_state;
             }
         }
         if let Err(e) = self.recorder.stop() {
@@ -395,64 +420,26 @@ impl Session {
 
     /// keepalive タイマを開始する（挙動は従来と同じ。20ms ごとに TimerTick を送る）
     fn start_keepalive_timer(&mut self) {
-        if self.keepalive_stop.is_some() {
-            return;
-        }
-        let (stop_tx, mut stop_rx) = oneshot::channel();
-        self.keepalive_stop = Some(stop_tx);
-        let tx = self.tx_in.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(KEEPALIVE_INTERVAL) => {
-                        let _ = tx.send(SessionIn::MediaTimerTick);
-                    }
-                    _ = &mut stop_rx => break,
-                }
-            }
-        });
+        self.timers
+            .start_keepalive(self.tx_in.clone(), KEEPALIVE_INTERVAL);
     }
 
     /// keepalive タイマを停止する（存在する場合のみ）
     fn stop_keepalive_timer(&mut self) {
-        if let Some(stop) = self.keepalive_stop.take() {
-            let _ = stop.send(());
-        }
+        self.timers.stop_keepalive();
     }
 
     /// Session Timer（簡易 keepalive 含む）の発火を監視し、失効時に SessionIn を送る
     fn start_session_timer(&mut self) {
-        if self.session_timer_stop.is_some() {
-            return;
-        }
-        let (stop_tx, mut stop_rx) = oneshot::channel();
-        let timeout = self.session_expires;
-        self.session_timer_deadline = Some(Instant::now() + timeout);
-        self.session_timer_stop = Some(stop_tx);
-        let tx = self.tx_in.clone();
-        tokio::spawn(async move {
-            tokio::select! {
-                _ = tokio::time::sleep(timeout) => {
-                    let _ = tx.send(SessionIn::SessionTimerFired);
-                }
-                _ = &mut stop_rx => {}
-            }
-        });
+        self.timers.start_session_timer(self.tx_in.clone());
     }
 
     fn stop_session_timer(&mut self) {
-        if let Some(stop) = self.session_timer_stop.take() {
-            let _ = stop.send(());
-        }
-        self.session_timer_deadline = None;
+        self.timers.stop_session_timer();
     }
 
     fn update_session_expires(&mut self, expires: Duration) {
-        self.session_expires = expires;
-        if self.session_timer_stop.is_some() {
-            self.stop_session_timer();
-            self.start_session_timer();
-        }
+        self.timers.update_session_expires(expires, self.tx_in.clone());
     }
 
     async fn send_silence_frame(&mut self) -> Result<(), Error> {
@@ -505,23 +492,12 @@ impl Session {
             })),
         });
 
-        let timeout = config::timeouts().ingest_http;
         let url = ingest_url.clone();
         let call_id = self.call_id.clone();
+        let ingest_port = self.ingest_port.clone();
         self.ingest_sent = true;
         tokio::spawn(async move {
-            let client = match Client::builder().timeout(timeout).build() {
-                Ok(c) => c,
-                Err(e) => {
-                    log::warn!(
-                        "[ingest] failed to build client for call {}: {:?}",
-                        call_id,
-                        e
-                    );
-                    return;
-                }
-            };
-            if let Err(e) = client.post(url).json(&payload).send().await {
+            if let Err(e) = ingest_port.post(url, payload).await {
                 log::warn!("[ingest] failed to post call {}: {:?}", call_id, e);
             }
         });
@@ -534,10 +510,11 @@ async fn send_wav_as_rtp_pcmu(
     tx: &RtpTxHandle,
     key: &str,
     recorder: &mut Recorder,
+    storage_port: &dyn StoragePort,
 ) -> Result<(), Error> {
     use tokio::time::sleep;
 
-    let frames = load_wav_as_pcmu_frames(wav_path)?;
+    let frames = storage_port.load_wav_as_pcmu_frames(wav_path)?;
     if frames.is_empty() {
         anyhow::bail!("no frames");
     }
@@ -556,64 +533,4 @@ async fn send_wav_as_rtp_pcmu(
         sleep(Duration::from_millis(20)).await;
     }
     Ok(())
-}
-
-fn load_wav_as_pcmu_frames(path: &str) -> Result<Vec<Vec<u8>>, Error> {
-    use hound::WavReader;
-    let mut reader = WavReader::open(path)?;
-    let spec = reader.spec();
-    if spec.channels != 1 || spec.bits_per_sample != 16 {
-        anyhow::bail!("expected mono 16bit wav");
-    }
-    let mut samples: Vec<i16> = Vec::new();
-    for s in reader.samples::<i16>() {
-        samples.push(s?);
-    }
-    let base_samples: Vec<i16> = match spec.sample_rate {
-        8000 => samples,
-        24000 => samples.iter().step_by(3).copied().collect(),
-        other => anyhow::bail!("unsupported sample rate {other}"),
-    };
-    let mut frames = Vec::new();
-    let mut cur = Vec::with_capacity(160);
-    for s in base_samples {
-        cur.push(linear16_to_mulaw(s));
-        if cur.len() == 160 {
-            frames.push(cur.clone());
-            cur.clear();
-        }
-    }
-    if !cur.is_empty() {
-        while cur.len() < 160 {
-            cur.push(0xFF);
-        }
-        frames.push(cur);
-    }
-    Ok(frames)
-}
-
-fn linear16_to_mulaw(sample: i16) -> u8 {
-    const BIAS: i16 = 0x84;
-    const CLIP: i16 = 32635;
-    let mut s = sample;
-    let mut sign = 0u8;
-    if s < 0 {
-        s = -s;
-        sign = 0x80;
-    }
-    if s > CLIP {
-        s = CLIP;
-    }
-    s += BIAS;
-    let mut segment: u8 = 0;
-    let mut value = (s as u16) >> 7;
-    while value > 0 {
-        segment += 1;
-        value >>= 1;
-        if segment >= 8 {
-            break;
-        }
-    }
-    let mantissa = ((s >> (segment + 3)) & 0x0F) as u8;
-    !(sign | (segment << 4) | mantissa)
 }

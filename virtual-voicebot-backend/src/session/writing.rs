@@ -3,8 +3,11 @@
 //
 // 責務: Session 内部の状態機械と、外部モジュール (sip/rtp/app) への出口を結線する。
 // ここでは経路だけ定義し、実際の送信/受信はまだスタブのまま（挙動は従来どおり）。
-use tokio::sync::mpsc::unbounded_channel;
+use std::sync::Arc;
 
+use crate::app::AppEvent;
+use crate::http::ingest::IngestPort;
+use crate::recording::storage::StoragePort;
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::types::*;
 use crate::session::{Session, SessionHandle};
@@ -16,29 +19,26 @@ pub fn spawn_call(
     to_uri: String,
     media_cfg: MediaConfig,
     session_out_tx: tokio::sync::mpsc::UnboundedSender<(CallId, SessionOut)>,
+    app_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
     rtp_tx: RtpTxHandle,
     ingest_url: Option<String>,
     recording_base_url: Option<String>,
+    ingest_port: Arc<dyn IngestPort>,
+    storage_port: Arc<dyn StoragePort>,
 ) -> SessionHandle {
-    let (tx_up, rx_out) = unbounded_channel::<SessionOut>();
     let handle = Session::spawn(
         call_id.clone(),
         from_uri,
         to_uri,
-        tx_up,
+        session_out_tx,
+        app_tx,
         media_cfg,
         rtp_tx,
         ingest_url,
         recording_base_url,
+        ingest_port,
+        storage_port,
     );
-
-    // セッション→上位の指示をここで分配（現状はそのまま転送）
-    tokio::spawn(async move {
-        let mut rx_out = rx_out;
-        while let Some(out) = rx_out.recv().await {
-            let _ = session_out_tx.send((call_id.clone(), out));
-        }
-    });
 
     handle
 }
@@ -50,9 +50,12 @@ pub fn spawn_session(
     registry: SessionRegistry,
     media_cfg: MediaConfig,
     session_out_tx: tokio::sync::mpsc::UnboundedSender<(CallId, SessionOut)>,
+    app_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
     rtp_tx: RtpTxHandle,
     ingest_url: Option<String>,
     recording_base_url: Option<String>,
+    ingest_port: Arc<dyn IngestPort>,
+    storage_port: Arc<dyn StoragePort>,
 ) -> tokio::sync::mpsc::UnboundedSender<SessionIn> {
     let handle = spawn_call(
         call_id.clone(),
@@ -60,9 +63,12 @@ pub fn spawn_session(
         to_uri,
         media_cfg,
         session_out_tx,
+        app_tx,
         rtp_tx,
         ingest_url,
         recording_base_url,
+        ingest_port,
+        storage_port,
     );
     // Session manager の薄いラッパ経由で登録
     registry.insert(call_id, handle.tx_in.clone());

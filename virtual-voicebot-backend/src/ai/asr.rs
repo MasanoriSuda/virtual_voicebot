@@ -4,12 +4,7 @@ use anyhow::Result;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::path::Path;
 
-/// チャンク入力（μ-law）をまとめて ASR するための簡易I/F（MVPでは一括まとめて既存ASRを呼ぶ）
-#[derive(Debug, Clone)]
-pub struct AsrChunk {
-    pub pcm_mulaw: Vec<u8>,
-    pub end: bool,
-}
+use crate::ports::ai::AsrChunk;
 
 /// ASR 呼び出しの薄いラッパ（挙動は ai::transcribe_and_log と同じ）。
 /// app からはこの関数を経由させる想定だが、現状の呼び出し順・回数は変えない。

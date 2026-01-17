@@ -3,6 +3,8 @@
 pub mod session;
 pub mod types;
 pub mod writing;
+mod capture;
+mod timers;
 
 #[allow(unused_imports)]
 pub use session::{Session, SessionHandle};

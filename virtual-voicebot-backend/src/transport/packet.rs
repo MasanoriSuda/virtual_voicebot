@@ -3,16 +3,17 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::{Duration, Instant};
+use tokio_rustls::TlsAcceptor;
 
 use crate::config;
 use crate::rtp::rtcp::RtcpEventTx;
 use crate::rtp::rx::{RawRtp, RtpReceiver};
 use crate::session::SessionMap;
-use crate::transport::{ConnId, TransportPeer, TransportSendRequest};
+use crate::transport::{tls, ConnId, TransportPeer, TransportSendRequest};
 
 /// packet層 → SIP層 に渡す入力
 #[derive(Debug, Clone)]
@@ -64,6 +65,20 @@ pub async fn run_packet_loop(
                 run_sip_tcp_accept_loop(listener, sip_tx, tcp_conns, conn_seq, tcp_idle).await
             {
                 log::error!("[packet] SIP TCP loop error: {:?}", e);
+            }
+        });
+    }
+
+    if let Some(settings) = config::tls_settings() {
+        let acceptor = tls::build_tls_acceptor(settings)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let listener = TcpListener::bind((settings.bind_ip.as_str(), settings.port)).await?;
+        let sip_tx = sip_tx.clone();
+        let tcp_conns = tcp_conns.clone();
+        let conn_seq = conn_seq.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_sip_tls_accept_loop(listener, acceptor, sip_tx, tcp_conns, conn_seq, tcp_idle).await {
+                log::error!("[packet] SIP TLS loop error: {:?}", e);
             }
         });
     }
@@ -197,7 +212,75 @@ async fn handle_sip_tcp_conn(
     tcp_conns: TcpConnMap,
     idle_timeout: Duration,
 ) -> std::io::Result<()> {
-    let (mut reader, mut writer) = stream.into_split();
+    handle_sip_stream_conn(
+        conn_id,
+        peer,
+        stream,
+        sip_tx,
+        tcp_conns,
+        idle_timeout,
+        "tcp",
+    )
+    .await
+}
+
+async fn run_sip_tls_accept_loop(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    sip_tx: UnboundedSender<SipInput>,
+    tcp_conns: TcpConnMap,
+    conn_seq: Arc<AtomicU64>,
+    idle_timeout: Duration,
+) -> std::io::Result<()> {
+    let local_addr = listener.local_addr()?;
+    log::info!("[packet] SIP TLS listener bound on {}", local_addr);
+
+    loop {
+        let (stream, peer) = listener.accept().await?;
+        let conn_id = conn_seq.fetch_add(1, Ordering::Relaxed);
+        log::info!("[sip tls] accepted conn_id={} peer={}", conn_id, peer);
+
+        let sip_tx = sip_tx.clone();
+        let tcp_conns = tcp_conns.clone();
+        let acceptor = acceptor.clone();
+        tokio::spawn(async move {
+            match acceptor.accept(stream).await {
+                Ok(tls_stream) => {
+                    if let Err(e) = handle_sip_stream_conn(
+                        conn_id,
+                        peer,
+                        tls_stream,
+                        sip_tx,
+                        tcp_conns,
+                        idle_timeout,
+                        "tls",
+                    )
+                    .await
+                    {
+                        log::warn!("[sip tls] conn_id={} error: {:?}", conn_id, e);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[sip tls] conn_id={} handshake error: {:?}", conn_id, e);
+                }
+            }
+        });
+    }
+}
+
+async fn handle_sip_stream_conn<S>(
+    conn_id: ConnId,
+    peer: SocketAddr,
+    stream: S,
+    sip_tx: UnboundedSender<SipInput>,
+    tcp_conns: TcpConnMap,
+    idle_timeout: Duration,
+    label: &'static str,
+) -> std::io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut reader, mut writer) = tokio::io::split(stream);
     let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     tcp_conns
         .lock()
@@ -214,25 +297,31 @@ async fn handle_sip_tcp_conn(
         tokio::pin!(idle_sleep);
         tokio::select! {
             _ = &mut idle_sleep => {
-                log::info!("[sip tcp] idle timeout conn_id={} peer={}", conn_id, peer);
+                log::info!("[sip {}] idle timeout conn_id={} peer={}", label, conn_id, peer);
                 break;
             }
             read_res = reader.read(&mut tmp) => {
                 match read_res {
                     Ok(0) => {
-                        log::info!("[sip tcp] conn_id={} closed by peer {}", conn_id, peer);
+                        log::info!("[sip {}] conn_id={} closed by peer {}", label, conn_id, peer);
                         break;
                     }
                     Ok(n) => {
                         buf.extend_from_slice(&tmp[..n]);
                         idle_deadline = Instant::now() + idle_timeout;
                         if buf.len() > MAX_BUFFER {
-                            log::warn!("[sip tcp] conn_id={} buffer overflow ({} bytes)", conn_id, buf.len());
+                            log::warn!(
+                                "[sip {}] conn_id={} buffer overflow ({} bytes)",
+                                label,
+                                conn_id,
+                                buf.len()
+                            );
                             break;
                         }
                         for msg in extract_sip_messages(&mut buf) {
                             log::info!(
-                                "[sip <-] tcp conn_id={} peer={} len={}",
+                                "[sip <-] {} conn_id={} peer={} len={}",
+                                label,
                                 conn_id,
                                 peer,
                                 msg.len()
@@ -242,19 +331,34 @@ async fn handle_sip_tcp_conn(
                                 data: msg,
                             };
                             if let Err(e) = sip_tx.send(input) {
-                                log::warn!("[sip tcp] conn_id={} send to sip handler failed: {:?}", conn_id, e);
+                                log::warn!(
+                                    "[sip {}] conn_id={} send to sip handler failed: {:?}",
+                                    label,
+                                    conn_id,
+                                    e
+                                );
                             }
                         }
                     }
                     Err(e) => {
-                        log::warn!("[sip tcp] conn_id={} read error: {:?}", conn_id, e);
+                        log::warn!(
+                            "[sip {}] conn_id={} read error: {:?}",
+                            label,
+                            conn_id,
+                            e
+                        );
                         break;
                     }
                 }
             }
             Some(payload) = write_rx.recv() => {
                 if let Err(e) = writer.write_all(&payload).await {
-                    log::warn!("[sip tcp] conn_id={} write error: {:?}", conn_id, e);
+                    log::warn!(
+                        "[sip {}] conn_id={} write error: {:?}",
+                        label,
+                        conn_id,
+                        e
+                    );
                     break;
                 }
             }

@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod register;
 pub mod message;
 pub mod parse;
 pub mod protocols;
@@ -27,18 +28,21 @@ use crate::sip::builder::{
     response_final_with_sdp, response_options_from_request, response_provisional_from_request,
     response_simple_from_request,
 };
+use crate::sip::register::RegisterClient;
 use crate::sip::transaction::{
     InviteServerTransaction, InviteTxAction, InviteTxState, NonInviteServerTransaction,
     NonInviteTxState,
 };
 use crate::sip::tx::{SipTransportRequest, SipTransportTx};
 use crate::transport::{SipInput, TransportPeer};
+use crate::config;
 use rand::Rng;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
+use tokio::sync::Notify;
 
 /// sip 層から session 層へ渡すイベント（設計ドキュメントの「sip→session 通知」と対応）
 #[derive(Debug)]
@@ -85,6 +89,8 @@ pub struct SipCore {
     transport_tx: SipTransportTx,
     invites: HashMap<CallId, InviteContext>,
     non_invites: HashMap<CallId, NonInviteServerTransaction>,
+    register: Option<Arc<Mutex<RegisterClient>>>,
+    register_notify: Option<Arc<Notify>>,
 }
 
 struct InviteContext {
@@ -313,14 +319,78 @@ impl CoreHeaderSnapshot {
     }
 }
 
+fn spawn_register_task(
+    register: Arc<Mutex<RegisterClient>>,
+    notify: Arc<Notify>,
+    transport_tx: SipTransportTx,
+    src_port: u16,
+) {
+    tokio::spawn(async move {
+        loop {
+            let next_deadline = {
+                let mut reg = register.lock().unwrap();
+                let now = Instant::now();
+                reg.check_expired(now);
+                reg.next_timer_at()
+            };
+            let Some(deadline) = next_deadline else {
+                notify.notified().await;
+                continue;
+            };
+            tokio::select! {
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                    let (peer, payload) = {
+                        let mut reg = register.lock().unwrap();
+                        let req = reg.pop_due_request(Instant::now());
+                        let peer = req.as_ref().and_then(|_| reg.transport_peer());
+                        let payload = req.map(|request| request.to_bytes());
+                        (peer, payload)
+                    };
+                    match (peer, payload) {
+                        (Some(peer), Some(payload)) => {
+                            let _ = transport_tx.send(SipTransportRequest {
+                                peer,
+                                src_port,
+                                payload,
+                            });
+                        }
+                        (None, Some(_)) => {
+                            log::warn!("[sip register] no transport for refresh");
+                        }
+                        _ => {}
+                    }
+                }
+                _ = notify.notified() => {}
+            }
+        }
+    });
+}
+
 impl SipCore {
     pub fn new(cfg: SipConfig, transport_tx: SipTransportTx) -> Self {
-        Self {
+        let register = config::registrar_config()
+            .cloned()
+            .map(RegisterClient::new)
+            .map(|client| Arc::new(Mutex::new(client)));
+        let register_notify = register.as_ref().map(|_| Arc::new(Notify::new()));
+        if let (Some(register), Some(notify)) = (register.as_ref(), register_notify.as_ref()) {
+            spawn_register_task(
+                Arc::clone(register),
+                Arc::clone(notify),
+                transport_tx.clone(),
+                cfg.sip_port,
+            );
+        }
+        let mut core = Self {
             cfg,
             transport_tx,
             invites: std::collections::HashMap::new(),
             non_invites: std::collections::HashMap::new(),
-        }
+            register,
+            register_notify,
+        };
+        core.maybe_send_register();
+        core
     }
 
     /// SIP ソケットで受けた datagram を処理し、必要ならレスポンス送信と session へのイベントを返す。
@@ -340,11 +410,54 @@ impl SipCore {
 
         let mut ev = match msg {
             SipMessage::Request(req) => self.handle_request(req, input.peer),
-            SipMessage::Response(_) => vec![SipEvent::Unknown],
+            SipMessage::Response(resp) => self.handle_response(resp, input.peer),
         };
 
         events.append(&mut ev);
         events
+    }
+
+    pub fn shutdown(&mut self) {
+        let Some(register) = self.register.as_ref() else {
+            return;
+        };
+        let (peer, payload) = {
+            let mut reg = register.lock().unwrap();
+            let peer = reg.transport_peer();
+            let payload = peer.map(|_| reg.build_unregister_request().to_bytes());
+            (peer, payload)
+        };
+        match (peer, payload) {
+            (Some(peer), Some(payload)) => {
+                log::info!("[sip register] sending unregister");
+                self.send_payload(peer, payload);
+            }
+            (None, _) => {
+                let transport = register.lock().unwrap().transport();
+                log::warn!("[sip register] no transport for unregister: {:?}", transport);
+            }
+            _ => {}
+        }
+    }
+
+    fn maybe_send_register(&mut self) {
+        let Some(register) = self.register.as_ref() else {
+            return;
+        };
+        let (peer, payload) = {
+            let reg = register.lock().unwrap();
+            let peer = reg.transport_peer();
+            let payload = peer.map(|_| reg.build_request().to_bytes());
+            (peer, payload)
+        };
+        match (peer, payload) {
+            (Some(peer), Some(payload)) => self.send_payload(peer, payload),
+            (None, _) => {
+                let transport = register.lock().unwrap().transport();
+                log::warn!("[sip register] transport {:?} not supported", transport);
+            }
+            _ => {}
+        }
     }
 
     fn handle_request(&mut self, req: SipRequest, peer: TransportPeer) -> Vec<SipEvent> {
@@ -359,6 +472,34 @@ impl SipCore {
             SipMethod::Prack => self.handle_prack(req, headers, peer),
             _ => vec![SipEvent::Unknown],
         }
+    }
+
+    fn handle_response(&mut self, resp: SipResponse, peer: TransportPeer) -> Vec<SipEvent> {
+        if let Some(register) = self.register.as_ref() {
+            let (handled, pending_req, pending_peer) = {
+                let mut reg = register.lock().unwrap();
+                let handled = reg.handle_response(&resp, peer);
+                let pending_req = if handled { reg.take_pending_request() } else { None };
+                let pending_peer = pending_req
+                    .as_ref()
+                    .and_then(|_| reg.transport_peer());
+                (handled, pending_req, pending_peer)
+            };
+            if handled {
+                if let Some(req) = pending_req {
+                    if let Some(peer) = pending_peer {
+                        self.send_payload(peer, req.to_bytes());
+                    } else {
+                        log::warn!("[sip register] no transport for retry");
+                    }
+                }
+                if let Some(notify) = self.register_notify.as_ref() {
+                    notify.notify_one();
+                }
+                return vec![];
+            }
+        }
+        vec![SipEvent::Unknown]
     }
 
     fn handle_invite(

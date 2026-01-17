@@ -132,6 +132,24 @@ pub(crate) enum SessState {
     Terminated,
 }
 
+pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
+    match event {
+        SessionIn::SipBye
+        | SessionIn::AppHangup
+        | SessionIn::SessionTimerFired
+        | SessionIn::Abort(_) => SessState::Terminated,
+        SessionIn::SipInvite { .. } => match current {
+            SessState::Idle => SessState::Early,
+            _ => current,
+        },
+        SessionIn::SipAck => match current {
+            SessState::Early => SessState::Established,
+            _ => current,
+        },
+        _ => current,
+    }
+}
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;

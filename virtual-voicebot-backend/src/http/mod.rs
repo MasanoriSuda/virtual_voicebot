@@ -9,6 +9,8 @@ use tokio::net::TcpListener;
 
 use crate::config;
 
+pub mod ingest;
+
 /// 録音ファイルを静的配信するシンプルなHTTPサーバ。
 /// GET /recordings/<callId>/mixed.wav のようなパスだけを扱う。
 pub async fn spawn_recording_server(bind: &str, base_dir: PathBuf) {

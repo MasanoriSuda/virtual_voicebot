@@ -8,9 +8,9 @@
 |------|-----|
 | **Status** | Active |
 | **Owner** | TBD |
-| **Last Updated** | 2025-12-30 |
+| **Last Updated** | 2026-01-14 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13) |
 
 ---
 
@@ -29,6 +29,15 @@
 ## Step 一覧（UAS 優先順）
 
 **凡例**: 依存欄の `→ Step-XX` は、そのStepの完了後に着手可能を意味する。
+
+### P0: 最優先（NTT Docomo 接続 - Issue #13）
+
+| Step | 概要 | 依存 | 状態 |
+|------|------|------|------|
+| [Step-14](#step-14-tls-トランスポート) | TLS トランスポート | - | 完了 |
+| [Step-15](#step-15-uac-register-送信) | UAC REGISTER 送信 | → Step-14 | 完了 |
+| [Step-16](#step-16-digest-認証401407) | Digest 認証 (401/407) | → Step-15 | 完了 |
+| [Step-17](#step-17-register-リフレッシュ) | REGISTER リフレッシュ | → Step-16 | 完了 |
 
 ### P0: 必須（ボイスボット運用）
 
@@ -95,7 +104,7 @@ Spec 策定後に Active へ昇格させます。
 
 | ID | 項目 | RFC | 必要な決定事項 |
 |----|------|-----|---------------|
-| DEF-08 | TLS トランスポート | 3261 §26 | 証明書管理、SIPS URI 対応 |
+| ~~DEF-08~~ | ~~TLS トランスポート~~ | - | **→ Step-14 に昇格（Issue #13）** |
 | DEF-09 | SRTP | 3711 | キー交換方式 (SDES vs DTLS-SRTP) |
 
 ### セッション管理
@@ -113,7 +122,18 @@ Spec 策定後に Active へ昇格させます。
 |----|------|-----|---------------|
 | DEF-14 | Proxy 機能 | 3261 | Stateful/Stateless、フォーキング戦略 |
 | DEF-15 | Record-Route/Route | 3261 | ルーティングテーブル設計 |
-| DEF-16 | REGISTER バインディング | 3261 | バインディング DB、Expires 管理 |
+| DEF-16 | REGISTER バインディング (UAS/Registrar) | 3261 | バインディング DB、Expires 管理 |
+
+### Registration (UAC)
+
+> **Note**: Issue #13 により Step-15〜17 に昇格。以下は参照用。
+
+| ID | 項目 | RFC | 状態 |
+|----|------|-----|------|
+| ~~DEF-19~~ | ~~UAC REGISTER 送信~~ | 3261 §10 | **→ Step-15** |
+| ~~DEF-20~~ | ~~401/407 応答処理~~ | 3261 §22 | **→ Step-16** |
+| ~~DEF-21~~ | ~~REGISTER リフレッシュ~~ | 3261 §10.2.4 | **→ Step-17** |
+| DEF-22 | Registration 状態管理 | - | 未着手（Step-17 後に検討） |
 
 ### 転送
 
@@ -139,51 +159,90 @@ Spec 策定後に Active へ昇格させます。
 | トレイト活用 | 40/100 | 具象依存、ポート未定義 |
 | デザインパターン | 70/100 | 一部適用済み、全体設計限定的 |
 
-### ARCH-01: 外部I/Oのポート化
+### ARCH-01: 外部I/Oのポート化（エピック）
 
 **目的**: ASR/LLM/TTS、HTTP、ファイルI/O を trait で抽象化し、core から切り離す
 
-**対象ファイル**: `src/ai/mod.rs`, `src/ai/*.rs`, `src/http/mod.rs`, `src/recording/mod.rs`, `src/session/session.rs`
-
 **効果**: Clean Architecture スコア向上、テスト容易性向上
 
-**状態**: 未着手
+**状態**: 完了
+
+> 範囲が広いため、以下のサブステップに分割する。
+
+#### ARCH-01a: AI ポート化（ASR/LLM/TTS）
+
+**目的**: AI 連携（ASR/LLM/TTS）を trait で抽象化
+
+**対象ファイル**: `src/ports/ai.rs`, `src/ai/mod.rs`, `src/app/mod.rs`
+
+**変更内容**:
+- `src/ports/ai.rs` (line 15): `AiPort` trait 定義
+- `src/ai/mod.rs` (line 221): trait 実装
+- `src/app/mod.rs` (line 10): trait 依存に変更
+
+**状態**: 完了
+
+#### ARCH-01b: Ingest HTTP のポート化
+
+**目的**: HTTP 通信（ingest 等）を trait で抽象化
+
+**対象ファイル**: `src/http/mod.rs`, `src/http/ingest.rs`, `src/session/session.rs`
+
+**変更内容**:
+- `src/http/ingest.rs` に trait 定義（`IngestPort`）（line 1）
+- `src/session/session.rs` から reqwest 直接依存を排除
+
+**状態**: 完了
+
+#### ARCH-01c: ファイルI/O（Recorder/再生）ポート化
+
+**目的**: ファイル I/O（録音・再生）を trait で抽象化
+
+**対象ファイル**: `src/recording/mod.rs`, `src/recording/storage.rs`, `src/session/session.rs`
+
+**変更内容**:
+- `src/recording/storage.rs` に trait 定義（`StoragePort`）（line 1）
+- `src/recording/mod.rs` と `src/session/session.rs` を抽象化
+
+**状態**: 完了
 
 ### ARCH-02: 純粋な状態遷移の抽出
 
 **目的**: SIP/Session の状態遷移を純粋関数化し、I/O は外側で実行
 
-**対象ファイル**: `src/sip/mod.rs`, `src/sip/transaction.rs`, `src/session/session.rs`
+**対象ファイル**: `src/session/types.rs` (line 135), `src/sip/mod.rs` (line 328)
 
 **効果**: テスト容易性向上、設計の明確化
 
-**状態**: 未着手
+**状態**: 一部完了（Session 側のみ、SIP 側は別ステップ化が必要）
 
 ### ARCH-03: Session の責務分割
 
 **目的**: Session が抱える責務（録音・RTP・タイマ・app連携）をサブコンポーネントに分割
 
-**分割案**:
-- `Timer`: セッションタイマー管理
-- `Media`: RTP 送受信
-- `Recorder`: 録音制御
-- `Notifier`: app 層への通知
+**実装済み分割**:
+- `SessionTimers`: セッションタイマー管理（`src/session/timers.rs` line 7）
+- `AudioCapture`: 音声キャプチャ/バッファ（`src/session/capture.rs` line 3）
 
-**対象ファイル**: `src/session/session.rs`
+**未対応（TODO）**:
+- `Media`: RTP 送受信の分離
+- `Notifier`: app 層への通知の分離
+
+**対象ファイル**: `src/session/session.rs` (line 60), `src/session/timers.rs`, `src/session/capture.rs`
 
 **効果**: 単一責任の原則、可読性・保守性向上
 
-**状態**: 未着手
+**状態**: 一部完了（SessionTimers/AudioCapture 実装済み、Media/Notifier 未対応）
 
 ### ARCH-04: コンポジションルートの強化
 
 **目的**: Session 内での依存生成をやめ、main.rs で依存を組み立てる
 
-**対象ファイル**: `src/main.rs`, `src/sip/mod.rs`, `src/session/session.rs`
+**対象ファイル**: `src/main.rs` (line 101), `src/session/session.rs` (line 68), `src/session/writing.rs` (line 15)
 
 **効果**: 依存関係の明確化、DI パターンの適用
 
-**状態**: 未着手
+**状態**: 完了
 
 ### ARCH-05: 設定/環境依存の集中
 
@@ -192,6 +251,84 @@ Spec 策定後に Active へ昇格させます。
 **対象ファイル**: `src/config.rs`, `src/sip/mod.rs`, `src/main.rs`, `src/ai/*.rs`
 
 **効果**: テスト容易性向上、移植性向上
+
+**状態**: 未着手
+
+---
+
+## Code Quality Improvements（コード品質改善）
+
+**関連**: [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8)
+
+> ※Codex による品質評価（2025-12-30）に基づく改善項目。
+
+**品質評価スコア**: 総合 65/100
+
+| 観点 | スコア | 配点 |
+|------|--------|------|
+| A. アーキテクチャ整合 | 21/30 | 責務境界/依存方向/循環依存 |
+| B. テスト容易性 | 12/25 | 境界差し替え/ユニット可能性 |
+| C. 可読性/保守性 | 13/20 | 巨大関数/状態管理/命名 |
+| D. Rustらしさ | 11/15 | ownership/Result/trait適切さ |
+| E. デザインパターン妥当性 | 8/10 | 必要十分/目的化回避 |
+
+### CQ-01: Session::run のイベント別ハンドラ分割
+
+**目的**: Session::run をイベント別ハンドラ + 共通クリーンアップに分割して責務集中を緩和
+
+**根拠**: `src/session/session.rs` (line 117, 195, 270, 499)
+
+**対象ファイル**: `src/session/session.rs`
+
+**効果**: High / **コスト**: Medium / **リスク**: Low
+
+**状態**: 未着手
+
+### CQ-02: unbounded_channel の bounded 化
+
+**目的**: unbounded_channel を用途別に bounded 化し、音声系は drop/間引き方針を明示
+
+**根拠**: `src/main.rs` (line 18, 43-48), `src/session/session.rs` (line 82), `src/app/mod.rs` (line 8, 27)
+
+**対象ファイル**: `src/main.rs`, `src/session/session.rs`, `src/app/mod.rs`
+
+**効果**: High / **コスト**: Medium / **リスク**: Medium
+
+**状態**: 未着手
+
+### CQ-03: handle_conn の責務分割
+
+**目的**: handle_conn をリクエスト解析/パス解決/レスポンス生成に分割し最小テスト追加
+
+**根拠**: `src/http/mod.rs` (line 54, 74, 126, 176)
+
+**対象ファイル**: `src/http/mod.rs`
+
+**効果**: Medium / **コスト**: Low / **リスク**: Low
+
+**状態**: 未着手
+
+### CQ-04: AI URL の設定移動
+
+**目的**: Whisper/Ollama URL を設定に移動し環境依存を解消
+
+**根拠**: `src/ai/mod.rs` (line 101, 111, 190)
+
+**対象ファイル**: `src/config.rs`, `src/ai/mod.rs`
+
+**効果**: Medium / **コスト**: Low / **リスク**: Low
+
+**状態**: 未着手
+
+### CQ-05: app 履歴の上限設定
+
+**目的**: app の履歴を上限N件/最大文字数で切り詰めてプロンプト肥大を抑制
+
+**根拠**: `src/app/mod.rs` (line 38, 141, 157)
+
+**対象ファイル**: `src/app/mod.rs`
+
+**効果**: Medium / **コスト**: Low / **リスク**: Low
 
 **状態**: 未着手
 
@@ -679,6 +816,174 @@ cargo test rtp::packet
 
 ---
 
+## Step-14: TLS トランスポート
+
+**目的**: SIP over TLS (SIPS) をサポートし、NTT Docomo 等のキャリア接続を可能にする
+
+**RFC参照**: RFC 3261 §26, RFC 5246 (TLS 1.2)
+
+**関連**: [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13)
+
+### DoD (Definition of Done)
+
+- [x] TLS 1.2/1.3 対応のトランスポート層追加
+- [x] rustls または native-tls クレート導入
+- [x] 証明書検証（CA 検証 or 自己署名許可オプション）
+- [ ] SIPS URI スキーム対応
+- [x] Unit test 追加
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/transport/mod.rs` | TLS トランスポート追加 |
+| `src/transport/tls.rs` | TLS 接続ロジック（新規） |
+| `src/config.rs` | TLS 設定（証明書パス等）追加 |
+| `Cargo.toml` | rustls/native-tls 依存追加 |
+
+### 変更上限
+
+- **行数**: <=300行
+- **ファイル数**: <=5
+
+### 検証方法
+
+```bash
+cargo test transport::tls
+# E2E: TLS 対応 SIP サーバーへの接続確認
+```
+
+### 設計決定事項
+
+| 項目 | 決定 | 理由 |
+|------|------|------|
+| TLS ライブラリ | rustls（推奨） | pure Rust、OpenSSL 依存なし |
+| 証明書検証 | CA 検証デフォルト | セキュリティ優先 |
+| 認証情報管理 | 環境変数 | コンテナ親和性 |
+
+---
+
+## Step-15: UAC REGISTER 送信
+
+**目的**: SIP Registrar に REGISTER リクエストを送信し、着信可能な状態にする
+
+**RFC参照**: RFC 3261 §10
+
+**関連**: [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13)
+
+**依存**: Step-14 (TLS)
+
+### DoD (Definition of Done)
+
+- [x] REGISTER リクエスト生成・送信
+- [x] 200 OK 受信処理
+- [x] Contact URI の適切な設定
+- [x] Expires ヘッダの設定（デフォルト 3600秒）
+- [x] Unit test 追加
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/sip/register.rs` | REGISTER 送信ロジック（新規） |
+| `src/sip/builder.rs` | REGISTER リクエストビルダー追加 |
+| `src/sip/mod.rs` | register モジュール追加 |
+| `src/config.rs` | Registrar 設定追加 |
+
+### 変更上限
+
+- **行数**: <=200行
+- **ファイル数**: <=4
+
+### 検証方法
+
+```bash
+cargo test sip::register
+# E2E: SIP Registrar への登録確認
+```
+
+---
+
+## Step-16: Digest 認証 (401/407)
+
+**目的**: 401 Unauthorized / 407 Proxy Authentication Required に対して Digest 認証で再送信
+
+**RFC参照**: RFC 3261 §22, RFC 2617
+
+**関連**: [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13)
+
+**依存**: Step-15 (REGISTER)
+
+### DoD (Definition of Done)
+
+- [x] 401/407 レスポンスのパース
+- [x] WWW-Authenticate / Proxy-Authenticate ヘッダ解析
+- [x] MD5 ハッシュ計算（response 生成）
+- [x] Authorization / Proxy-Authorization ヘッダ付きリクエスト再送
+- [x] nonce/cnonce/nc カウント管理
+- [x] Unit test 追加
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/sip/auth.rs` | Digest 認証ロジック（新規） |
+| `src/sip/register.rs` | 認証応答処理追加 |
+| `src/config.rs` | 認証情報（username/password）追加 |
+
+### 変更上限
+
+- **行数**: <=250行
+- **ファイル数**: <=4
+
+### 検証方法
+
+```bash
+cargo test sip::auth
+# E2E: 認証付き REGISTER 確認
+```
+
+---
+
+## Step-17: REGISTER リフレッシュ
+
+**目的**: Expires 前に自動的に再登録し、登録状態を維持する
+
+**RFC参照**: RFC 3261 §10.2.4
+
+**関連**: [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13)
+
+**依存**: Step-16 (Digest 認証)
+
+### DoD (Definition of Done)
+
+- [x] Expires 値に基づく再登録タイマー（Expires * 0.8 推奨）
+- [x] 再登録失敗時のリトライロジック
+- [x] 登録状態の通知（成功/失敗/期限切れ）
+- [x] graceful shutdown 時の登録解除（Expires: 0）
+- [x] Unit test 追加
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/sip/register.rs` | リフレッシュタイマー追加 |
+| `src/sip/mod.rs` | 登録状態管理追加 |
+
+### 変更上限
+
+- **行数**: <=150行
+- **ファイル数**: <=3
+
+### 検証方法
+
+```bash
+cargo test sip::register
+# E2E: 長時間運用での再登録確認
+```
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -695,6 +1000,8 @@ cargo test rtp::packet
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-14 | 1.7 | Issue #13 統合: Step-14〜17（TLS/REGISTER/認証）追加、P0 最優先に昇格 |
+| 2025-12-30 | 1.6 | Issue #8 統合: Code Quality Improvements セクション追加（CQ-01〜05）、ARCH-01 サブステップ化 |
 | 2025-12-30 | 1.5 | Issue #8 統合: Architecture Improvements セクション追加（ARCH-01〜05） |
 | 2025-12-29 | 1.4 | TODO.md 統合: P1/P2 追加項目、Deferred 詳細化（TODO.md 廃止） |
 | 2025-12-28 | 1.3 | Issue #9 統合: Step-12 (Timer G/H/I/J), Step-13 (RTP extension/CSRC) 追加 |
