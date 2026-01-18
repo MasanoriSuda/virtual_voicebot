@@ -10,6 +10,9 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use crate::ports::ai::{AiPort, AsrChunk, ChatMessage, Role};
 use crate::session::SessionOut;
 
+const SORRY_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sorry.wav");
+
 #[derive(Debug)]
 pub enum AppEvent {
     CallStarted { call_id: String },
@@ -130,8 +133,14 @@ impl AppWorker {
         let trimmed = user_text.trim();
         if trimmed.is_empty() {
             log::debug!(
-                "[app {call_id}] empty ASR text after filtering, skipping LLM"
+                "[app {call_id}] empty ASR text after filtering, playing sorry audio"
             );
+            let _ = self.session_out_tx.send((
+                self.call_id.clone(),
+                SessionOut::AppSendBotAudioFile {
+                    path: SORRY_WAV_PATH.to_string(),
+                },
+            ));
             return Ok(());
         }
 
@@ -175,4 +184,14 @@ impl AppWorker {
     }
 
     // build_prompt はロール分離に伴い廃止
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sorry_wav_path_points_to_data_dir() {
+        assert!(SORRY_WAV_PATH.ends_with("/data/zundamon_sorry.wav"));
+    }
 }

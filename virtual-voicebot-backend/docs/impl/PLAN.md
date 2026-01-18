@@ -10,7 +10,7 @@
 | **Owner** | TBD |
 | **Last Updated** | 2026-01-18 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23) |
 
 ---
 
@@ -47,6 +47,7 @@
 | [Step-19](#step-19-session-expires-対応-issue-20) | Session-Expires 対応 (Issue #20) | - | 完了 |
 | [Step-20](#step-20-llm-会話履歴ロール分離-issue-21) | LLM 会話履歴ロール分離 (Issue #21) | - | 未着手 |
 | [Step-21](#step-21-時間帯別イントロ-issue-22) | 時間帯別イントロ (Issue #22) | - | 未着手 |
+| [Step-22](#step-22-ハルシネーション時謝罪音声-issue-23) | ハルシネーション時謝罪音声 (Issue #23) | → Step-20 | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 未着手 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -1550,6 +1551,97 @@ fn get_intro_wav_path() -> &'static str {
 
 ---
 
+## Step-22: ハルシネーション時謝罪音声 (Issue #23)
+
+**目的**: Whisper がハルシネーションを起こした際、謝罪音声を再生してユーザーに再度発話を促す
+
+**関連**: [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23)
+
+**依存**: Step-20（ハルシネーションフィルタ実装後）
+
+### 背景
+
+Step-20 で Whisper ハルシネーション（「ご視聴ありがとうございました」等）をフィルタし、LLM に渡さないようにする。
+本 Step では、フィルタでハルシネーションを検出した場合に、謝罪音声を再生して会話を継続させる。
+
+### 動作フロー
+
+```
+User（無音）→ Whisper「ご視聴ありがとうございました」→ フィルタ検出 → LLMスキップ
+                                                        ↓
+                                            謝罪音声再生（zundamon_sorry.wav）
+                                                        ↓
+                                            キャプチャ再開（ユーザーの再発話待ち）
+```
+
+### DoD (Definition of Done)
+
+- [ ] ハルシネーション検出時に `SessionOut::AppSendBotAudioFile` で謝罪音声を送信
+- [ ] 謝罪音声ファイル: `data/zundamon_sorry.wav`
+- [ ] 謝罪音声再生後、キャプチャを再開して次の発話を待つ
+- [ ] Unit test 追加
+- [ ] E2E 検証（無音→謝罪音声→再発話で正常動作を確認）
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/app/mod.rs` | ハルシネーション検出時に謝罪音声送信を追加 |
+| `data/zundamon_sorry.wav` | 謝罪音声（既存） |
+
+### 変更上限
+
+- **行数**: <=30行
+- **ファイル数**: <=1（コード変更）
+
+### 検証方法
+
+```bash
+cargo test app::
+# E2E: 無音→ハルシネーション検出→謝罪音声再生→再発話で正常応答を確認
+```
+
+### 実装案
+
+```rust
+// src/app/mod.rs (handle_audio_buffer 内)
+let trimmed = user_text.trim();
+if trimmed.is_empty() {
+    log::debug!("[app {call_id}] empty ASR text after filtering, playing sorry audio");
+    // 謝罪音声を再生
+    let sorry_path = concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sorry.wav");
+    let _ = self.session_out_tx.send((
+        self.call_id.clone(),
+        SessionOut::AppSendBotAudioFile { path: sorry_path.to_string() },
+    ));
+    return Ok(());
+}
+```
+
+### シーケンス
+
+```
+User                    AppWorker                   Session
+  |                         |                          |
+  |--- 無音 -------------->|                          |
+  |                         |                          |
+  |                         | ASR: "ご視聴ありがとう"  |
+  |                         | filter: ハルシネーション |
+  |                         | → 空文字列               |
+  |                         |                          |
+  |                         |--- sorry.wav ----------->|
+  |                         |                          |
+  |<-- "すみません..." ----|<-------------------------|
+  |                         |                          |
+  |                         | キャプチャ再開           |
+  |                         |                          |
+  |--- 再発話 ------------>|                          |
+  |                         | ASR: 正常テキスト        |
+  |                         | → LLM 呼び出し           |
+```
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -1566,6 +1658,7 @@ fn get_intro_wav_path() -> &'static str {
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-18 | 2.3 | Issue #23 統合: Step-22（ハルシネーション時謝罪音声）追加 |
 | 2026-01-18 | 2.2 | Issue #22 統合: Step-21（時間帯別イントロ）追加 |
 | 2026-01-18 | 2.1 | Issue #21 統合: Step-20（LLM 会話履歴ロール分離）追加 |
 | 2026-01-18 | 2.0 | Issue #20 統合: Step-19（Session-Expires 対応）追加、DEF-10/DEF-11 を Step-19 に統合 |
