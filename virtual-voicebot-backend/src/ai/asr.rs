@@ -23,7 +23,48 @@ pub async fn transcribe_chunks(call_id: &str, chunks: &[AsrChunk]) -> Result<Str
     }
     let wav_path = format!("/tmp/asr_input_{}.wav", call_id);
     write_mulaw_to_wav(&pcmu, &wav_path)?;
-    super::transcribe_and_log(&wav_path).await
+    let text = super::transcribe_and_log(&wav_path).await?;
+    if is_hallucination(&text) {
+        log::info!("[asr] hallucination filtered: {}", text);
+        return Ok(String::new());
+    }
+    Ok(text)
+}
+
+const HALLUCINATION_PATTERNS: &[&str] = &[
+    "ご視聴ありがとうございました",
+    "チャンネル登録",
+    "高評価",
+    "いいね",
+    "お願いします",
+    "ありがとうございました",
+];
+
+fn is_hallucination(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    HALLUCINATION_PATTERNS
+        .iter()
+        .any(|pattern| trimmed.contains(pattern))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hallucination_patterns_match() {
+        assert!(is_hallucination("ご視聴ありがとうございました"));
+        assert!(is_hallucination("チャンネル登録よろしくお願いします"));
+        assert!(is_hallucination("高評価お願いします"));
+    }
+
+    #[test]
+    fn non_hallucination_passes() {
+        assert!(!is_hallucination("こんにちは、元気ですか？"));
+    }
 }
 
 fn write_mulaw_to_wav(payloads: &[u8], path: impl AsRef<Path>) -> Result<()> {

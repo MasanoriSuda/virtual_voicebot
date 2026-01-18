@@ -23,7 +23,7 @@ pub use crate::sip::parse::{
 #[allow(unused_imports)]
 pub use protocols::*;
 
-use crate::session::types::{CallId, Sdp, SessionOut};
+use crate::session::types::{CallId, Sdp, SessionOut, SessionRefresher, SessionTimerInfo};
 use crate::sip::builder::{
     response_final_with_sdp, response_options_from_request, response_provisional_from_request,
     response_simple_from_request,
@@ -53,7 +53,13 @@ pub enum SipEvent {
         from: String,
         to: String,
         offer: Sdp,
-        session_expires: Option<Duration>,
+        session_timer: Option<SessionTimerInfo>,
+    },
+    /// 既存ダイアログ内の re-INVITE
+    ReInvite {
+        call_id: CallId,
+        offer: Sdp,
+        session_timer: Option<SessionTimerInfo>,
     },
     /// 既存ダイアログに対する ACK
     Ack {
@@ -70,7 +76,7 @@ pub enum SipEvent {
     /// Session-Expires を受けたときのセッション更新通知
     SessionRefresh {
         call_id: CallId,
-        expires: Duration,
+        timer: SessionTimerInfo,
     },
     Unknown,
 }
@@ -103,6 +109,7 @@ struct InviteContext {
     session_timer: Option<SessionTimerConfig>,
     final_ok: Option<FinalOkRetransmit>,
     final_ok_payload: Option<Vec<u8>>,
+    local_cseq: u32,
 }
 
 struct ReliableProvisional {
@@ -113,25 +120,10 @@ struct FinalOkRetransmit {
     stop: Arc<AtomicBool>,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Refresher {
-    Uac,
-    Uas,
-}
-
-impl Refresher {
-    fn as_str(self) -> &'static str {
-        match self {
-            Refresher::Uac => "uac",
-            Refresher::Uas => "uas",
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct SessionTimerConfig {
     expires: Duration,
-    refresher: Refresher,
+    refresher: SessionRefresher,
     min_se: u64,
 }
 
@@ -203,9 +195,16 @@ fn supports_100rel(req: &SipRequest) -> bool {
         || header_has_token(req.header_value("Require"), "100rel")
 }
 
-const LOCAL_MIN_SECS: u64 = 90;
+impl SessionRefresher {
+    fn as_str(self) -> &'static str {
+        match self {
+            SessionRefresher::Uac => "uac",
+            SessionRefresher::Uas => "uas",
+        }
+    }
+}
 
-fn parse_session_expires(value: &str) -> Option<(u64, Option<Refresher>)> {
+fn parse_session_expires(value: &str) -> Option<(u64, Option<SessionRefresher>)> {
     let mut parts = value.split(';');
     let expires = parts.next()?.trim().parse::<u64>().ok()?;
     let mut refresher = None;
@@ -213,8 +212,8 @@ fn parse_session_expires(value: &str) -> Option<(u64, Option<Refresher>)> {
         let part = part.trim();
         if let Some(val) = part.strip_prefix("refresher=") {
             refresher = match val.trim().to_ascii_lowercase().as_str() {
-                "uac" => Some(Refresher::Uac),
-                "uas" => Some(Refresher::Uas),
+                "uac" => Some(SessionRefresher::Uac),
+                "uas" => Some(SessionRefresher::Uas),
                 _ => None,
             };
         }
@@ -248,6 +247,7 @@ fn next_rseq_with_rng<R: Rng + ?Sized>(ctx: &mut InviteContext, rng: &mut R) -> 
     Some(rseq)
 }
 
+#[derive(Debug)]
 enum SessionTimerError {
     Invalid,
     TooSmall { min_se: u64 },
@@ -255,20 +255,42 @@ enum SessionTimerError {
 
 fn session_timer_from_request(
     req: &SipRequest,
+    cfg: &config::SessionConfig,
+    allow_default: bool,
 ) -> Result<Option<SessionTimerConfig>, SessionTimerError> {
-    let Some(raw) = req.header_value("Session-Expires") else {
-        return Ok(None);
-    };
-    let (expires, refresher_opt) = parse_session_expires(raw).ok_or(SessionTimerError::Invalid)?;
+    let raw = req.header_value("Session-Expires");
     let min_se_header = match req.header_value("Min-SE") {
         Some(value) => parse_min_se(value).ok_or(SessionTimerError::Invalid)?,
         None => 0,
     };
-    let min_se = std::cmp::max(LOCAL_MIN_SECS, min_se_header);
-    if expires < min_se {
+    let min_se = std::cmp::max(cfg.min_se, min_se_header);
+    let (expires, refresher, from_request) = match raw {
+        Some(value) => {
+            let (expires, refresher_opt) =
+                parse_session_expires(value).ok_or(SessionTimerError::Invalid)?;
+            let refresher = refresher_opt.unwrap_or(SessionRefresher::Uac);
+            (expires, refresher, true)
+        }
+        None => {
+            if !allow_default {
+                return Ok(None);
+            }
+            let Some(default_expires) = cfg.default_expires else {
+                return Ok(None);
+            };
+            let expires = default_expires.as_secs();
+            (expires, SessionRefresher::Uas, false)
+        }
+    };
+
+    if from_request && expires < min_se {
         return Err(SessionTimerError::TooSmall { min_se });
     }
-    let refresher = refresher_opt.unwrap_or(Refresher::Uac);
+    let expires = if from_request {
+        expires
+    } else {
+        std::cmp::max(expires, min_se)
+    };
     Ok(Some(SessionTimerConfig {
         expires: Duration::from_secs(expires),
         refresher,
@@ -295,6 +317,81 @@ fn apply_session_timer_headers(resp: &mut SipResponse, cfg: &SessionTimerConfig)
     if !header_has_token(supported, "timer") {
         resp.headers.push(SipHeader::new("Supported", "timer"));
     }
+}
+
+fn build_update_request(
+    ctx: &mut InviteContext,
+    cfg: &SipConfig,
+    expires: Duration,
+) -> Option<Vec<u8>> {
+    let req = &ctx.req;
+    let to = req.header_value("From")?.to_string();
+    let mut from = req.header_value("To")?.to_string();
+    if !from.to_ascii_lowercase().contains("tag=") {
+        from = format!("{from};tag=rustbot");
+    }
+    let call_id = req.header_value("Call-ID")?.to_string();
+    let uri = req
+        .header_value("Contact")
+        .map(extract_contact_uri)
+        .unwrap_or_else(|| req.uri.as_str())
+        .to_string();
+    let transport = match ctx.tx.peer {
+        TransportPeer::Udp(_) => "UDP",
+        TransportPeer::Tcp(_) => "TCP",
+    };
+    let via = format!(
+        "SIP/2.0/{} {}:{};branch={}",
+        transport,
+        cfg.advertised_ip,
+        cfg.sip_port,
+        generate_branch()
+    );
+    let cseq = ctx.local_cseq.saturating_add(1).max(1);
+    ctx.local_cseq = cseq;
+
+    let contact_scheme = contact_scheme_from_uri(&req.uri);
+    let builder = SipRequestBuilder::new(SipMethod::Update, uri)
+        .header("Via", via)
+        .header("Max-Forwards", "70")
+        .header("From", from)
+        .header("To", to)
+        .header("Call-ID", call_id)
+        .header("CSeq", format!("{cseq} UPDATE"))
+        .header(
+            "Contact",
+            format!("{contact_scheme}:rustbot@{}:{}", cfg.advertised_ip, cfg.sip_port),
+        )
+        .header("Session-Expires", expires.as_secs().to_string())
+        .header("Supported", "timer");
+    Some(builder.build().to_bytes())
+}
+
+fn extract_contact_uri(value: &str) -> &str {
+    let trimmed = value.trim();
+    if let Some(start) = trimmed.find('<') {
+        if let Some(end) = trimmed[start + 1..].find('>') {
+            return &trimmed[start + 1..start + 1 + end];
+        }
+    }
+    trimmed
+        .split(';')
+        .next()
+        .unwrap_or(trimmed)
+        .trim()
+}
+
+fn contact_scheme_from_uri(uri: &str) -> &'static str {
+    if uri.trim_start().to_ascii_lowercase().starts_with("sips:") {
+        "sips"
+    } else {
+        "sip"
+    }
+}
+
+fn generate_branch() -> String {
+    let mut rng = rand::thread_rng();
+    format!("z9hG4bK-{}", rng.gen::<u64>())
 }
 
 #[derive(Debug)]
@@ -510,19 +607,31 @@ impl SipCore {
         headers: CoreHeaderSnapshot,
         peer: TransportPeer,
     ) -> Vec<SipEvent> {
-        // 再送判定: 既存トランザクションがあれば最新レスポンスを再送し、イベントは出さない
+        // 再送判定 or re-INVITE 判定
         if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
-            let (action, final_ok, tx_peer) = (
-                ctx.tx.on_retransmit(),
-                ctx.final_ok_payload.clone(),
-                ctx.tx.peer,
-            );
-            if let Some(action) = action {
-                self.send_tx_action(action, peer);
-            } else if let Some(payload) = final_ok {
-                self.send_payload(tx_peer, payload);
+            let req_cseq = req
+                .header_value("CSeq")
+                .and_then(|value| parse_cseq_header(value).ok())
+                .map(|cseq| cseq.num);
+            let prev_cseq = ctx
+                .req
+                .header_value("CSeq")
+                .and_then(|value| parse_cseq_header(value).ok())
+                .map(|cseq| cseq.num);
+            if req_cseq.is_some() && prev_cseq.is_some() && req_cseq == prev_cseq {
+                let (action, final_ok, tx_peer) = (
+                    ctx.tx.on_retransmit(),
+                    ctx.final_ok_payload.clone(),
+                    ctx.tx.peer,
+                );
+                if let Some(action) = action {
+                    self.send_tx_action(action, peer);
+                } else if let Some(payload) = final_ok {
+                    self.send_payload(tx_peer, payload);
+                }
+                return vec![];
             }
-            return vec![];
+            return self.handle_reinvite(req, headers, peer);
         }
 
         if let Some(active) = &self.active_call_id {
@@ -539,7 +648,8 @@ impl SipCore {
             }
         }
 
-        let session_timer = match session_timer_from_request(&req) {
+        let session_timer =
+            match session_timer_from_request(&req, config::session_config(), true) {
             Ok(timer) => timer,
             Err(SessionTimerError::Invalid) => {
                 if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
@@ -570,6 +680,7 @@ impl SipCore {
             session_timer: session_timer.clone(),
             final_ok: None,
             final_ok_payload: None,
+            local_cseq: 0,
         };
         self.active_call_id = Some(headers.call_id.clone());
         self.invites.insert(headers.call_id.clone(), ctx);
@@ -594,7 +705,61 @@ impl SipCore {
             from: headers.from,
             to: headers.to,
             offer,
-            session_expires: session_timer.map(|cfg| cfg.expires),
+            session_timer: session_timer.map(|cfg| SessionTimerInfo {
+                expires: cfg.expires,
+                refresher: cfg.refresher,
+            }),
+        }]
+    }
+
+    fn handle_reinvite(
+        &mut self,
+        req: SipRequest,
+        headers: CoreHeaderSnapshot,
+        peer: TransportPeer,
+    ) -> Vec<SipEvent> {
+        let session_timer =
+            match session_timer_from_request(&req, config::session_config(), false) {
+                Ok(timer) => timer,
+                Err(SessionTimerError::Invalid) => {
+                    if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
+                        self.send_payload(peer, resp.to_bytes());
+                    }
+                    return vec![];
+                }
+                Err(SessionTimerError::TooSmall { min_se }) => {
+                    if let Some(mut resp) =
+                        response_simple_from_request(&req, 422, "Session Interval Too Small")
+                    {
+                        resp.headers.push(SipHeader::new("Min-SE", min_se.to_string()));
+                        self.send_payload(peer, resp.to_bytes());
+                    }
+                    return vec![];
+                }
+            };
+
+        if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
+            ctx.req = req.clone();
+            ctx.tx = InviteServerTransaction::new(peer);
+            ctx.tx.invite_req = Some(req.clone());
+            ctx.reliable = None;
+            ctx.expected_rack = None;
+            ctx.last_rseq = None;
+            ctx.final_ok = None;
+            ctx.final_ok_payload = None;
+            if let Some(cfg) = &session_timer {
+                ctx.session_timer = Some(cfg.clone());
+            }
+        }
+
+        let offer = parse_offer_sdp(&req.body).unwrap_or_else(|| Sdp::pcmu("0.0.0.0", 0));
+        vec![SipEvent::ReInvite {
+            call_id: headers.call_id,
+            offer,
+            session_timer: session_timer.map(|cfg| SessionTimerInfo {
+                expires: cfg.expires,
+                refresher: cfg.refresher,
+            }),
         }]
     }
 
@@ -762,7 +927,8 @@ impl SipCore {
         headers: CoreHeaderSnapshot,
         peer: TransportPeer,
     ) -> Vec<SipEvent> {
-        let session_timer = match session_timer_from_request(&req) {
+        let session_timer =
+            match session_timer_from_request(&req, config::session_config(), false) {
             Ok(timer) => timer,
             Err(SessionTimerError::Invalid) => {
                 if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
@@ -802,9 +968,15 @@ impl SipCore {
         }
 
         if let Some(cfg) = session_timer {
+            if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
+                ctx.session_timer = Some(cfg.clone());
+            }
             vec![SipEvent::SessionRefresh {
                 call_id: headers.call_id,
-                expires: cfg.expires,
+                timer: SessionTimerInfo {
+                    expires: cfg.expires,
+                    refresher: cfg.refresher,
+                },
             }]
         } else {
             vec![]
@@ -1038,6 +1210,20 @@ impl SipCore {
                     }
                 }
             }
+            SessionOut::SipSendUpdate { expires } => {
+                let (peer, payload) = if let Some(ctx) = self.invites.get_mut(call_id) {
+                    let peer = ctx.tx.peer;
+                    let payload = build_update_request(ctx, &self.cfg, expires);
+                    (Some(peer), payload)
+                } else {
+                    (None, None)
+                };
+                if let (Some(peer), Some(payload)) = (peer, payload) {
+                    self.send_payload(peer, payload);
+                } else {
+                    log::warn!("[sip update] failed to build UPDATE call_id={}", call_id);
+                }
+            }
             SessionOut::SipSendBye200 => {
                 if self.active_call_id.as_ref() == Some(call_id) {
                     self.active_call_id = None;
@@ -1125,6 +1311,7 @@ mod tests {
             session_timer: None,
             final_ok: None,
             final_ok_payload: None,
+            local_cseq: 0,
         }
     }
 
@@ -1269,5 +1456,45 @@ mod tests {
             _ => panic!("expected response"),
         };
         assert_eq!(resp.status_code, 486);
+    }
+
+    #[test]
+    fn session_timer_defaults_when_missing() {
+        let req = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let cfg = config::SessionConfig {
+            default_expires: Some(Duration::from_secs(1800)),
+            min_se: 90,
+        };
+        let timer = session_timer_from_request(&req, &cfg, true)
+            .expect("ok")
+            .expect("timer");
+        assert_eq!(timer.expires, Duration::from_secs(1800));
+        assert_eq!(timer.refresher, SessionRefresher::Uas);
+    }
+
+    #[test]
+    fn session_timer_rejects_too_small() {
+        let req = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .header("Session-Expires", "60")
+            .build();
+        let cfg = config::SessionConfig {
+            default_expires: Some(Duration::from_secs(1800)),
+            min_se: 90,
+        };
+        match session_timer_from_request(&req, &cfg, true) {
+            Err(SessionTimerError::TooSmall { min_se }) => assert_eq!(min_se, 90),
+            other => panic!("expected TooSmall, got {:?}", other),
+        }
     }
 }

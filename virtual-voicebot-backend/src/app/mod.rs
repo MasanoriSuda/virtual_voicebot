@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-use crate::ports::ai::{AiPort, AsrChunk};
+use crate::ports::ai::{AiPort, AsrChunk, ChatMessage, Role};
 use crate::session::SessionOut;
 
 #[derive(Debug)]
@@ -35,7 +35,7 @@ struct AppWorker {
     session_out_tx: UnboundedSender<(String, SessionOut)>,
     rx: UnboundedReceiver<AppEvent>,
     active: bool,
-    history: Vec<(String, String)>, // (user, bot)
+    history: Vec<ChatMessage>,
     ai_port: Arc<dyn AiPort>,
 }
 
@@ -127,9 +127,22 @@ impl AppWorker {
             }
         };
 
-        // LLM（簡易履歴を踏まえてプロンプトを構築）
-        let prompt = self.build_prompt(&user_text);
-        let answer_text = match self.ai_port.generate_answer(prompt).await {
+        let trimmed = user_text.trim();
+        if trimmed.is_empty() {
+            log::debug!(
+                "[app {call_id}] empty ASR text after filtering, skipping LLM"
+            );
+            return Ok(());
+        }
+
+        let mut messages = Vec::with_capacity(self.history.len() + 1);
+        messages.extend(self.history.iter().cloned());
+        messages.push(ChatMessage {
+            role: Role::User,
+            content: trimmed.to_string(),
+        });
+
+        let answer_text = match self.ai_port.generate_answer(messages).await {
             Ok(ans) => ans,
             Err(e) => {
                 log::warn!("[app {call_id}] LLM failed: {e:?}");
@@ -138,7 +151,14 @@ impl AppWorker {
         };
 
         // 履歴に追加
-        self.history.push((user_text.clone(), answer_text.clone()));
+        self.history.push(ChatMessage {
+            role: Role::User,
+            content: trimmed.to_string(),
+        });
+        self.history.push(ChatMessage {
+            role: Role::Assistant,
+            content: answer_text.clone(),
+        });
 
         // TTS
         match self.ai_port.synth_to_wav(answer_text, None).await {
@@ -154,17 +174,5 @@ impl AppWorker {
         Ok(())
     }
 
-    fn build_prompt(&self, latest_user: &str) -> String {
-        let mut prompt = String::new();
-        for (u, b) in &self.history {
-            prompt.push_str("User: ");
-            prompt.push_str(u);
-            prompt.push_str("\nBot: ");
-            prompt.push_str(b);
-            prompt.push('\n');
-        }
-        prompt.push_str("User: ");
-        prompt.push_str(latest_user);
-        prompt
-    }
+    // build_prompt はロール分離に伴い廃止
 }

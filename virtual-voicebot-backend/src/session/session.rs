@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use chrono::{Local, Timelike};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::{Duration, Instant};
 
@@ -23,13 +24,26 @@ use log::{debug, info, warn};
 use serde_json::json;
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
-// MVPのシンプルなSession Timer。必要に応じて設計に合わせて短縮/設定化する。
-const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
 
-const INTRO_WAV_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test/simpletest/audio/zundamon_intro.wav"
-);
+const INTRO_MORNING_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_morning.wav");
+const INTRO_AFTERNOON_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_afternoon.wav");
+const INTRO_EVENING_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_evening.wav");
+
+fn intro_wav_path_for_hour(hour: u32) -> &'static str {
+    match hour {
+        5..=11 => INTRO_MORNING_WAV_PATH,
+        12..=16 => INTRO_AFTERNOON_WAV_PATH,
+        _ => INTRO_EVENING_WAV_PATH,
+    }
+}
+
+fn get_intro_wav_path() -> &'static str {
+    let hour = Local::now().hour();
+    intro_wav_path_for_hour(hour)
+}
 
 #[derive(Clone)]
 pub struct SessionHandle {
@@ -63,6 +77,8 @@ pub struct Session {
     speaking: bool,
     capture: AudioCapture,
     intro_sent: bool,
+    session_expires: Option<Duration>,
+    session_refresher: Option<SessionRefresher>,
 }
 
 impl Session {
@@ -102,11 +118,13 @@ impl Session {
             started_at: None,
             started_wall: None,
             rtp_last_sent: None,
-            timers: SessionTimers::new(SESSION_TIMEOUT),
+            timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             speaking: false,
             capture: AudioCapture::new(config::vad_config().clone()),
             intro_sent: false,
+            session_expires: None,
+            session_refresher: None,
         };
         tokio::spawn(async move {
             s.run(rx_in).await;
@@ -119,10 +137,10 @@ impl Session {
             let next_state = next_session_state(self.state, &ev);
             let mut advance_state = true;
             match (self.state, ev) {
-                (SessState::Idle, SessionIn::SipInvite { offer, session_expires, .. }) => {
+                (SessState::Idle, SessionIn::SipInvite { offer, session_timer, .. }) => {
                     self.peer_sdp = Some(offer);
-                    if let Some(expires) = session_expires {
-                        self.update_session_expires(expires);
+                    if let Some(timer) = session_timer {
+                        self.update_session_expires(timer);
                     }
                     let answer = self.build_answer_pcmu8k();
                     self.local_sdp = Some(answer.clone());
@@ -192,8 +210,9 @@ impl Session {
                     });
 
                     self.sending_audio = true;
+                    let intro_wav_path = get_intro_wav_path();
                     match send_wav_as_rtp_pcmu(
-                        INTRO_WAV_PATH,
+                        intro_wav_path,
                         dst_addr,
                         &self.rtp_tx,
                         &self.call_id,
@@ -206,7 +225,7 @@ impl Session {
                             self.rtp_last_sent = Some(Instant::now());
                             info!(
                                 "[session {}] sent intro wav {}",
-                                self.call_id, INTRO_WAV_PATH
+                                self.call_id, intro_wav_path
                             );
                         }
                         Err(e) => {
@@ -225,7 +244,7 @@ impl Session {
                     );
 
                     self.start_keepalive_timer();
-                    self.start_session_timer();
+                    self.start_session_timer_if_needed();
                 }
                 (SessState::Established, SessionIn::MediaRtpIn { payload, .. }) => {
                     debug!(
@@ -253,6 +272,22 @@ impl Session {
                             value: payload.len() as i64,
                         },
                     ));
+                }
+                (SessState::Established, SessionIn::SipReInvite { session_timer, .. }) => {
+                    if let Some(timer) = session_timer {
+                        self.update_session_expires(timer);
+                    }
+                    let answer = match self.local_sdp.clone() {
+                        Some(answer) => answer,
+                        None => {
+                            let answer = self.build_answer_pcmu8k();
+                            self.local_sdp = Some(answer.clone());
+                            answer
+                        }
+                    };
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
                 }
                 (SessState::Established, SessionIn::MediaTimerTick) => {
                     if let Err(e) = self.send_silence_frame().await {
@@ -342,8 +377,22 @@ impl Session {
                         call_id: self.call_id.clone(),
                     });
                 }
-                (_, SessionIn::SipSessionExpires { expires }) => {
-                    self.update_session_expires(expires);
+                (_, SessionIn::SipSessionExpires { timer }) => {
+                    self.update_session_expires(timer);
+                }
+                (_, SessionIn::SessionRefreshDue) => {
+                    if let (Some(expires), Some(SessionRefresher::Uas)) =
+                        (self.session_expires, self.session_refresher)
+                    {
+                        let _ = self.session_out_tx.send((
+                            self.call_id.clone(),
+                            SessionOut::SipSendUpdate { expires },
+                        ));
+                        self.update_session_expires(SessionTimerInfo {
+                            expires,
+                            refresher: SessionRefresher::Uas,
+                        });
+                    }
                 }
                 (_, SessionIn::SessionTimerFired) => {
                     warn!("[session {}] session timer fired", self.call_id);
@@ -430,17 +479,45 @@ impl Session {
         self.timers.stop_keepalive();
     }
 
-    /// Session Timer（簡易 keepalive 含む）の発火を監視し、失効時に SessionIn を送る
-    fn start_session_timer(&mut self) {
-        self.timers.start_session_timer(self.tx_in.clone());
+    /// Session Timer（RFC 4028 準拠）。設定がある場合のみ開始する。
+    fn start_session_timer_if_needed(&mut self) {
+        let Some(expires) = self.session_expires else {
+            return;
+        };
+        if expires.is_zero() {
+            return;
+        }
+        let refresh_after = self.refresh_after(expires);
+        self.timers
+            .start_session_timer(self.tx_in.clone(), expires, refresh_after);
     }
 
     fn stop_session_timer(&mut self) {
         self.timers.stop_session_timer();
     }
 
-    fn update_session_expires(&mut self, expires: Duration) {
-        self.timers.update_session_expires(expires, self.tx_in.clone());
+    fn update_session_expires(&mut self, timer: SessionTimerInfo) {
+        self.session_expires = Some(timer.expires);
+        self.session_refresher = Some(timer.refresher);
+        let refresh_after = self.refresh_after(timer.expires);
+        self.timers
+            .update_session_expires(timer.expires, self.tx_in.clone(), refresh_after);
+    }
+
+    fn refresh_after(&self, expires: Duration) -> Option<Duration> {
+        if self.session_refresher != Some(SessionRefresher::Uas) {
+            return None;
+        }
+        let total_ms = expires.as_millis();
+        if total_ms == 0 {
+            return None;
+        }
+        let refresh_ms = total_ms.saturating_mul(8) / 10;
+        if refresh_ms == 0 {
+            return None;
+        }
+        let refresh_ms = std::cmp::min(refresh_ms, u64::MAX as u128) as u64;
+        Some(Duration::from_millis(refresh_ms))
     }
 
     async fn send_silence_frame(&mut self) -> Result<(), Error> {
@@ -534,4 +611,19 @@ async fn send_wav_as_rtp_pcmu(
         sleep(Duration::from_millis(20)).await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intro_path_matches_time_window() {
+        assert_eq!(intro_wav_path_for_hour(5), INTRO_MORNING_WAV_PATH);
+        assert_eq!(intro_wav_path_for_hour(11), INTRO_MORNING_WAV_PATH);
+        assert_eq!(intro_wav_path_for_hour(12), INTRO_AFTERNOON_WAV_PATH);
+        assert_eq!(intro_wav_path_for_hour(16), INTRO_AFTERNOON_WAV_PATH);
+        assert_eq!(intro_wav_path_for_hour(17), INTRO_EVENING_WAV_PATH);
+        assert_eq!(intro_wav_path_for_hour(4), INTRO_EVENING_WAV_PATH);
+    }
 }

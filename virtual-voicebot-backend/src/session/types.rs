@@ -41,6 +41,18 @@ impl MediaConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionRefresher {
+    Uac,
+    Uas,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SessionTimerInfo {
+    pub expires: Duration,
+    pub refresher: SessionRefresher,
+}
+
 /// sip/session 間で受け取るイベント（上位: sip・rtp・app からの入力）
 #[derive(Debug)]
 pub enum SessionIn {
@@ -50,7 +62,12 @@ pub enum SessionIn {
         from: String,
         to: String,
         offer: Sdp,
-        session_expires: Option<Duration>,
+        session_timer: Option<SessionTimerInfo>,
+    },
+    /// 既存ダイアログ内の re-INVITE
+    SipReInvite {
+        offer: Sdp,
+        session_timer: Option<SessionTimerInfo>,
     },
     /// SIP側からのACK
     SipAck,
@@ -73,11 +90,13 @@ pub enum SessionIn {
     AppHangup,
     /// Session Timer (keepalive 含む) の失効
     SessionTimerFired,
+    /// Session-Expires の更新時刻（refresher=uas 用）
+    SessionRefreshDue,
     /// keepalive tick
     MediaTimerTick,
     /// Session-Expires による更新（INVITE/UPDATE）
     SipSessionExpires {
-        expires: Duration,
+        timer: SessionTimerInfo,
     },
     Abort(anyhow::Error),
 }
@@ -92,6 +111,10 @@ pub enum SessionOut {
     /// SIP final (200 + SDP)
     SipSend200 {
         answer: Sdp,
+    },
+    /// SIP UPDATE によるセッションリフレッシュ
+    SipSendUpdate {
+        expires: Duration,
     },
     /// SIP BYEに対する200
     SipSendBye200,

@@ -121,6 +121,34 @@ pub fn vad_config() -> &'static VadConfig {
     VAD_CONFIG.get_or_init(VadConfig::from_env)
 }
 
+#[derive(Clone, Debug)]
+pub struct SessionConfig {
+    pub default_expires: Option<Duration>,
+    pub min_se: u64,
+}
+
+impl SessionConfig {
+    fn from_env() -> Self {
+        let timeout = env_u64("SESSION_TIMEOUT_SEC", 1800);
+        let default_expires = if timeout == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(timeout))
+        };
+        let min_se = env_u64("SESSION_MIN_SE", 90);
+        Self {
+            default_expires,
+            min_se,
+        }
+    }
+}
+
+static SESSION_CONFIG: OnceLock<SessionConfig> = OnceLock::new();
+
+pub fn session_config() -> &'static SessionConfig {
+    SESSION_CONFIG.get_or_init(SessionConfig::from_env)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegistrarTransport {
     Udp,

@@ -127,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
                             from,
                             to,
                             offer,
-                            session_expires,
+                            session_timer,
                         } => {
                             log::info!("[main] new INVITE, call_id={}", call_id);
 
@@ -166,8 +166,20 @@ async fn main() -> anyhow::Result<()> {
                                 from,
                                 to,
                                 offer,
-                                session_expires,
+                                session_timer,
                             });
+                        }
+                        SipEvent::ReInvite {
+                            call_id,
+                            offer,
+                            session_timer,
+                        } => {
+                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                                let _ = sess_tx.send(SessionIn::SipReInvite {
+                                    offer,
+                                    session_timer,
+                                });
+                            }
                         }
                         SipEvent::Ack { call_id } => {
                             log::info!("[main] ACK for call_id={}", call_id);
@@ -181,9 +193,9 @@ async fn main() -> anyhow::Result<()> {
                                 let _ = sess_tx.send(SessionIn::SipBye);
                             }
                         }
-                        SipEvent::SessionRefresh { call_id, expires } => {
+                        SipEvent::SessionRefresh { call_id, timer } => {
                             if let Some(sess_tx) = session_registry.get(&call_id) {
-                                let _ = sess_tx.send(SessionIn::SipSessionExpires { expires });
+                                let _ = sess_tx.send(SessionIn::SipSessionExpires { timer });
                             }
                         }
                         SipEvent::TransactionTimeout { call_id } => {

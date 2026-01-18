@@ -10,7 +10,7 @@
 | **Owner** | TBD |
 | **Last Updated** | 2026-01-18 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22) |
 
 ---
 
@@ -43,7 +43,10 @@
 
 | Step | 概要 | 依存 | 状態 |
 |------|------|------|------|
-| [Step-18](#step-18-asr-低レイテンシ化-issue-19) | ASR 低レイテンシ化 (Issue #19) | - | 未着手 |
+| [Step-18](#step-18-asr-低レイテンシ化-issue-19) | ASR 低レイテンシ化 (Issue #19) | - | 着手中 |
+| [Step-19](#step-19-session-expires-対応-issue-20) | Session-Expires 対応 (Issue #20) | - | 完了 |
+| [Step-20](#step-20-llm-会話履歴ロール分離-issue-21) | LLM 会話履歴ロール分離 (Issue #21) | - | 未着手 |
+| [Step-21](#step-21-時間帯別イントロ-issue-22) | 時間帯別イントロ (Issue #22) | - | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 未着手 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -112,8 +115,8 @@ Spec 策定後に Active へ昇格させます。
 
 | ID | 項目 | RFC | 必要な決定事項 |
 |----|------|-----|---------------|
-| DEF-10 | re-INVITE 送信 | 4028 | refresher=uas 時のタイマー設計 |
-| DEF-11 | UPDATE 送信 | 3311 | セッション更新トリガー設計 |
+| ~~DEF-10~~ | ~~re-INVITE 送信~~ | 4028 | **→ Step-19 に統合（Issue #20）** |
+| ~~DEF-11~~ | ~~UPDATE 送信~~ | 3311 | **→ Step-19 に統合（Issue #20）** |
 | DEF-12 | Hold/Resume | 3264 | a=sendonly/recvonly 切り替え設計 |
 | DEF-13 | 複数コーデック交渉 | 3264 | コーデック優先度、動的 PT 管理 |
 
@@ -1026,7 +1029,7 @@ VAD（Voice Activity Detection）+ 無音検出により、発話終了を自然
 ### DoD (Definition of Done)
 
 - [ ] VAD による発話開始/終了検出
-- [ ] 開始待ち時間（デフォルト 3000ms）- 通話開始後の無音を許容
+- [ ] 開始待ち時間（デフォルト 800ms）- 通話開始後の無音を許容
 - [ ] 終了無音検出（デフォルト 800ms）- 発話後の無音で終了判定
 - [ ] 発話区間のみを Whisper に送信
 - [ ] 10 秒固定待ちの廃止
@@ -1060,7 +1063,7 @@ cargo test session::capture
 | 項目 | 決定 | 理由 |
 |------|------|------|
 | VAD 方式 | エネルギーベース（RMS 閾値） | シンプル、低負荷 |
-| 開始待ち時間 | 3000ms（設定可能） | 通話開始時の無音を待つ |
+| 開始待ち時間 | 800ms（設定可能） | 通話開始時の無音を待つ |
 | 終了無音閾値 | 800ms（設定可能） | 自然な発話終了判定 |
 | 最小発話長 | 300ms | ノイズ誤検出防止 |
 | 最大発話長 | 30s | メモリ保護 |
@@ -1080,7 +1083,7 @@ cargo test session::capture
 ```
 User                    Voicebot                    Whisper
   |                         |                          |
-  |                         | [3秒待機（開始無音許容）]|
+  |                         | [0.8秒待機（開始無音許容）]|
   |--- 発話開始 ----------->|                          |
   |                         | [VAD: 発話検出]          |
   |                         | [バッファリング開始]     |
@@ -1092,6 +1095,458 @@ User                    Voicebot                    Whisper
   |                         |<-- テキスト結果 ---------|
   |<-- 応答（< 2秒）--------|                          |
 ```
+
+---
+
+## Step-19: Session-Expires 対応 (Issue #20)
+
+**目的**: RFC 4028 準拠のセッションタイマーを実装し、長時間通話に対応する
+
+**関連**: [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20)
+
+**RFC参照**: RFC 4028 (Session Timers in SIP)
+
+### 背景
+
+現在の実装では、セッションタイムアウトが 120 秒（2 分）に固定されている:
+
+```rust
+const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
+```
+
+NTT Docomo からの INVITE には Session-Expires ヘッダが含まれており、この値を無視すると相手側がタイムアウトで BYE を送信する可能性がある。
+
+### 現状の問題
+
+1. **固定タイムアウト**: 120 秒で強制的にセッション終了
+2. **Session-Expires 無視**: INVITE の Session-Expires ヘッダを解析していない
+3. **re-INVITE/UPDATE 未対応**: RFC 4028 準拠のセッションリフレッシュ機能がない
+
+### 技術アプローチ
+
+RFC 4028 準拠の実装:
+1. INVITE の Session-Expires ヘッダを解析
+2. Session-Expires がある場合はその値を使用
+3. Session-Expires がない場合は環境変数のデフォルト値を使用
+4. refresher に応じて re-INVITE を送信しセッションをリフレッシュ
+
+```
+INVITE 例:
+Session-Expires: 1800;refresher=uac
+Min-SE: 90
+```
+
+### DoD (Definition of Done)
+
+- [ ] INVITE の Session-Expires ヘッダ解析
+- [ ] Min-SE ヘッダ解析（最小セッション時間）
+- [ ] refresher パラメータ解析（uac/uas）
+- [ ] 200 OK に Session-Expires ヘッダを含める
+- [ ] Session-Expires 値に基づくセッションタイマー設定
+- [ ] **refresher=uas** の場合、期限前（80%）に re-INVITE または UPDATE 送信
+- [ ] **refresher=uac** の場合、相手からの re-INVITE/UPDATE を受信・処理
+- [ ] re-INVITE 受信時に 200 OK を返しセッションタイマーをリセット
+- [ ] UPDATE 受信時に 200 OK を返しセッションタイマーをリセット
+- [ ] Session-Expires がない場合のデフォルト値対応
+- [ ] `SESSION_TIMEOUT_SEC` 環境変数追加（デフォルト用）
+- [ ] Unit test 追加
+- [ ] README に環境変数追加
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/sip/mod.rs` | Session-Expires/Min-SE ヘッダ解析、UPDATE 受信処理 |
+| `src/sip/builder.rs` | 200 OK に Session-Expires 追加 |
+| `src/sip/reinvite.rs` | re-INVITE 送信ロジック（新規） |
+| `src/sip/update.rs` | UPDATE 送受信ロジック（新規） |
+| `src/session/session.rs` | セッションタイマー統合 |
+| `src/session/timers.rs` | Session-Expires タイマー追加 |
+| `src/config.rs` | `SessionConfig` 追加 |
+| `README.md` | 環境変数ドキュメント追加 |
+
+### 変更上限
+
+- **行数**: <=500行
+- **ファイル数**: <=8
+
+### 検証方法
+
+```bash
+cargo test sip::
+cargo test session::
+# E2E: NTT Docomo からの通話で Session-Expires が正しく処理されることを確認
+# E2E: 長時間通話（> Session-Expires）で re-INVITE によるリフレッシュを確認
+```
+
+### 環境変数（追加）
+
+| 変数名 | 説明 | デフォルト |
+|--------|------|-----------|
+| `SESSION_TIMEOUT_SEC` | デフォルトセッションタイムアウト（秒）。INVITE に Session-Expires がない場合に使用。`0` で無制限。 | `1800` |
+| `SESSION_MIN_SE` | 最小セッション時間（秒）。相手の Min-SE より小さい場合は相手の値を使用。 | `90` |
+
+### 統合 Deferred Steps
+
+> **Note**: 本 Step は DEF-10/DEF-11 を統合し、RFC 4028/RFC 3311 準拠の完全実装を行う。
+
+- ~~**DEF-10**~~: re-INVITE 送信 → **本 Step に統合**
+- ~~**DEF-11**~~: UPDATE 送信 → **本 Step に統合**
+
+### re-INVITE vs UPDATE
+
+| 方式 | RFC | 特徴 | 用途 |
+|------|-----|------|------|
+| re-INVITE | 3261 | ACK が必要、SDP 再ネゴシエーション可能 | セッションリフレッシュ + メディア変更 |
+| UPDATE | 3311 | ACK 不要、軽量 | セッションリフレッシュのみ |
+
+> **実装方針**: 送信時は UPDATE を優先（軽量）。受信時は re-INVITE/UPDATE 両方に対応。
+
+### シーケンス
+
+#### ケース 1: refresher=uas（Voicebot がリフレッシュ責任 - UPDATE 使用）
+
+```
+NTT Docomo                         Voicebot
+     |                                 |
+     |--- INVITE ----------------------|
+     |    Session-Expires: 1800        |
+     |    Min-SE: 90                   |
+     |                                 |
+     |<-- 200 OK ----------------------|
+     |    Session-Expires: 1800;       |
+     |    refresher=uas                |
+     |                                 |
+     |--- ACK -------------------------|
+     |                                 |
+     |<== RTP 通話 ====================>|
+     |                                 |
+     |... 1440秒経過 (80%) ............|
+     |                                 |
+     |<-- UPDATE ---------------------|  ← Voicebot が UPDATE を送信（軽量）
+     |    Session-Expires: 1800        |
+     |                                 |
+     |--- 200 OK ----------------------|  ← ACK 不要
+     |                                 |
+     |<== 通話継続 ===================>|  ← セッションタイマーリセット
+     |                                 |
+```
+
+#### ケース 2: refresher=uac（NTT Docomo がリフレッシュ責任 - re-INVITE/UPDATE 受信）
+
+```
+NTT Docomo                         Voicebot
+     |                                 |
+     |--- INVITE ----------------------|
+     |    Session-Expires: 1800;       |
+     |    refresher=uac                |
+     |    Min-SE: 90                   |
+     |                                 |
+     |<-- 200 OK ----------------------|
+     |    Session-Expires: 1800;       |
+     |    refresher=uac                |  ← 相手の refresher を維持
+     |                                 |
+     |--- ACK -------------------------|
+     |                                 |
+     |<== RTP 通話 ====================>|
+     |                                 |
+     |... 1440秒経過 (80%) ............|
+     |                                 |
+     |--- re-INVITE or UPDATE ---------|  ← NTT Docomo が送信
+     |    Session-Expires: 1800        |
+     |                                 |
+     |<-- 200 OK ----------------------|  ← Voicebot は受信して応答
+     |    Session-Expires: 1800;       |
+     |    refresher=uac                |
+     |                                 |
+     |--- ACK (re-INVITE の場合のみ) --|
+     |                                 |
+     |<== 通話継続 ===================>|  ← セッションタイマーリセット
+     |                                 |
+```
+
+### フォールバック動作
+
+```
+Session-Expires なしの INVITE:
+
+UAC                              Voicebot
+  |                                 |
+  |--- INVITE ----------------------|
+  |    (Session-Expires なし)       |
+  |                                 |
+  |<-- 200 OK ----------------------|
+  |    Session-Expires: 1800        |  ← デフォルト値を使用
+  |    refresher=uas                |
+  |                                 |
+```
+
+---
+
+## Step-20: LLM 会話履歴ロール分離 (Issue #21)
+
+**目的**: LLM API に対して適切なロール（system/user/assistant）で会話履歴を渡し、文脈を正しく理解させる
+
+**関連**: [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21)
+
+### 背景
+
+現在の実装では、会話履歴が以下のように処理されている:
+
+1. `app/mod.rs` の `build_prompt()` が `User: ... Bot: ...` 形式の文字列を生成
+2. `ai/mod.rs` の `build_llm_prompt()` が「以下の質問に120文字以内にまとめてください。質問: {履歴込み文字列}」でラップ
+3. すべてが単一の `user` ロールとして Ollama に送信される
+
+この結果、LLM は会話の文脈を正しく理解できず、過去の応答内容を「質問」として解釈してしまう。
+
+### 技術アプローチ
+
+OpenAI 互換の `messages[]` 形式を使用:
+
+```json
+{
+  "model": "gemma3:4b",
+  "messages": [
+    {"role": "system", "content": "あなたはボイスボットです。120文字以内で回答してください。"},
+    {"role": "user", "content": "最初の質問"},
+    {"role": "assistant", "content": "最初の回答"},
+    {"role": "user", "content": "2番目の質問"}
+  ],
+  "stream": false
+}
+```
+
+### DoD (Definition of Done)
+
+#### LLM ロール分離
+- [ ] `ChatMessage` 構造体と `Role` enum (User/Assistant) を追加
+- [ ] `AiPort::generate_answer` の引数を `Vec<ChatMessage>` に変更
+- [ ] `call_ollama` を `messages[]` 形式に対応
+- [ ] `call_gemini` を `contents[]` 形式に対応
+- [ ] システムプロンプト追加（120文字制限等）
+- [ ] `app/mod.rs` の `build_prompt()` を削除
+- [ ] `ai/mod.rs` の `build_llm_prompt()` を削除
+- [ ] 履歴を `Vec<ChatMessage>` として管理するよう変更
+
+#### Whisper ハルシネーション対策
+- [ ] ASR 結果フィルタ追加（無音時の誤認識パターンを除外）
+- [ ] フィルタ対象パターン: 「ご視聴ありがとうございました」「チャンネル登録」「いいね」等
+- [ ] フィルタにマッチした場合は空文字列を返す（LLM に渡さない）
+
+#### 検証
+- [ ] Unit test 追加
+- [ ] E2E 検証（連続質問で文脈が正しく維持されることを確認）
+- [ ] E2E 検証（無音時にハルシネーションが LLM に渡らないことを確認）
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/ports/ai.rs` | `ChatMessage`, `Role` 型追加、`generate_answer` 引数変更 |
+| `src/ai/mod.rs` | `call_ollama`/`call_gemini` を messages 形式に変更、`build_llm_prompt` 削除 |
+| `src/ai/asr.rs` | Whisper ハルシネーションフィルタ追加 |
+| `src/app/mod.rs` | `build_prompt` 削除、履歴を `Vec<ChatMessage>` で管理 |
+
+### 変更上限
+
+- **行数**: <=200行
+- **ファイル数**: <=4
+
+### 検証方法
+
+```bash
+cargo test ai::
+cargo test app::
+# E2E: 連続質問で文脈が正しく維持されることを確認
+# 例: "東京の天気は？" → "大阪は？" で大阪の天気について回答すること
+```
+
+### 型定義（案）
+
+```rust
+// src/ports/ai.rs
+#[derive(Debug, Clone)]
+pub enum Role {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatMessage {
+    pub role: Role,
+    pub content: String,
+}
+```
+
+### Whisper ハルシネーションフィルタ（案）
+
+```rust
+// src/ai/asr.rs
+const HALLUCINATION_PATTERNS: &[&str] = &[
+    "ご視聴ありがとうございました",
+    "チャンネル登録",
+    "高評価",
+    "いいね",
+    "お願いします", // 単独で出現する場合
+    "ありがとうございました", // 単独で出現する場合
+];
+
+/// ASR 結果がハルシネーションかどうかを判定
+fn is_hallucination(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    HALLUCINATION_PATTERNS.iter().any(|p| trimmed.contains(p))
+}
+
+/// ASR 結果をフィルタリング
+pub fn filter_asr_result(text: &str) -> Option<String> {
+    if is_hallucination(text) {
+        log::debug!("ASR hallucination filtered: {}", text);
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
+```
+
+> **Note**: フィルタパターンは運用中に追加・調整が必要。環境変数での設定も検討。
+
+### Ollama API 形式
+
+```rust
+// messages 形式への変換
+let messages: Vec<OllamaMessage> = vec![
+    OllamaMessage {
+        role: "system".to_string(),
+        content: "あなたはボイスボットです。120文字以内で回答してください。".to_string(),
+    },
+];
+// 履歴を追加
+for msg in &history {
+    messages.push(OllamaMessage {
+        role: match msg.role {
+            Role::User => "user".to_string(),
+            Role::Assistant => "assistant".to_string(),
+        },
+        content: msg.content.clone(),
+    });
+}
+```
+
+### シーケンス
+
+```
+User                    AppWorker                   AI (Ollama)
+  |                         |                           |
+  |--- 音声("東京の天気") --->|                           |
+  |                         |                           |
+  |                         | history = []              |
+  |                         | messages = [              |
+  |                         |   {system: "..."},        |
+  |                         |   {user: "東京の天気"}    |
+  |                         | ]                         |
+  |                         |--- POST /api/chat ------->|
+  |                         |                           |
+  |                         |<-- "東京は晴れです" ------|
+  |                         |                           |
+  |                         | history.push(user, asst)  |
+  |                         |                           |
+  |<-- 音声("東京は晴れ") ---|                           |
+  |                         |                           |
+  |--- 音声("大阪は？") ---->|                           |
+  |                         |                           |
+  |                         | messages = [              |
+  |                         |   {system: "..."},        |
+  |                         |   {user: "東京の天気"},   |
+  |                         |   {asst: "東京は晴れ"},   |
+  |                         |   {user: "大阪は？"}      |  ← 文脈を維持
+  |                         | ]                         |
+  |                         |--- POST /api/chat ------->|
+  |                         |                           |
+  |                         |<-- "大阪は曇りです" ------|  ← 正しく大阪の天気を回答
+  |                         |                           |
+  |<-- 音声("大阪は曇り") ---|                           |
+```
+
+---
+
+## Step-21: 時間帯別イントロ (Issue #22)
+
+**目的**: 時間帯によってイントロ音声を切り替え、「おはよう」「こんにちは」「こんばんは」の挨拶を自然にする
+
+**関連**: [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22)
+
+### 背景
+
+現在の実装では、イントロ音声は固定パス（`zundamon_intro.wav`）を使用している:
+
+```rust
+// src/session/session.rs:27-30
+const INTRO_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test/simpletest/audio/zundamon_intro.wav"
+);
+```
+
+時間帯に応じた挨拶に変更することで、ユーザー体験を向上させる。
+
+### 時間帯定義
+
+| 時間帯 | 開始 | 終了 | 挨拶 | ファイル |
+|--------|------|------|------|----------|
+| 朝 | 05:00 | 11:59 | おはよう | `data/zundamon_intro_morning.wav` |
+| 昼 | 12:00 | 16:59 | こんにちは | `data/zundamon_intro_afternoon.wav` |
+| 夜 | 17:00 | 04:59 | こんばんは | `data/zundamon_intro_evening.wav` |
+
+### DoD (Definition of Done)
+
+- [ ] `get_intro_wav_path()` 関数追加（現在時刻から適切なパスを返す）
+- [ ] 時間帯判定ロジック実装（ローカルタイム使用）
+- [ ] `INTRO_WAV_PATH` 定数を関数呼び出しに置換
+- [ ] 3つのイントロ WAV ファイルが `data/` に存在することを確認
+- [ ] Unit test 追加（各時間帯でのパス判定）
+- [ ] E2E 検証（実際の通話で正しい挨拶が再生されることを確認）
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/session/session.rs` | `INTRO_WAV_PATH` → `get_intro_wav_path()` 関数化 |
+| `data/zundamon_intro_morning.wav` | 朝用イントロ（既存） |
+| `data/zundamon_intro_afternoon.wav` | 昼用イントロ（既存） |
+| `data/zundamon_intro_evening.wav` | 夜用イントロ（既存） |
+
+### 変更上限
+
+- **行数**: <=50行
+- **ファイル数**: <=1（コード変更）
+
+### 検証方法
+
+```bash
+cargo test session::
+# E2E: 各時間帯に通話して正しい挨拶が再生されることを確認
+```
+
+### 実装案
+
+```rust
+// src/session/session.rs
+use chrono::Local;
+
+fn get_intro_wav_path() -> &'static str {
+    let hour = Local::now().hour();
+    match hour {
+        5..=11 => concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_morning.wav"),
+        12..=16 => concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_afternoon.wav"),
+        _ => concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_evening.wav"),
+    }
+}
+```
+
+> **Note**: `chrono` クレートが必要（既に依存に含まれている場合は追加不要）。
 
 ---
 
@@ -1111,6 +1566,9 @@ User                    Voicebot                    Whisper
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-18 | 2.2 | Issue #22 統合: Step-21（時間帯別イントロ）追加 |
+| 2026-01-18 | 2.1 | Issue #21 統合: Step-20（LLM 会話履歴ロール分離）追加 |
+| 2026-01-18 | 2.0 | Issue #20 統合: Step-19（Session-Expires 対応）追加、DEF-10/DEF-11 を Step-19 に統合 |
 | 2026-01-18 | 1.9 | Issue #19 統合: Step-18（ASR 低レイテンシ化）追加、VAD + 無音検出方式 |
 | 2026-01-18 | 1.8 | Issue #18 統合: Step-09（486 Busy Here）詳細化、シーケンス図追加 |
 | 2026-01-14 | 1.7 | Issue #13 統合: Step-14〜17（TLS/REGISTER/認証）追加、P0 最優先に昇格 |
