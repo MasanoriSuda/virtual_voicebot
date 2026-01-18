@@ -16,6 +16,7 @@ use crate::recording;
 use crate::recording::storage::StoragePort;
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::capture::AudioCapture;
+use crate::config;
 use crate::session::timers::SessionTimers;
 use anyhow::Error;
 use log::{debug, info, warn};
@@ -24,7 +25,6 @@ use serde_json::json;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
 // MVPのシンプルなSession Timer。必要に応じて設計に合わせて短縮/設定化する。
 const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
-const CAPTURE_WINDOW: Duration = Duration::from_secs(10);
 
 const INTRO_WAV_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -105,7 +105,7 @@ impl Session {
             timers: SessionTimers::new(SESSION_TIMEOUT),
             sending_audio: false,
             speaking: false,
-            capture: AudioCapture::new(CAPTURE_WINDOW),
+            capture: AudioCapture::new(config::vad_config().clone()),
             intro_sent: false,
         };
         tokio::spawn(async move {

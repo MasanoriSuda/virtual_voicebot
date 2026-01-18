@@ -94,6 +94,33 @@ pub fn tls_settings() -> Option<&'static TlsSettings> {
     TLS_SETTINGS.get_or_init(TlsSettings::from_env).as_ref()
 }
 
+#[derive(Clone, Debug)]
+pub struct VadConfig {
+    pub rms_threshold: u32,
+    pub start_silence_ms: u64,
+    pub end_silence_ms: u64,
+    pub min_speech_ms: u64,
+    pub max_speech_ms: u64,
+}
+
+impl VadConfig {
+    fn from_env() -> Self {
+        Self {
+            rms_threshold: env_u32("VAD_ENERGY_THRESHOLD", 500),
+            start_silence_ms: env_u64("VAD_START_SILENCE_MS", 800),
+            end_silence_ms: env_u64("VAD_END_SILENCE_MS", 800),
+            min_speech_ms: env_u64("VAD_MIN_SPEECH_MS", 300),
+            max_speech_ms: env_u64("VAD_MAX_SPEECH_MS", 30_000),
+        }
+    }
+}
+
+static VAD_CONFIG: OnceLock<VadConfig> = OnceLock::new();
+
+pub fn vad_config() -> &'static VadConfig {
+    VAD_CONFIG.get_or_init(VadConfig::from_env)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegistrarTransport {
     Udp,
@@ -263,6 +290,13 @@ fn env_u32(key: &str, default_value: u32) -> u32 {
     std::env::var(key)
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(default_value)
+}
+
+fn env_u64(key: &str, default_value: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(default_value)
 }
 

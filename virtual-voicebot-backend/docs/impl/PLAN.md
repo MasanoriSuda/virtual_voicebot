@@ -10,7 +10,7 @@
 | **Owner** | TBD |
 | **Last Updated** | 2026-01-18 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19) |
 
 ---
 
@@ -43,6 +43,7 @@
 
 | Step | 概要 | 依存 | 状態 |
 |------|------|------|------|
+| [Step-18](#step-18-asr-低レイテンシ化-issue-19) | ASR 低レイテンシ化 (Issue #19) | - | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 未着手 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -1003,6 +1004,97 @@ cargo test sip::register
 
 ---
 
+## Step-18: ASR 低レイテンシ化 (Issue #19)
+
+**目的**: 発話終了を自然に検出し、体感 2 秒以内で ASR 結果を得る
+
+**関連**: [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19)
+
+### 背景
+
+現在の実装は 10 秒固定待ちのため、ユーザーに「壊れた？」と思われる体験になっている。
+VAD（Voice Activity Detection）+ 無音検出により、発話終了を自然に判定し低レイテンシ化する。
+
+### 技術アプローチ
+
+```
+[RTP音声] → [VAD: 発話開始検出] → [音声バッファリング] → [無音検出: 発話終了] → [Whisper ASR] → [結果]
+                                                                ↓
+                                                        無音閾値: 800ms
+```
+
+### DoD (Definition of Done)
+
+- [ ] VAD による発話開始/終了検出
+- [ ] 開始待ち時間（デフォルト 3000ms）- 通話開始後の無音を許容
+- [ ] 終了無音検出（デフォルト 800ms）- 発話後の無音で終了判定
+- [ ] 発話区間のみを Whisper に送信
+- [ ] 10 秒固定待ちの廃止
+- [ ] 体感レイテンシ 2 秒以内の達成
+- [ ] Unit test 追加
+- [ ] E2E 検証（実際の通話で確認）
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/session/capture.rs` | VAD + 無音検出ロジック追加 |
+| `src/session/session.rs` | 発話区間判定の統合 |
+| `src/ai/mod.rs` | ASR 呼び出しタイミング変更 |
+| `src/config.rs` | VAD 閾値設定追加 |
+
+### 変更上限
+
+- **行数**: <=300行
+- **ファイル数**: <=5
+
+### 検証方法
+
+```bash
+cargo test session::capture
+# E2E: 実際の通話で発話→応答のレイテンシを計測
+```
+
+### 設計決定事項
+
+| 項目 | 決定 | 理由 |
+|------|------|------|
+| VAD 方式 | エネルギーベース（RMS 閾値） | シンプル、低負荷 |
+| 開始待ち時間 | 3000ms（設定可能） | 通話開始時の無音を待つ |
+| 終了無音閾値 | 800ms（設定可能） | 自然な発話終了判定 |
+| 最小発話長 | 300ms | ノイズ誤検出防止 |
+| 最大発話長 | 30s | メモリ保護 |
+
+### 環境変数（追加）
+
+| 変数名 | 説明 | デフォルト |
+|--------|------|-----------|
+| `VAD_START_SILENCE_MS` | 開始待ち時間（ms）- 通話開始後、この時間内は無音でも待機 | `800` |
+| `VAD_END_SILENCE_MS` | 終了無音閾値（ms）- 発話後、この時間無音で発話終了と判定 | `800` |
+| `VAD_MIN_SPEECH_MS` | 最小発話長（ms） | `300` |
+| `VAD_MAX_SPEECH_MS` | 最大発話長（ms） | `30000` |
+| `VAD_ENERGY_THRESHOLD` | エネルギー閾値（RMS） | `500` |
+
+### シーケンス
+
+```
+User                    Voicebot                    Whisper
+  |                         |                          |
+  |                         | [3秒待機（開始無音許容）]|
+  |--- 発話開始 ----------->|                          |
+  |                         | [VAD: 発話検出]          |
+  |                         | [バッファリング開始]     |
+  |--- 発話中 ------------->|                          |
+  |                         | [音声蓄積]               |
+  |--- 発話終了（無音）---->|                          |
+  |                         | [800ms 無音検出]         |
+  |                         |--- WAV 送信 ------------>|
+  |                         |<-- テキスト結果 ---------|
+  |<-- 応答（< 2秒）--------|                          |
+```
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -1019,6 +1111,7 @@ cargo test sip::register
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-18 | 1.9 | Issue #19 統合: Step-18（ASR 低レイテンシ化）追加、VAD + 無音検出方式 |
 | 2026-01-18 | 1.8 | Issue #18 統合: Step-09（486 Busy Here）詳細化、シーケンス図追加 |
 | 2026-01-14 | 1.7 | Issue #13 統合: Step-14〜17（TLS/REGISTER/認証）追加、P0 最優先に昇格 |
 | 2025-12-30 | 1.6 | Issue #8 統合: Code Quality Improvements セクション追加（CQ-01〜05）、ARCH-01 サブステップ化 |
