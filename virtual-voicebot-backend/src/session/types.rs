@@ -82,6 +82,10 @@ pub enum SessionIn {
         ts: u32,
         payload: Vec<u8>,
     },
+    /// DTMF tone detected (in-band)
+    Dtmf {
+        digit: char,
+    },
     /// app から返ってきたボット応答音声（WAVファイルパス）
     AppBotAudioFile {
         path: String,

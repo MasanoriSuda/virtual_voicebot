@@ -10,7 +10,7 @@
 | **Owner** | TBD |
 | **Last Updated** | 2026-01-18 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24) |
 
 ---
 
@@ -377,6 +377,8 @@ cargo test sip::
 ## Step-02: DTMF トーン検出 (Goertzel)
 
 **目的**: 音声ストリーム内の DTMF トーン（インバンド）を Goertzel アルゴリズムで検出
+
+**関連**: [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24)
 
 **背景**: RFC 2833 非対応の相手にも対応するため、音声信号から直接 DTMF を検出
 
@@ -1658,6 +1660,7 @@ User                    AppWorker                   Session
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-19 | 2.4 | Issue #24 統合: Step-02（DTMF トーン検出 Goertzel）に Issue リンク追加 |
 | 2026-01-18 | 2.3 | Issue #23 統合: Step-22（ハルシネーション時謝罪音声）追加 |
 | 2026-01-18 | 2.2 | Issue #22 統合: Step-21（時間帯別イントロ）追加 |
 | 2026-01-18 | 2.1 | Issue #21 統合: Step-20（LLM 会話履歴ロール分離）追加 |
