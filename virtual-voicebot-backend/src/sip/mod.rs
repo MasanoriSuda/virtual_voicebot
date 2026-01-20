@@ -820,7 +820,7 @@ impl SipCore {
                 self.send_tx_action(action, peer);
             }
         }
-        if terminate {
+        if terminate && !stop_final_ok {
             self.invites.remove(&call_id);
         }
         vec![SipEvent::Ack { call_id }]
@@ -1277,6 +1277,7 @@ impl SipCore {
                 } else {
                     log::warn!("[sip bye] failed to build BYE call_id={}", call_id);
                 }
+                self.invites.remove(call_id);
             }
             SessionOut::SipSendBye200 => {
                 if self.active_call_id.as_ref() == Some(call_id) {
@@ -1292,6 +1293,7 @@ impl SipCore {
                         }
                     }
                 }
+                self.invites.remove(call_id);
             }
             _ => { /* 他の SessionOut は現状未配線 */ }
         }
