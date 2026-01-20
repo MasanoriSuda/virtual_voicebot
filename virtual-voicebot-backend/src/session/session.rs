@@ -6,7 +6,7 @@ use std::sync::Arc;
 use chrono::{Local, Timelike};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
-use tokio::time::{Duration, Instant};
+use tokio::time::{interval, Duration, Instant, MissedTickBehavior};
 
 use crate::session::types::Sdp;
 use crate::session::types::*;
@@ -25,6 +25,7 @@ use log::{debug, info, warn};
 use serde_json::json;
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
+const PLAYBACK_FRAME_INTERVAL: Duration = Duration::from_millis(20);
 
 const INTRO_MORNING_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_morning.wav");
@@ -83,6 +84,12 @@ fn ivr_state_after_action(state: IvrState, action: IvrAction) -> IvrState {
     }
 }
 
+#[derive(Debug)]
+struct PlaybackState {
+    frames: Vec<Vec<u8>>,
+    index: usize,
+}
+
 pub struct Session {
     state: SessState,
     call_id: CallId,
@@ -106,6 +113,7 @@ pub struct Session {
     rtp_last_sent: Option<Instant>,
     timers: SessionTimers,
     sending_audio: bool,
+    playback: Option<PlaybackState>,
     // バッファ/タイマ
     speaking: bool,
     capture: AudioCapture,
@@ -155,6 +163,7 @@ impl Session {
             rtp_last_sent: None,
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
+            playback: None,
             speaking: false,
             capture: AudioCapture::new(config::vad_config().clone()),
             intro_sent: false,
@@ -170,273 +179,278 @@ impl Session {
     }
 
     async fn run(&mut self, mut rx: UnboundedReceiver<SessionIn>) {
-        while let Some(ev) = rx.recv().await {
-            let next_state = next_session_state(self.state, &ev);
-            let mut advance_state = true;
-            match (self.state, ev) {
-                (SessState::Idle, SessionIn::SipInvite { offer, session_timer, .. }) => {
-                    self.peer_sdp = Some(offer);
-                    if let Some(timer) = session_timer {
-                        self.update_session_expires(timer);
+        let mut playback_tick = interval(PLAYBACK_FRAME_INTERVAL);
+        playback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                _ = playback_tick.tick() => {
+                    if self.playback.is_some() {
+                        self.step_playback();
                     }
-                    let answer = self.build_answer_pcmu8k();
-                    self.local_sdp = Some(answer.clone());
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::SipSend100));
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::SipSend180));
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
                 }
-                (SessState::Early, SessionIn::SipAck) => {
-                    // 相手SDPからRTP宛先を確定して送信開始
-                    if self.intro_sent {
-                        advance_state = false;
-                    }
-                    if !advance_state {
-                        continue;
-                    }
-                    self.started_at = Some(Instant::now());
-                    self.started_wall = Some(std::time::SystemTime::now());
-                    if let Err(e) = self.recorder.start() {
-                        warn!(
-                            "[session {}] failed to start recorder: {:?}",
-                            self.call_id, e
-                        );
-                    }
-
-                    let (ip, port) = self.peer_rtp_dst();
-                    let dst_addr = match format!("{ip}:{port}").parse() {
-                        Ok(a) => Some(a),
-                        Err(e) => {
-                            warn!(
-                                "[session {}] invalid RTP destination {}:{} ({:?})",
-                                self.call_id, ip, port, e
-                            );
-                            advance_state = false;
-                            None
+                maybe_ev = rx.recv() => {
+                    let Some(ev) = maybe_ev else { break; };
+                    let next_state = next_session_state(self.state, &ev);
+                    let mut advance_state = true;
+                    match (self.state, ev) {
+                        (SessState::Idle, SessionIn::SipInvite { offer, session_timer, .. }) => {
+                            self.peer_sdp = Some(offer);
+                            if let Some(timer) = session_timer {
+                                self.update_session_expires(timer);
+                            }
+                            let answer = self.build_answer_pcmu8k();
+                            self.local_sdp = Some(answer.clone());
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::SipSend100));
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::SipSend180));
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
                         }
-                    };
-                    let Some(dst_addr) = dst_addr else {
-                        continue;
-                    };
+                        (SessState::Early, SessionIn::SipAck) => {
+                            // 相手SDPからRTP宛先を確定して送信開始
+                            if self.intro_sent {
+                                advance_state = false;
+                            }
+                            if !advance_state {
+                                continue;
+                            }
+                            self.started_at = Some(Instant::now());
+                            self.started_wall = Some(std::time::SystemTime::now());
+                            if let Err(e) = self.recorder.start() {
+                                warn!(
+                                    "[session {}] failed to start recorder: {:?}",
+                                    self.call_id, e
+                                );
+                            }
 
-                    // rtp側でソケットを持つように変更
-                    // RTP送信開始（rtp 側で Seq/TS/SSRC を管理）
-                    self.rtp_tx
-                        .start(self.call_id.clone(), dst_addr, 0, 0x12345678, 0, 0);
+                            let (ip, port) = self.peer_rtp_dst();
+                            let dst_addr = match format!("{ip}:{port}").parse() {
+                                Ok(a) => Some(a),
+                                Err(e) => {
+                                    warn!(
+                                        "[session {}] invalid RTP destination {}:{} ({:?})",
+                                        self.call_id, ip, port, e
+                                    );
+                                    advance_state = false;
+                                    None
+                                }
+                            };
+                            let Some(dst_addr) = dst_addr else {
+                                continue;
+                            };
 
-                    let _ = self.session_out_tx.send((
-                        self.call_id.clone(),
-                        SessionOut::RtpStartTx {
-                            dst_ip: ip.clone(),
-                            dst_port: port,
-                            pt: 0,
-                        },
-                    )); // PCMU
-                    self.capture.reset();
-                    self.intro_sent = true;
+                            // rtp側でソケットを持つように変更
+                            // RTP送信開始（rtp 側で Seq/TS/SSRC を管理）
+                            self.rtp_tx
+                                .start(self.call_id.clone(), dst_addr, 0, 0x12345678, 0, 0);
 
-                    self.align_rtp_clock();
+                            let _ = self.session_out_tx.send((
+                                self.call_id.clone(),
+                                SessionOut::RtpStartTx {
+                                    dst_ip: ip.clone(),
+                                    dst_port: port,
+                                    pt: 0,
+                                },
+                            )); // PCMU
+                            self.capture.reset();
+                            self.intro_sent = true;
 
-                    let _ = self.app_tx.send(AppEvent::CallStarted {
-                        call_id: self.call_id.clone(),
-                    });
+                            self.align_rtp_clock();
+
+                            let _ = self.app_tx.send(AppEvent::CallStarted {
+                                call_id: self.call_id.clone(),
+                            });
 
                     self.ivr_state = IvrState::IvrMenuWaiting;
-                    match self.play_audio(IVR_INTRO_WAV_PATH).await {
-                        Ok(()) => {
-                            info!(
-                                "[session {}] sent IVR intro wav {}",
-                                self.call_id, IVR_INTRO_WAV_PATH
-                            );
-                        }
-                        Err(e) => {
-                            warn!(
-                                "[session {}] failed to send IVR intro wav: {:?}",
-                                self.call_id, e
-                            );
-                        }
-                    }
-                    self.reset_ivr_timeout();
-
-                    self.start_keepalive_timer();
-                    self.start_session_timer_if_needed();
-                }
-                (SessState::Established, SessionIn::MediaRtpIn { payload, .. }) => {
-                    debug!(
-                        "[session {}] RTP payload received len={}",
-                        self.call_id,
-                        payload.len()
-                    );
-                    self.recorder.push_rx_mulaw(&payload);
-                    if self.ivr_state == IvrState::VoicebotMode {
-                        if let Some(buffer) = self.capture.ingest(&payload) {
-                            info!(
-                                "[session {}] buffered audio ready for app ({} bytes)",
-                                self.call_id,
-                                buffer.len()
-                            );
-                            let _ = self.app_tx.send(AppEvent::AudioBuffered {
-                                call_id: self.call_id.clone(),
-                                pcm_mulaw: buffer,
-                            });
-                            self.capture.start();
-                        }
-                    }
-                    let _ = self.session_out_tx.send((
-                        self.call_id.clone(),
-                        SessionOut::Metrics {
-                            name: "rtp_in",
-                            value: payload.len() as i64,
-                        },
-                    ));
-                }
-                (SessState::Established, SessionIn::Dtmf { digit }) => {
-                    info!("[session {}] DTMF received: '{}'", self.call_id, digit);
-                    if self.ivr_state != IvrState::IvrMenuWaiting {
-                        debug!(
-                            "[session {}] ignoring DTMF in {:?}",
-                            self.call_id, self.ivr_state
+                    if let Err(e) = self.start_playback(&[IVR_INTRO_WAV_PATH]) {
+                        warn!(
+                            "[session {}] failed to send IVR intro wav: {:?}",
+                            self.call_id, e
                         );
-                        continue;
+                        self.reset_ivr_timeout();
+                    } else {
+                        info!(
+                            "[session {}] sent IVR intro wav {}",
+                            self.call_id, IVR_INTRO_WAV_PATH
+                        );
                     }
+
+                            self.start_keepalive_timer();
+                            self.start_session_timer_if_needed();
+                        }
+                        (SessState::Established, SessionIn::MediaRtpIn { payload, .. }) => {
+                            debug!(
+                                "[session {}] RTP payload received len={}",
+                                self.call_id,
+                                payload.len()
+                            );
+                            self.recorder.push_rx_mulaw(&payload);
+                            if self.ivr_state == IvrState::VoicebotMode {
+                                if let Some(buffer) = self.capture.ingest(&payload) {
+                                    info!(
+                                        "[session {}] buffered audio ready for app ({} bytes)",
+                                        self.call_id,
+                                        buffer.len()
+                                    );
+                                    let _ = self.app_tx.send(AppEvent::AudioBuffered {
+                                        call_id: self.call_id.clone(),
+                                        pcm_mulaw: buffer,
+                                    });
+                                    self.capture.start();
+                                }
+                            }
+                            let _ = self.session_out_tx.send((
+                                self.call_id.clone(),
+                                SessionOut::Metrics {
+                                    name: "rtp_in",
+                                    value: payload.len() as i64,
+                                },
+                            ));
+                        }
+                        (SessState::Established, SessionIn::Dtmf { digit }) => {
+                            info!("[session {}] DTMF received: '{}'", self.call_id, digit);
+                            if self.ivr_state != IvrState::IvrMenuWaiting {
+                                debug!(
+                                    "[session {}] ignoring DTMF in {:?}",
+                                    self.call_id, self.ivr_state
+                                );
+                                continue;
+                            }
+                    self.cancel_playback();
                     self.stop_ivr_timeout();
                     let action = ivr_action_for_digit(digit);
                     match action {
                         IvrAction::EnterVoicebot => {
                             info!("[session {}] switching to voicebot mode", self.call_id);
                             self.ivr_state = ivr_state_after_action(self.ivr_state, action);
-                            self.capture.reset();
-                            self.capture.start();
-                        }
+                                    self.capture.reset();
+                                    self.capture.start();
+                                }
                         IvrAction::PlaySendai => {
                             info!("[session {}] playing sendai info", self.call_id);
-                            if let Err(e) = self.play_audio(IVR_SENDAI_WAV_PATH).await {
+                            if let Err(e) = self.start_playback(&[
+                                IVR_SENDAI_WAV_PATH,
+                                IVR_INTRO_AGAIN_WAV_PATH,
+                            ]) {
                                 warn!(
-                                    "[session {}] failed to play sendai wav: {:?}",
+                                    "[session {}] failed to play sendai flow: {:?}",
                                     self.call_id, e
                                 );
+                                self.reset_ivr_timeout();
                             }
-                            if let Err(e) = self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await {
-                                warn!(
-                                    "[session {}] failed to replay IVR menu: {:?}",
-                                    self.call_id, e
-                                );
-                            }
-                            self.reset_ivr_timeout();
                         }
                         IvrAction::ReplayMenu => {
                             info!("[session {}] replaying IVR menu", self.call_id);
-                            if let Err(e) = self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await {
+                            if let Err(e) = self.start_playback(&[IVR_INTRO_AGAIN_WAV_PATH]) {
                                 warn!(
                                     "[session {}] failed to replay IVR menu: {:?}",
                                     self.call_id, e
                                 );
+                                self.reset_ivr_timeout();
                             }
-                            self.reset_ivr_timeout();
                         }
                         IvrAction::Invalid => {
                             info!("[session {}] invalid DTMF: '{}'", self.call_id, digit);
-                            if let Err(e) = self.play_audio(IVR_INVALID_WAV_PATH).await {
+                            if let Err(e) = self.start_playback(&[
+                                IVR_INVALID_WAV_PATH,
+                                IVR_INTRO_AGAIN_WAV_PATH,
+                            ]) {
                                 warn!(
-                                    "[session {}] failed to play invalid wav: {:?}",
+                                    "[session {}] failed to play invalid flow: {:?}",
                                     self.call_id, e
                                 );
+                                self.reset_ivr_timeout();
                             }
-                            if let Err(e) = self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await {
-                                warn!(
-                                    "[session {}] failed to replay IVR menu: {:?}",
-                                    self.call_id, e
-                                );
-                            }
-                            self.reset_ivr_timeout();
                         }
                     }
                 }
-                (SessState::Established, SessionIn::SipReInvite { session_timer, .. }) => {
-                    if let Some(timer) = session_timer {
-                        self.update_session_expires(timer);
-                    }
-                    let answer = match self.local_sdp.clone() {
-                        Some(answer) => answer,
-                        None => {
-                            let answer = self.build_answer_pcmu8k();
-                            self.local_sdp = Some(answer.clone());
-                            answer
+                        (SessState::Established, SessionIn::SipReInvite { session_timer, .. }) => {
+                            if let Some(timer) = session_timer {
+                                self.update_session_expires(timer);
+                            }
+                            let answer = match self.local_sdp.clone() {
+                                Some(answer) => answer,
+                                None => {
+                                    let answer = self.build_answer_pcmu8k();
+                                    self.local_sdp = Some(answer.clone());
+                                    answer
+                                }
+                            };
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
                         }
-                    };
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
-                }
-                (SessState::Established, SessionIn::MediaTimerTick) => {
-                    if let Err(e) = self.send_silence_frame().await {
-                        warn!("[session {}] silence send failed: {:?}", self.call_id, e);
-                    }
-                }
-                (_, SessionIn::SipBye) => {
-                    self.stop_keepalive_timer();
-                    self.stop_session_timer();
-                    self.stop_ivr_timeout();
-                    if let Err(e) = self.recorder.stop() {
-                        warn!(
-                            "[session {}] failed to finalize recording: {:?}",
-                            self.call_id, e
-                        );
-                    }
-                    self.send_ingest("ended").await;
-                    self.rtp_tx.stop(&self.call_id);
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::RtpStopTx));
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::SipSendBye200));
-                    let _ = self.app_tx.send(AppEvent::CallEnded {
-                        call_id: self.call_id.clone(),
-                    });
-                }
-                (_, SessionIn::SipTransactionTimeout { call_id: _ }) => {
-                    warn!("[session {}] transaction timeout notified", self.call_id);
-                }
-                (SessState::Established, SessionIn::AppBotAudioFile { path }) => {
-                    if let Err(e) = self.play_audio(&path).await {
-                        warn!(
-                            "[session {}] failed to send app audio: {:?}",
-                            self.call_id, e
-                        );
-                    }
-                }
-                (_, SessionIn::AppHangup) => {
-                    warn!("[session {}] app requested hangup", self.call_id);
-                    self.stop_keepalive_timer();
-                    self.stop_session_timer();
-                    self.stop_ivr_timeout();
-                    if let Err(e) = self.recorder.stop() {
-                        warn!(
-                            "[session {}] failed to finalize recording: {:?}",
-                            self.call_id, e
-                        );
-                    }
-                    self.send_ingest("ended").await;
-                    self.rtp_tx.stop(&self.call_id);
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::RtpStopTx));
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::SipSendBye200));
-                    let _ = self.app_tx.send(AppEvent::CallEnded {
-                        call_id: self.call_id.clone(),
-                    });
-                }
-                (_, SessionIn::SipSessionExpires { timer }) => {
-                    self.update_session_expires(timer);
-                }
+                        (SessState::Established, SessionIn::MediaTimerTick) => {
+                            if let Err(e) = self.send_silence_frame().await {
+                                warn!("[session {}] silence send failed: {:?}", self.call_id, e);
+                            }
+                        }
+                        (_, SessionIn::SipBye) => {
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            self.rtp_tx.stop(&self.call_id);
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::SipSendBye200));
+                            if let Err(e) = self.recorder.stop() {
+                                warn!(
+                                    "[session {}] failed to finalize recording: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            self.send_ingest("ended").await;
+                            let _ = self.app_tx.send(AppEvent::CallEnded {
+                                call_id: self.call_id.clone(),
+                            });
+                        }
+                        (_, SessionIn::SipTransactionTimeout { call_id: _ }) => {
+                            warn!("[session {}] transaction timeout notified", self.call_id);
+                        }
+                        (SessState::Established, SessionIn::AppBotAudioFile { path }) => {
+                            if let Err(e) = self.start_playback(&[path.as_str()]) {
+                                warn!(
+                                    "[session {}] failed to send app audio: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                        }
+                        (_, SessionIn::AppHangup) => {
+                            warn!("[session {}] app requested hangup", self.call_id);
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            if let Err(e) = self.recorder.stop() {
+                                warn!(
+                                    "[session {}] failed to finalize recording: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            self.send_ingest("ended").await;
+                            self.rtp_tx.stop(&self.call_id);
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::SipSendBye200));
+                            let _ = self.app_tx.send(AppEvent::CallEnded {
+                                call_id: self.call_id.clone(),
+                            });
+                        }
+                        (_, SessionIn::SipSessionExpires { timer }) => {
+                            self.update_session_expires(timer);
+                        }
                 (_, SessionIn::IvrTimeout) => {
                     if self.ivr_state == IvrState::IvrMenuWaiting {
                         info!(
@@ -444,75 +458,79 @@ impl Session {
                             self.call_id
                         );
                         self.stop_ivr_timeout();
-                        if let Err(e) = self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await {
+                        if let Err(e) = self.start_playback(&[IVR_INTRO_AGAIN_WAV_PATH]) {
                             warn!(
                                 "[session {}] failed to replay IVR menu: {:?}",
                                 self.call_id, e
                             );
+                            self.reset_ivr_timeout();
                         }
-                        self.reset_ivr_timeout();
                     }
                 }
-                (_, SessionIn::SessionRefreshDue) => {
-                    if let (Some(expires), Some(SessionRefresher::Uas)) =
-                        (self.session_expires, self.session_refresher)
-                    {
-                        let _ = self.session_out_tx.send((
-                            self.call_id.clone(),
-                            SessionOut::SipSendUpdate { expires },
-                        ));
-                        self.update_session_expires(SessionTimerInfo {
-                            expires,
-                            refresher: SessionRefresher::Uas,
-                        });
+                        (_, SessionIn::SessionRefreshDue) => {
+                            if let (Some(expires), Some(SessionRefresher::Uas)) =
+                                (self.session_expires, self.session_refresher)
+                            {
+                                let _ = self.session_out_tx.send((
+                                    self.call_id.clone(),
+                                    SessionOut::SipSendUpdate { expires },
+                                ));
+                                self.update_session_expires(SessionTimerInfo {
+                                    expires,
+                                    refresher: SessionRefresher::Uas,
+                                });
+                            }
+                        }
+                        (_, SessionIn::SessionTimerFired) => {
+                            warn!("[session {}] session timer fired", self.call_id);
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            if let Err(e) = self.recorder.stop() {
+                                warn!(
+                                    "[session {}] failed to finalize recording: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            self.send_ingest("ended").await;
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::AppSessionTimeout));
+                            let _ = self.app_tx.send(AppEvent::CallEnded {
+                                call_id: self.call_id.clone(),
+                            });
+                        }
+                        (_, SessionIn::Abort(e)) => {
+                            warn!("call {} abort: {e:?}", self.call_id);
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            if let Err(e) = self.recorder.stop() {
+                                warn!(
+                                    "[session {}] failed to finalize recording: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            self.send_ingest("failed").await;
+                            self.rtp_tx.stop(&self.call_id);
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            let _ = self.app_tx.send(AppEvent::CallEnded {
+                                call_id: self.call_id.clone(),
+                            });
+                        }
+                        _ => { /* それ以外は無視 or ログ */ }
+                    }
+                    if advance_state {
+                        self.state = next_state;
                     }
                 }
-                (_, SessionIn::SessionTimerFired) => {
-                    warn!("[session {}] session timer fired", self.call_id);
-                    self.stop_keepalive_timer();
-                    self.stop_session_timer();
-                    self.stop_ivr_timeout();
-                    if let Err(e) = self.recorder.stop() {
-                        warn!(
-                            "[session {}] failed to finalize recording: {:?}",
-                            self.call_id, e
-                        );
-                    }
-                    self.send_ingest("ended").await;
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::RtpStopTx));
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::AppSessionTimeout));
-                    let _ = self.app_tx.send(AppEvent::CallEnded {
-                        call_id: self.call_id.clone(),
-                    });
-                }
-                (_, SessionIn::Abort(e)) => {
-                    warn!("call {} abort: {e:?}", self.call_id);
-                    self.stop_keepalive_timer();
-                    self.stop_session_timer();
-                    self.stop_ivr_timeout();
-                    if let Err(e) = self.recorder.stop() {
-                        warn!(
-                            "[session {}] failed to finalize recording: {:?}",
-                            self.call_id, e
-                        );
-                    }
-                    self.send_ingest("failed").await;
-                    self.rtp_tx.stop(&self.call_id);
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::RtpStopTx));
-                    let _ = self.app_tx.send(AppEvent::CallEnded {
-                        call_id: self.call_id.clone(),
-                    });
-                }
-                _ => { /* それ以外は無視 or ログ */ }
-            }
-            if advance_state {
-                self.state = next_state;
             }
         }
         if let Err(e) = self.recorder.stop() {
@@ -626,26 +644,59 @@ impl Session {
         format!("{}:{}", peer.ip, peer.port).parse().ok()
     }
 
-    async fn play_audio(&mut self, path: &str) -> Result<(), Error> {
-        let Some(dst) = self.peer_rtp_addr() else {
+    fn start_playback(&mut self, paths: &[&str]) -> Result<(), Error> {
+        let Some(_dst) = self.peer_rtp_addr() else {
             return Ok(());
         };
+        self.cancel_playback();
+        self.stop_ivr_timeout();
+        let mut frames = Vec::new();
+        for path in paths {
+            let mut loaded = self.storage_port.load_wav_as_pcmu_frames(path)?;
+            frames.append(&mut loaded);
+        }
+        if frames.is_empty() {
+            anyhow::bail!("no frames");
+        }
         self.align_rtp_clock();
         self.sending_audio = true;
-        let result = send_wav_as_rtp_pcmu(
-            path,
-            dst,
-            &self.rtp_tx,
-            &self.call_id,
-            &mut self.recorder,
-            self.storage_port.as_ref(),
-        )
-        .await;
-        if result.is_ok() {
-            self.rtp_last_sent = Some(Instant::now());
+        self.playback = Some(PlaybackState { frames, index: 0 });
+        Ok(())
+    }
+
+    fn step_playback(&mut self) {
+        let Some(mut state) = self.playback.take() else {
+            return;
+        };
+        if state.index >= state.frames.len() {
+            self.finish_playback(true);
+            return;
         }
+        let frame = state.frames[state.index].clone();
+        state.index += 1;
+        self.recorder.push_tx_mulaw(&frame);
+        self.rtp_tx.send_payload(&self.call_id, frame);
+        self.rtp_last_sent = Some(Instant::now());
+        if state.index < state.frames.len() {
+            self.playback = Some(state);
+        } else {
+            self.finish_playback(true);
+        }
+    }
+
+    fn finish_playback(&mut self, restart_ivr_timeout: bool) {
+        self.playback = None;
         self.sending_audio = false;
-        result
+        if restart_ivr_timeout && self.ivr_state == IvrState::IvrMenuWaiting {
+            self.reset_ivr_timeout();
+        }
+    }
+
+    fn cancel_playback(&mut self) {
+        if self.playback.is_some() {
+            info!("[session {}] playback cancelled", self.call_id);
+        }
+        self.finish_playback(false);
     }
 
     async fn send_silence_frame(&mut self) -> Result<(), Error> {
@@ -710,37 +761,6 @@ impl Session {
     }
 }
 
-async fn send_wav_as_rtp_pcmu(
-    wav_path: &str,
-    dst: SocketAddr,
-    tx: &RtpTxHandle,
-    key: &str,
-    recorder: &mut Recorder,
-    storage_port: &dyn StoragePort,
-) -> Result<(), Error> {
-    use tokio::time::sleep;
-
-    let frames = storage_port.load_wav_as_pcmu_frames(wav_path)?;
-    if frames.is_empty() {
-        anyhow::bail!("no frames");
-    }
-
-    log::info!(
-        "[rtp tx] sending {} frames ({} samples) to {}",
-        frames.len(),
-        frames.len() * 160,
-        dst
-    );
-
-    for frame in frames {
-        // 送信音声も録音に含めて mixed を作る（キープアライブの無音は別扱い）
-        recorder.push_tx_mulaw(&frame);
-        tx.send_payload(key, frame);
-        sleep(Duration::from_millis(20)).await;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -773,5 +793,74 @@ mod tests {
             ivr_state_after_action(IvrState::IvrMenuWaiting, IvrAction::ReplayMenu),
             IvrState::IvrMenuWaiting
         );
+    }
+
+    struct DummyIngestPort;
+
+    impl IngestPort for DummyIngestPort {
+        fn post(
+            &self,
+            _url: String,
+            _payload: serde_json::Value,
+        ) -> crate::http::ingest::IngestFuture<anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct DummyStoragePort;
+
+    impl StoragePort for DummyStoragePort {
+        fn load_wav_as_pcmu_frames(&self, _path: &str) -> anyhow::Result<Vec<Vec<u8>>> {
+            Ok(vec![vec![0xFF; 160]])
+        }
+    }
+
+    fn build_test_session(storage_port: Arc<dyn StoragePort>) -> Session {
+        let (session_out_tx, _session_out_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (app_tx, _app_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_in, _rx_in) = tokio::sync::mpsc::unbounded_channel();
+        Session {
+            state: SessState::Idle,
+            call_id: "test-call".to_string(),
+            from_uri: "sip:from@example.com".to_string(),
+            to_uri: "sip:to@example.com".to_string(),
+            ingest_url: None,
+            recording_base_url: None,
+            ingest_sent: false,
+            ingest_port: Arc::new(DummyIngestPort),
+            storage_port,
+            peer_sdp: Some(Sdp::pcmu("127.0.0.1", 10000)),
+            local_sdp: None,
+            session_out_tx,
+            tx_in,
+            app_tx,
+            media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
+            rtp_tx: RtpTxHandle::new(),
+            recorder: Recorder::new("test-call"),
+            started_at: None,
+            started_wall: None,
+            rtp_last_sent: None,
+            timers: SessionTimers::new(Duration::from_secs(0)),
+            sending_audio: false,
+            playback: None,
+            speaking: false,
+            capture: AudioCapture::new(config::vad_config().clone()),
+            intro_sent: false,
+            ivr_state: IvrState::default(),
+            ivr_timeout_stop: None,
+            session_expires: None,
+            session_refresher: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_playback_clears_state() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        session.start_playback(&["dummy.wav"]).unwrap();
+        assert!(session.playback.is_some());
+        assert!(session.sending_audio);
+        session.cancel_playback();
+        assert!(session.playback.is_none());
+        assert!(!session.sending_audio);
     }
 }

@@ -8,9 +8,9 @@
 |------|-----|
 | **Status** | Active |
 | **Owner** | TBD |
-| **Last Updated** | 2026-01-19 |
+| **Last Updated** | 2026-01-20 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26) |
 
 ---
 
@@ -48,7 +48,8 @@
 | [Step-20](#step-20-llm-会話履歴ロール分離-issue-21) | LLM 会話履歴ロール分離 (Issue #21) | - | 未着手 |
 | [Step-21](#step-21-時間帯別イントロ-issue-22) | 時間帯別イントロ (Issue #22) | - | 未着手 |
 | [Step-22](#step-22-ハルシネーション時謝罪音声-issue-23) | ハルシネーション時謝罪音声 (Issue #23) | → Step-20 | 未着手 |
-| [Step-23](#step-23-ivr-メニュー機能-issue-25) | IVR メニュー機能 (Issue #25) | → Step-02 | 未着手 |
+| [Step-23](#step-23-ivr-メニュー機能-issue-25) | IVR メニュー機能 (Issue #25) | → Step-02 | 完了 |
+| [Step-24](#step-24-bye-即時応答音声再生キャンセル-issue-26) | BYE 即時応答・音声再生キャンセル (Issue #26) | - | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -1923,6 +1924,180 @@ cargo test session::
 
 ---
 
+## Step-24: BYE 即時応答・音声再生キャンセル (Issue #26)
+
+**目的**: 音声再生中に BYE を受信した場合、即時に 200 OK を返し、再生をキャンセルしてセッションを正常終了する
+
+**関連**: [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26)
+
+### 背景
+
+現在の実装では、音声再生（`play_audio` / `send_wav_as_rtp_pcmu`）がセッションループをブロックするため、再生中に BYE を受信しても処理されない。結果として:
+
+1. 200 OK が返らない
+2. UAC が BYE を再送し続ける
+3. TransactionTimeout が発生する
+
+```
+[問題のシーケンス]
+
+Session::run ──► play_audio().await ──► send_wav_as_rtp_pcmu ──► sleep(20ms) × N
+     │                                       ↑
+     │                                  ブロッキング（数秒〜数十秒）
+     │
+     └──► SessionIn::SipBye がキューに溜まる
+          → 再生完了まで処理されない
+          → 200 OK が遅延
+          → BYE 再送・タイムアウト
+```
+
+### 技術アプローチ
+
+#### 問題1: BYE 受信時の即時応答
+
+音声再生をキャンセル可能にし、BYE 受信時に即座に中断して 200 OK を返す。
+→ **実装済み**: `cancel_playback()` + `PlaybackState` によるステートベース再生
+
+#### 問題2: 再生ティックが潰れる（プツプツ音声）
+
+`tokio::select!` で毎ループ `sleep(20ms)` を作り直すと、RTP 受信が連続した場合に sleep が満了せず再生フレームが送出されない。
+
+```
+[問題]
+tokio::select! {
+    ev = rx.recv() => { ... }                           // RTP が来るたびにこちらが発火
+    _ = sleep(20ms), if playback.is_some() => { ... }   // ← 毎回リセットされて満了しない
+}
+→ 再生フレームが間引かれて「プツプツ」
+```
+
+**修正**: `tokio::time::interval` をループ外で作成し、`biased;` で再生ティック優先。
+
+```rust
+[改善後]
+let mut playback_tick = tokio::time::interval(Duration::from_millis(20));
+playback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+loop {
+    tokio::select! {
+        biased;  // 再生ティック優先
+        _ = playback_tick.tick(), if self.playback.is_some() => {
+            self.step_playback();
+        }
+        maybe_ev = rx.recv() => { ... }
+    }
+}
+```
+
+### DoD (Definition of Done)
+
+#### 音声再生のキャンセル機構（実装済み）
+- [x] `PlaybackState` による再生状態管理
+- [x] `cancel_playback()` による即時キャンセル
+- [x] BYE/AppHangup/SessionTimerFired/Abort 時にキャンセル呼び出し
+
+#### 再生ティック安定化（未対応）
+- [ ] `tokio::time::interval` をループ外で作成
+- [ ] `biased;` で再生ティック優先
+- [ ] `MissedTickBehavior::Skip` で遅延蓄積を防止
+
+#### 検証
+- [ ] E2E 検証（再生中に BYE を送信し、即座に 200 OK が返ることを確認）
+- [ ] E2E 検証（音声が途切れずに再生されることを確認）
+- [ ] TransactionTimeout が発生しないことを確認
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/session/session.rs` | `interval` ベースの再生ティック、`biased` 優先 |
+
+### 変更上限
+
+- **行数**: <=50行
+- **ファイル数**: <=1
+
+### 実装案（interval ベース - 推奨）
+
+```rust
+// src/session/session.rs
+
+use tokio::time::{interval, Duration, MissedTickBehavior};
+
+async fn run(&mut self, mut rx: UnboundedReceiver<SessionIn>) {
+    // ループ外で interval を作成（再生中のみ tick が有効）
+    let mut playback_tick = interval(Duration::from_millis(20));
+    playback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            biased;  // 再生ティック優先（RTP 受信に潰されない）
+
+            // 再生中のみ tick を処理
+            _ = playback_tick.tick(), if self.playback.is_some() => {
+                self.step_playback();
+            }
+
+            // イベント処理
+            maybe_ev = rx.recv() => {
+                let Some(ev) = maybe_ev else { break; };
+                // ... 既存のイベント処理 ...
+            }
+        }
+    }
+}
+```
+
+### ポイント
+
+| 項目 | 説明 |
+|------|------|
+| `biased;` | select 内で上から順に評価し、再生ティックを優先 |
+| `MissedTickBehavior::Skip` | 遅延した tick をスキップし、蓄積を防止 |
+| `if self.playback.is_some()` | 再生中のみ tick を有効化 |
+
+### シーケンス
+
+#### 改善後: BYE 即時応答
+
+```
+UAC                     SIP Layer                  Session
+  |                         |                          |
+  |                         |                          | [再生中]
+  |--- BYE ---------------->|                          |
+  |                         |--- SessionIn::SipBye --->|
+  |                         |                          | cancel_playback()
+  |                         |                          | [再生中断]
+  |                         |                          |
+  |                         |<-- SipSendBye200 --------|
+  |<-- 200 OK --------------|                          |
+  |                         |                          | [セッション終了処理]
+  |                         |                          | recorder.stop()
+  |                         |                          | send_ingest()
+  |                         |                          | CallEnded
+```
+
+### 検証方法
+
+```bash
+cargo test session::
+# E2E: 再生中に BYE を送信
+# 1. 通話開始 → IVR イントロ再生中に BYE 送信
+# 2. 即座に 200 OK が返ることを確認
+# 3. TransactionTimeout が発生しないことを確認
+# 4. ログで "playback cancelled" が出力されることを確認
+```
+
+### リスク/ロールバック観点
+
+| リスク | 対策 |
+|--------|------|
+| `biased;` による RTP 処理遅延 | 再生フレームは 20ms 毎に 1 フレームのみ、RTP 処理への影響は軽微 |
+| interval の遅延蓄積 | `MissedTickBehavior::Skip` で古い tick を破棄 |
+| 再生中断時の RTP タイムスタンプずれ | `align_rtp_clock()` で吸収（既存実装と同様） |
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -1939,6 +2114,8 @@ cargo test session::
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-20 | 2.7 | Step-24 更新: interval ベースの再生ティック安定化、プツプツ音声問題の修正方針追加 |
+| 2026-01-20 | 2.6 | Issue #26 統合: Step-24（BYE 即時応答・音声再生キャンセル）追加、Step-23 状態を完了に更新 |
 | 2026-01-19 | 2.5 | Issue #25 統合: Step-23（IVR メニュー機能）追加、Step-02 状態を完了に更新 |
 | 2026-01-19 | 2.4 | Issue #24 統合: Step-02（DTMF トーン検出 Goertzel）に Issue リンク追加 |
 | 2026-01-18 | 2.3 | Issue #23 統合: Step-22（ハルシネーション時謝罪音声）追加 |
