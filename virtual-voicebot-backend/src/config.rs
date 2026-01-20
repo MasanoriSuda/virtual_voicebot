@@ -299,6 +299,12 @@ pub fn rtp_config() -> &'static RtpConfig {
     RTP_CONFIG.get_or_init(RtpConfig::from_env)
 }
 
+static IVR_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+pub fn ivr_timeout() -> Duration {
+    *IVR_TIMEOUT.get_or_init(|| Duration::from_secs(env_u64("IVR_TIMEOUT_SEC", 10)))
+}
+
 fn env_duration_ms(key: &str, default_ms: u64) -> Duration {
     let ms = std::env::var(key)
         .ok()

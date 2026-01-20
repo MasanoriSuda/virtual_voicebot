@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use chrono::{Local, Timelike};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
 use tokio::time::{Duration, Instant};
 
 use crate::session::types::Sdp;
@@ -31,6 +32,14 @@ const INTRO_AFTERNOON_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_afternoon.wav");
 const INTRO_EVENING_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_evening.wav");
+const IVR_INTRO_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr.wav");
+const IVR_INTRO_AGAIN_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr_again.wav");
+const IVR_SENDAI_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sendai.wav");
+const IVR_INVALID_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_invalid.wav");
 
 fn intro_wav_path_for_hour(hour: u32) -> &'static str {
     match hour {
@@ -48,6 +57,30 @@ fn get_intro_wav_path() -> &'static str {
 #[derive(Clone)]
 pub struct SessionHandle {
     pub tx_in: UnboundedSender<SessionIn>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IvrAction {
+    EnterVoicebot,
+    PlaySendai,
+    ReplayMenu,
+    Invalid,
+}
+
+fn ivr_action_for_digit(digit: char) -> IvrAction {
+    match digit {
+        '1' => IvrAction::EnterVoicebot,
+        '2' => IvrAction::PlaySendai,
+        '9' => IvrAction::ReplayMenu,
+        _ => IvrAction::Invalid,
+    }
+}
+
+fn ivr_state_after_action(state: IvrState, action: IvrAction) -> IvrState {
+    match (state, action) {
+        (IvrState::IvrMenuWaiting, IvrAction::EnterVoicebot) => IvrState::VoicebotMode,
+        _ => state,
+    }
 }
 
 pub struct Session {
@@ -77,6 +110,8 @@ pub struct Session {
     speaking: bool,
     capture: AudioCapture,
     intro_sent: bool,
+    ivr_state: IvrState,
+    ivr_timeout_stop: Option<oneshot::Sender<()>>,
     session_expires: Option<Duration>,
     session_refresher: Option<SessionRefresher>,
 }
@@ -123,6 +158,8 @@ impl Session {
             speaking: false,
             capture: AudioCapture::new(config::vad_config().clone()),
             intro_sent: false,
+            ivr_state: IvrState::default(),
+            ivr_timeout_stop: None,
             session_expires: None,
             session_refresher: None,
         };
@@ -209,39 +246,22 @@ impl Session {
                         call_id: self.call_id.clone(),
                     });
 
-                    self.sending_audio = true;
-                    let intro_wav_path = get_intro_wav_path();
-                    match send_wav_as_rtp_pcmu(
-                        intro_wav_path,
-                        dst_addr,
-                        &self.rtp_tx,
-                        &self.call_id,
-                        &mut self.recorder,
-                        self.storage_port.as_ref(),
-                    )
-                    .await
-                    {
+                    self.ivr_state = IvrState::IvrMenuWaiting;
+                    match self.play_audio(IVR_INTRO_WAV_PATH).await {
                         Ok(()) => {
-                            self.rtp_last_sent = Some(Instant::now());
                             info!(
-                                "[session {}] sent intro wav {}",
-                                self.call_id, intro_wav_path
+                                "[session {}] sent IVR intro wav {}",
+                                self.call_id, IVR_INTRO_WAV_PATH
                             );
                         }
                         Err(e) => {
                             warn!(
-                                "[session {}] failed to send intro wav: {:?}",
+                                "[session {}] failed to send IVR intro wav: {:?}",
                                 self.call_id, e
                             );
                         }
                     }
-                    self.sending_audio = false;
-
-                    self.capture.start();
-                    info!(
-                        "[session {}] capture window started after intro playback",
-                        self.call_id
-                    );
+                    self.reset_ivr_timeout();
 
                     self.start_keepalive_timer();
                     self.start_session_timer_if_needed();
@@ -253,17 +273,19 @@ impl Session {
                         payload.len()
                     );
                     self.recorder.push_rx_mulaw(&payload);
-                    if let Some(buffer) = self.capture.ingest(&payload) {
-                        info!(
-                            "[session {}] buffered audio ready for app ({} bytes)",
-                            self.call_id,
-                            buffer.len()
-                        );
-                        let _ = self.app_tx.send(AppEvent::AudioBuffered {
-                            call_id: self.call_id.clone(),
-                            pcm_mulaw: buffer,
-                        });
-                        self.capture.start();
+                    if self.ivr_state == IvrState::VoicebotMode {
+                        if let Some(buffer) = self.capture.ingest(&payload) {
+                            info!(
+                                "[session {}] buffered audio ready for app ({} bytes)",
+                                self.call_id,
+                                buffer.len()
+                            );
+                            let _ = self.app_tx.send(AppEvent::AudioBuffered {
+                                call_id: self.call_id.clone(),
+                                pcm_mulaw: buffer,
+                            });
+                            self.capture.start();
+                        }
                     }
                     let _ = self.session_out_tx.send((
                         self.call_id.clone(),
@@ -272,6 +294,68 @@ impl Session {
                             value: payload.len() as i64,
                         },
                     ));
+                }
+                (SessState::Established, SessionIn::Dtmf { digit }) => {
+                    info!("[session {}] DTMF received: '{}'", self.call_id, digit);
+                    if self.ivr_state != IvrState::IvrMenuWaiting {
+                        debug!(
+                            "[session {}] ignoring DTMF in {:?}",
+                            self.call_id, self.ivr_state
+                        );
+                        continue;
+                    }
+                    self.stop_ivr_timeout();
+                    let action = ivr_action_for_digit(digit);
+                    match action {
+                        IvrAction::EnterVoicebot => {
+                            info!("[session {}] switching to voicebot mode", self.call_id);
+                            self.ivr_state = ivr_state_after_action(self.ivr_state, action);
+                            self.capture.reset();
+                            self.capture.start();
+                        }
+                        IvrAction::PlaySendai => {
+                            info!("[session {}] playing sendai info", self.call_id);
+                            if let Err(e) = self.play_audio(IVR_SENDAI_WAV_PATH).await {
+                                warn!(
+                                    "[session {}] failed to play sendai wav: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            if let Err(e) = self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await {
+                                warn!(
+                                    "[session {}] failed to replay IVR menu: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            self.reset_ivr_timeout();
+                        }
+                        IvrAction::ReplayMenu => {
+                            info!("[session {}] replaying IVR menu", self.call_id);
+                            if let Err(e) = self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await {
+                                warn!(
+                                    "[session {}] failed to replay IVR menu: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            self.reset_ivr_timeout();
+                        }
+                        IvrAction::Invalid => {
+                            info!("[session {}] invalid DTMF: '{}'", self.call_id, digit);
+                            if let Err(e) = self.play_audio(IVR_INVALID_WAV_PATH).await {
+                                warn!(
+                                    "[session {}] failed to play invalid wav: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            if let Err(e) = self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await {
+                                warn!(
+                                    "[session {}] failed to replay IVR menu: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            self.reset_ivr_timeout();
+                        }
+                    }
                 }
                 (SessState::Established, SessionIn::SipReInvite { session_timer, .. }) => {
                     if let Some(timer) = session_timer {
@@ -297,6 +381,7 @@ impl Session {
                 (_, SessionIn::SipBye) => {
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
+                    self.stop_ivr_timeout();
                     if let Err(e) = self.recorder.stop() {
                         warn!(
                             "[session {}] failed to finalize recording: {:?}",
@@ -319,46 +404,18 @@ impl Session {
                     warn!("[session {}] transaction timeout notified", self.call_id);
                 }
                 (SessState::Established, SessionIn::AppBotAudioFile { path }) => {
-                    if let Some(peer) = self.peer_sdp.clone() {
-                        self.align_rtp_clock();
-                        let dst: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
-                            Ok(a) => a,
-                            Err(e) => {
-                                warn!(
-                                    "[session {}] invalid RTP destination {}:{} ({:?})",
-                                    self.call_id, peer.ip, peer.port, e
-                                );
-                                return;
-                            }
-                        };
-                        self.sending_audio = true;
-                        match send_wav_as_rtp_pcmu(
-                            &path,
-                            dst,
-                            &self.rtp_tx,
-                            &self.call_id,
-                            &mut self.recorder,
-                            self.storage_port.as_ref(),
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                self.rtp_last_sent = Some(Instant::now());
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "[session {}] failed to send app audio: {:?}",
-                                    self.call_id, e
-                                );
-                            }
-                        }
-                        self.sending_audio = false;
+                    if let Err(e) = self.play_audio(&path).await {
+                        warn!(
+                            "[session {}] failed to send app audio: {:?}",
+                            self.call_id, e
+                        );
                     }
                 }
                 (_, SessionIn::AppHangup) => {
                     warn!("[session {}] app requested hangup", self.call_id);
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
+                    self.stop_ivr_timeout();
                     if let Err(e) = self.recorder.stop() {
                         warn!(
                             "[session {}] failed to finalize recording: {:?}",
@@ -380,6 +437,22 @@ impl Session {
                 (_, SessionIn::SipSessionExpires { timer }) => {
                     self.update_session_expires(timer);
                 }
+                (_, SessionIn::IvrTimeout) => {
+                    if self.ivr_state == IvrState::IvrMenuWaiting {
+                        info!(
+                            "[session {}] IVR timeout, replaying menu",
+                            self.call_id
+                        );
+                        self.stop_ivr_timeout();
+                        if let Err(e) = self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await {
+                            warn!(
+                                "[session {}] failed to replay IVR menu: {:?}",
+                                self.call_id, e
+                            );
+                        }
+                        self.reset_ivr_timeout();
+                    }
+                }
                 (_, SessionIn::SessionRefreshDue) => {
                     if let (Some(expires), Some(SessionRefresher::Uas)) =
                         (self.session_expires, self.session_refresher)
@@ -398,6 +471,7 @@ impl Session {
                     warn!("[session {}] session timer fired", self.call_id);
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
+                    self.stop_ivr_timeout();
                     if let Err(e) = self.recorder.stop() {
                         warn!(
                             "[session {}] failed to finalize recording: {:?}",
@@ -419,6 +493,7 @@ impl Session {
                     warn!("call {} abort: {e:?}", self.call_id);
                     self.stop_keepalive_timer();
                     self.stop_session_timer();
+                    self.stop_ivr_timeout();
                     if let Err(e) = self.recorder.stop() {
                         warn!(
                             "[session {}] failed to finalize recording: {:?}",
@@ -518,6 +593,59 @@ impl Session {
         }
         let refresh_ms = std::cmp::min(refresh_ms, u64::MAX as u128) as u64;
         Some(Duration::from_millis(refresh_ms))
+    }
+
+    fn start_ivr_timeout(&mut self) {
+        let timeout = config::ivr_timeout();
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let tx = self.tx_in.clone();
+        self.ivr_timeout_stop = Some(stop_tx);
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::time::sleep(timeout) => {
+                    let _ = tx.send(SessionIn::IvrTimeout);
+                }
+                _ = &mut stop_rx => {}
+            }
+        });
+    }
+
+    fn reset_ivr_timeout(&mut self) {
+        self.stop_ivr_timeout();
+        self.start_ivr_timeout();
+    }
+
+    fn stop_ivr_timeout(&mut self) {
+        if let Some(stop) = self.ivr_timeout_stop.take() {
+            let _ = stop.send(());
+        }
+    }
+
+    fn peer_rtp_addr(&self) -> Option<SocketAddr> {
+        let peer = self.peer_sdp.as_ref()?;
+        format!("{}:{}", peer.ip, peer.port).parse().ok()
+    }
+
+    async fn play_audio(&mut self, path: &str) -> Result<(), Error> {
+        let Some(dst) = self.peer_rtp_addr() else {
+            return Ok(());
+        };
+        self.align_rtp_clock();
+        self.sending_audio = true;
+        let result = send_wav_as_rtp_pcmu(
+            path,
+            dst,
+            &self.rtp_tx,
+            &self.call_id,
+            &mut self.recorder,
+            self.storage_port.as_ref(),
+        )
+        .await;
+        if result.is_ok() {
+            self.rtp_last_sent = Some(Instant::now());
+        }
+        self.sending_audio = false;
+        result
     }
 
     async fn send_silence_frame(&mut self) -> Result<(), Error> {
@@ -625,5 +753,25 @@ mod tests {
         assert_eq!(intro_wav_path_for_hour(16), INTRO_AFTERNOON_WAV_PATH);
         assert_eq!(intro_wav_path_for_hour(17), INTRO_EVENING_WAV_PATH);
         assert_eq!(intro_wav_path_for_hour(4), INTRO_EVENING_WAV_PATH);
+    }
+
+    #[test]
+    fn ivr_action_maps_digit() {
+        assert_eq!(ivr_action_for_digit('1'), IvrAction::EnterVoicebot);
+        assert_eq!(ivr_action_for_digit('2'), IvrAction::PlaySendai);
+        assert_eq!(ivr_action_for_digit('9'), IvrAction::ReplayMenu);
+        assert_eq!(ivr_action_for_digit('5'), IvrAction::Invalid);
+    }
+
+    #[test]
+    fn ivr_state_transitions() {
+        assert_eq!(
+            ivr_state_after_action(IvrState::IvrMenuWaiting, IvrAction::EnterVoicebot),
+            IvrState::VoicebotMode
+        );
+        assert_eq!(
+            ivr_state_after_action(IvrState::IvrMenuWaiting, IvrAction::ReplayMenu),
+            IvrState::IvrMenuWaiting
+        );
     }
 }

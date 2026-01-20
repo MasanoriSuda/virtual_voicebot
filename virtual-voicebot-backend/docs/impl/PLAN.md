@@ -8,9 +8,9 @@
 |------|-----|
 | **Status** | Active |
 | **Owner** | TBD |
-| **Last Updated** | 2026-01-18 |
+| **Last Updated** | 2026-01-19 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25) |
 
 ---
 
@@ -48,8 +48,9 @@
 | [Step-20](#step-20-llm-会話履歴ロール分離-issue-21) | LLM 会話履歴ロール分離 (Issue #21) | - | 未着手 |
 | [Step-21](#step-21-時間帯別イントロ-issue-22) | 時間帯別イントロ (Issue #22) | - | 未着手 |
 | [Step-22](#step-22-ハルシネーション時謝罪音声-issue-23) | ハルシネーション時謝罪音声 (Issue #23) | → Step-20 | 未着手 |
+| [Step-23](#step-23-ivr-メニュー機能-issue-25) | IVR メニュー機能 (Issue #25) | → Step-02 | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
-| [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 未着手 |
+| [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
 | [Step-04](#step-04-dtmf-トーン検出-e2e-検証) | DTMF トーン検出 E2E 検証 | → Step-02 | 未着手 |
 
@@ -1644,6 +1645,284 @@ User                    AppWorker                   Session
 
 ---
 
+## Step-23: IVR メニュー機能 (Issue #25)
+
+**目的**: 通話開始時に DTMF メニューを提供し、番号選択に応じて異なる動作を実行する
+
+**関連**: [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25)
+
+**依存**: Step-02（DTMF トーン検出 Goertzel）
+
+### 背景
+
+通話開始時にイントロ音声でメニューを案内し、DTMF 入力に応じて処理を分岐させる IVR（Interactive Voice Response）機能を実装する。
+
+### 動作フロー
+
+```
+通話開始
+    ↓
+zundamon_intro_ivr.wav 再生（「1, 2, 9 のいずれかを押してください」）
+    ↓
+DTMF 待機
+    ↓
+┌─────────────────────────────────────────────────────┐
+│ 1 検出 → ずんだもんボイスボット開始（既存機能）      │
+│          → DTMF 検出停止                            │
+├─────────────────────────────────────────────────────┤
+│ 2 検出 → zundamon_sendai.wav 再生                   │
+│          → 再生後、DTMF 待機に戻る（継続待機）      │
+├─────────────────────────────────────────────────────┤
+│ 9 検出 → zundamon_intro_ivr_again.wav 再生          │
+│          → DTMF 待機に戻る（ループ）                │
+├─────────────────────────────────────────────────────┤
+│ その他 → zundamon_invalid.wav 再生                  │
+│          → zundamon_intro_ivr_again.wav 再生        │
+│          → DTMF 待機に戻る（ループ）                │
+├─────────────────────────────────────────────────────┤
+│ タイムアウト → zundamon_intro_ivr_again.wav 再生    │
+│                → DTMF 待機に戻る（ループ）          │
+└─────────────────────────────────────────────────────┘
+```
+
+### 状態遷移
+
+```
+                    ┌──────────────────────┐
+                    │  IvrMenuWaiting      │ ← 初期状態
+                    │  (DTMF待機中)        │
+                    └──────────┬───────────┘
+                               │
+            ┌──────────────────┼──────────────────┬──────────────┐
+            │                  │                  │              │
+        DTMF=1             DTMF=2              DTMF=9/other  タイムアウト
+            │                  │                  │              │
+            ▼                  ▼                  │              │
+┌─────────────────┐  ┌─────────────────┐         │              │
+│  VoicebotMode   │  │  InfoPlayback   │         │              │
+│  (既存会話機能) │  │  (仙台案内再生) │         │              │
+│  DTMF検出停止   │  └────────┬────────┘         │              │
+└─────────────────┘           │                  │              │
+                              │                  │              │
+                              ▼                  ▼              ▼
+                    ┌──────────────────────────────────────────────┐
+                    │              IvrMenuWaiting                  │
+                    │            (DTMF待機に戻る)                  │
+                    └──────────────────────────────────────────────┘
+```
+
+### DoD (Definition of Done)
+
+#### セッション状態管理
+- [ ] `IvrState` enum 追加（`IvrMenuWaiting`, `VoicebotMode`）
+- [ ] Session に `ivr_state` フィールド追加
+- [ ] DTMF 検出の有効/無効切り替え機能
+- [ ] IVR タイムアウトタイマー追加（設定可能、デフォルト 10秒）
+
+#### DTMF ハンドリング
+- [ ] `session.rs` に `SessionIn::Dtmf` ハンドラ追加
+- [ ] 検出された数字に応じた分岐処理
+- [ ] DTMF 検出時にログ出力
+
+#### 音声ファイル再生
+- [ ] イントロ: `data/zundamon_intro_ivr.wav`（メニュー案内）
+- [ ] 仙台案内: `data/zundamon_sendai.wav`
+- [ ] 再案内: `data/zundamon_intro_ivr_again.wav`
+- [ ] 無効入力: `data/zundamon_invalid.wav`
+
+#### 検証
+- [ ] Unit test 追加（状態遷移テスト）
+- [ ] E2E 検証（各 DTMF 入力で正しい動作を確認）
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/session/session.rs` | IVR 状態管理、DTMF ハンドラ追加、タイムアウト処理 |
+| `src/session/types.rs` | `IvrState` enum 追加 |
+| `src/rtp/rx.rs` | DTMF 検出ログ追加（任意） |
+| `data/zundamon_intro_ivr.wav` | IVR イントロ（既存） |
+| `data/zundamon_intro_ivr_again.wav` | 再案内（既存） |
+| `data/zundamon_sendai.wav` | 仙台案内（既存） |
+| `data/zundamon_invalid.wav` | 無効入力（既存） |
+
+### 変更上限
+
+- **行数**: <=300行
+- **ファイル数**: <=4（コード変更）
+
+### 環境変数（追加）
+
+| 変数名 | 説明 | デフォルト |
+|--------|------|-----------|
+| `IVR_TIMEOUT_SEC` | IVR メニューのタイムアウト秒数。タイムアウト時は再案内を再生。 | `10` |
+
+### 型定義（案）
+
+```rust
+// src/session/types.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IvrState {
+    #[default]
+    IvrMenuWaiting,  // IVR メニュー待機中（DTMF 検出有効）
+    VoicebotMode,    // ボイスボットモード（DTMF 検出無効）
+}
+```
+
+### 実装案
+
+```rust
+// src/session/session.rs
+
+const IVR_INTRO_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr.wav");
+const IVR_INTRO_AGAIN_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr_again.wav");
+const SENDAI_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sendai.wav");
+const INVALID_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_invalid.wav");
+
+// match ブロック内
+(SessState::Established, SessionIn::Dtmf { digit }) => {
+    info!("[session {}] DTMF received: '{}'", self.call_id, digit);
+
+    if self.ivr_state != IvrState::IvrMenuWaiting {
+        // IVR メニュー待機中以外は無視
+        debug!("[session {}] ignoring DTMF in {:?}", self.call_id, self.ivr_state);
+        continue;
+    }
+
+    // IVR タイムアウトタイマーをリセット
+    self.reset_ivr_timeout();
+
+    match digit {
+        '1' => {
+            // ボイスボットモードに移行
+            info!("[session {}] switching to voicebot mode", self.call_id);
+            self.ivr_state = IvrState::VoicebotMode;
+            self.stop_ivr_timeout();
+            self.capture.start();  // 音声キャプチャ開始
+        }
+        '2' => {
+            // 仙台案内を再生後、メニュー待機に戻る
+            info!("[session {}] playing sendai info", self.call_id);
+            self.play_audio(SENDAI_WAV_PATH).await;
+            self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await;
+            self.reset_ivr_timeout();
+            // ivr_state は IvrMenuWaiting のまま
+        }
+        '9' => {
+            // 再案内を再生してループ
+            info!("[session {}] replaying menu", self.call_id);
+            self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await;
+            self.reset_ivr_timeout();
+        }
+        _ => {
+            // 無効入力
+            info!("[session {}] invalid DTMF: '{}'", self.call_id, digit);
+            self.play_audio(INVALID_WAV_PATH).await;
+            self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await;
+            self.reset_ivr_timeout();
+        }
+    }
+}
+
+(_, SessionIn::IvrTimeout) => {
+    if self.ivr_state == IvrState::IvrMenuWaiting {
+        info!("[session {}] IVR timeout, replaying menu", self.call_id);
+        self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await;
+        self.reset_ivr_timeout();
+    }
+}
+```
+
+### シーケンス
+
+#### ケース 1: DTMF "1" でボイスボットモードへ
+
+```
+User                    Session                      App
+  |                         |                          |
+  |<-- intro_ivr.wav -------|                          |
+  |    "1,2,9を押して..."   |                          |
+  |                         |                          |
+  |--- DTMF "1" ----------->|                          |
+  |                         | ivr_state = VoicebotMode |
+  |                         | capture.start()          |
+  |                         |                          |
+  |--- 音声 --------------->|                          |
+  |                         |--- AudioBuffered ------->|
+  |                         |                          |
+  |                         |<-- LLM応答 --------------|
+  |<-- 応答音声 ------------|                          |
+```
+
+#### ケース 2: DTMF "2" で仙台案内後、継続待機
+
+```
+User                    Session
+  |                         |
+  |<-- intro_ivr.wav -------|
+  |                         |
+  |--- DTMF "2" ----------->|
+  |                         |
+  |<-- sendai.wav ----------|
+  |<-- intro_ivr_again.wav -|
+  |                         | ivr_state = IvrMenuWaiting (維持)
+  |                         |
+  |--- DTMF "1" ----------->|
+  |                         | → VoicebotMode へ
+```
+
+#### ケース 3: 無効入力後、再案内
+
+```
+User                    Session
+  |                         |
+  |<-- intro_ivr.wav -------|
+  |                         |
+  |--- DTMF "5" (invalid) ->|
+  |                         |
+  |<-- invalid.wav ---------|
+  |<-- intro_ivr_again.wav -|
+  |                         | ivr_state = IvrMenuWaiting (維持)
+  |                         |
+  |--- DTMF "1" ----------->|
+  |                         | → VoicebotMode へ
+```
+
+#### ケース 4: タイムアウト時、再案内
+
+```
+User                    Session
+  |                         |
+  |<-- intro_ivr.wav -------|
+  |                         |
+  |    ... 10秒経過 ...     |
+  |                         | IvrTimeout 発火
+  |                         |
+  |<-- intro_ivr_again.wav -|
+  |                         | タイマーリセット
+  |                         |
+  |--- DTMF "1" ----------->|
+  |                         | → VoicebotMode へ
+```
+
+### 検証方法
+
+```bash
+cargo test session::
+# E2E: 各 DTMF 入力で正しい動作を確認
+# - DTMF "1": ボイスボット会話開始
+# - DTMF "2": 仙台案内 → 再案内 → DTMF 待機
+# - DTMF "9": 再案内 → DTMF 待機
+# - DTMF "5": 無効 → 再案内 → DTMF 待機
+# - タイムアウト: 再案内 → DTMF 待機
+```
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -1660,6 +1939,7 @@ User                    AppWorker                   Session
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-19 | 2.5 | Issue #25 統合: Step-23（IVR メニュー機能）追加、Step-02 状態を完了に更新 |
 | 2026-01-19 | 2.4 | Issue #24 統合: Step-02（DTMF トーン検出 Goertzel）に Issue リンク追加 |
 | 2026-01-18 | 2.3 | Issue #23 統合: Step-22（ハルシネーション時謝罪音声）追加 |
 | 2026-01-18 | 2.2 | Issue #22 統合: Step-21（時間帯別イントロ）追加 |

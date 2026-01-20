@@ -53,6 +53,13 @@ pub struct SessionTimerInfo {
     pub refresher: SessionRefresher,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IvrState {
+    #[default]
+    IvrMenuWaiting,
+    VoicebotMode,
+}
+
 /// sip/session 間で受け取るイベント（上位: sip・rtp・app からの入力）
 #[derive(Debug)]
 pub enum SessionIn {
@@ -86,6 +93,8 @@ pub enum SessionIn {
     Dtmf {
         digit: char,
     },
+    /// IVR menu timeout
+    IvrTimeout,
     /// app から返ってきたボット応答音声（WAVファイルパス）
     AppBotAudioFile {
         path: String,
