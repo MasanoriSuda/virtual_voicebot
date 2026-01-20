@@ -43,7 +43,7 @@ const IVR_SENDAI_WAV_PATH: &str =
 const IVR_INVALID_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_invalid.wav");
 const TRANSFER_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_transfer.wav");
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_try_transfer.wav");
 const TRANSFER_FAIL_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_transfer_fail.wav");
 
