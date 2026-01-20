@@ -2098,6 +2098,308 @@ cargo test session::
 
 ---
 
+## Step-25: B2BUA コール転送 (Issue #27)
+
+**目的**: DTMF "3" をトリガーとして、通話を Zoiper に転送し、Bot が B2BUA としてセッションを維持する
+
+**関連**: [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27)
+
+**依存**: Step-02（DTMF トーン検出 Goertzel）, Step-23（IVR メニュー機能）
+
+### 背景
+
+IVR メニューで DTMF "3" を押すと、通話を外部 SIP エンドポイント（Zoiper）に転送する。Bot は B2BUA（Back-to-Back User Agent）として機能し、両レグのメディアを中継する。
+
+```
+[現在: 1 レグ]
+iPhone ←──── RTP ────→ Voicebot
+
+[転送後: 2 レグ（B2BUA）]
+iPhone ←──── RTP ────→ Voicebot ←──── RTP ────→ Zoiper
+                          │
+                          └── 両方向のメディアを中継
+```
+
+### 転送方式の選定
+
+| 方式 | RFC | 特徴 | 採用 |
+|------|-----|------|------|
+| SIP REFER | 3515 | 盲目転送、一部 SIP サーバーで非対応 | ❌ |
+| B2BUA | 3261 | Bot がセッション維持、メディアリレー | ✅ |
+
+**採用理由**:
+- SIP REFER は Odin など一部 SIP サーバーで未対応の可能性
+- B2BUA は確実に動作し、将来の拡張（会話監視、録音、AI 介入）に対応可能
+
+### 動作フロー
+
+```
+IVR メニュー待機中
+    ↓
+DTMF "3" 検出
+    ↓
+┌──────────────────────────────────────────────────────────────┐
+│ 1. 転送案内音声再生（zundamon_transfer.wav）                 │
+│ 2. Zoiper に UAC INVITE 送信                                 │
+│ 3. 200 OK 受信 → ACK 送信                                    │
+│ 4. B2BUA モードに移行                                        │
+│    - iPhone → Voicebot → Zoiper (メディアリレー)            │
+│    - Zoiper → Voicebot → iPhone (メディアリレー)            │
+│ 5. いずれかが BYE → 両レグ終了                               │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 状態遷移
+
+```
+                    ┌──────────────────────┐
+                    │  IvrMenuWaiting      │
+                    │  (DTMF待機中)        │
+                    └──────────┬───────────┘
+                               │
+            ┌──────────────────┼──────────────────┬───────────────┐
+            │                  │                  │               │
+        DTMF=1             DTMF=2              DTMF=3          DTMF=9/other
+            │                  │                  │               │
+            ▼                  ▼                  ▼               │
+┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐    │
+│  VoicebotMode   │  │  InfoPlayback   │  │  Transferring   │    │
+│  (既存会話機能) │  │  (仙台案内再生) │  │  (UAC INVITE中) │    │
+└─────────────────┘  └────────┬────────┘  └────────┬────────┘    │
+                              │                    │              │
+                              ▼                    ▼              ▼
+                    ┌─────────────────┐  ┌─────────────────┐  ┌───────────┐
+                    │ IvrMenuWaiting  │  │  B2buaMode      │  │  Loop     │
+                    │   (継続待機)    │  │  (メディア中継) │  │           │
+                    └─────────────────┘  └─────────────────┘  └───────────┘
+```
+
+### DoD (Definition of Done)
+
+#### 状態管理
+- [ ] `IvrState` enum に `Transferring`, `B2buaMode` 追加
+- [ ] B レグ用のセッション情報管理（Call-ID, tags, SDP）
+- [ ] 転送失敗時のフォールバック処理
+
+#### UAC INVITE 送信（B レグ）
+- [ ] 環境変数 `TRANSFER_TARGET_SIP_URI` から転送先を取得
+- [ ] INVITE リクエスト生成（SDP 含む）
+- [ ] 100 Trying / 180 Ringing 処理
+- [ ] 200 OK 受信 → ACK 送信
+- [ ] エラー（4xx/5xx）時のハンドリング
+
+#### メディアリレー
+- [ ] A レグ (iPhone) からの RTP を B レグ (Zoiper) に転送
+- [ ] B レグ (Zoiper) からの RTP を A レグ (iPhone) に転送
+- [ ] RTP ヘッダの SSRC/タイムスタンプ変換（必要に応じて）
+- [ ] B レグ用 RTP 送受信ソケット管理
+
+#### 終了処理
+- [ ] A レグ BYE 受信 → B レグに BYE 送信 → 両レグ終了
+- [ ] B レグ BYE 受信 → A レグに BYE 送信 → 両レグ終了
+- [ ] 転送中に A レグ BYE → 転送キャンセル
+
+#### 音声ファイル
+- [ ] `data/zundamon_transfer.wav`（転送案内）作成
+
+#### 検証
+- [ ] Unit test 追加（状態遷移テスト）
+- [ ] E2E 検証（DTMF "3" で転送、双方向通話確認）
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/session/session.rs` | B2BUA 状態管理、メディアリレー、終了処理 |
+| `src/session/types.rs` | `IvrState` enum 拡張（`Transferring`, `B2buaMode`） |
+| `src/session/b2bua.rs` | B レグ管理、UAC INVITE ロジック（新規） |
+| `src/sip/builder.rs` | UAC INVITE ビルダー追加（必要に応じて） |
+| `src/config.rs` | `TRANSFER_TARGET_SIP_URI` 設定追加 |
+| `data/zundamon_transfer.wav` | 転送案内音声（新規） |
+
+### 変更上限
+
+- **行数**: <=500行
+- **ファイル数**: <=6（コード変更）
+
+### 環境変数（追加）
+
+| 変数名 | 説明 | デフォルト |
+|--------|------|-----------|
+| `TRANSFER_TARGET_SIP_URI` | 転送先 SIP URI | `sip:zoiper@192.168.1.4:8000` |
+| `TRANSFER_TIMEOUT_SEC` | UAC INVITE のタイムアウト秒数 | `30` |
+
+### 型定義（案）
+
+```rust
+// src/session/types.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IvrState {
+    #[default]
+    IvrMenuWaiting,   // IVR メニュー待機中
+    VoicebotMode,     // ボイスボットモード
+    Transferring,     // 転送中（UAC INVITE 送信中）
+    B2buaMode,        // B2BUA モード（メディア中継中）
+}
+
+// src/session/b2bua.rs
+#[derive(Debug)]
+pub struct BLeg {
+    pub call_id: String,
+    pub local_tag: String,
+    pub remote_tag: Option<String>,
+    pub remote_rtp_addr: SocketAddr,
+    pub local_rtp_socket: UdpSocket,
+    pub rtp_ssrc: u32,
+    pub rtp_seq: u16,
+    pub rtp_ts: u32,
+}
+```
+
+### シーケンス
+
+#### ケース 1: 正常転送
+
+```
+iPhone                  Voicebot                   Zoiper
+  |                         |                          |
+  |<-- intro_ivr.wav -------|                          |
+  |                         |                          |
+  |--- DTMF "3" ----------->|                          |
+  |                         |                          |
+  |<-- transfer.wav --------|                          |  転送案内
+  |                         |                          |
+  |                         |--- INVITE -------------->|  UAC INVITE (B レグ)
+  |                         |                          |
+  |                         |<-- 100 Trying -----------|
+  |                         |<-- 180 Ringing ----------|
+  |                         |<-- 200 OK ---------------|
+  |                         |--- ACK ----------------->|
+  |                         |                          |
+  |                         | ivr_state = B2buaMode    |
+  |                         |                          |
+  |=== RTP (A→B) =========>|=== RTP (relay) =========>|  メディア中継
+  |<== RTP (B→A) ==========|<== RTP (relay) ==========|
+  |                         |                          |
+  |--- BYE ---------------->|                          |  A レグ終了
+  |<-- 200 OK --------------|                          |
+  |                         |--- BYE ----------------->|  B レグも終了
+  |                         |<-- 200 OK ---------------|
+```
+
+#### ケース 2: 転送失敗（タイムアウト）
+
+```
+iPhone                  Voicebot                   Zoiper
+  |                         |                          |
+  |--- DTMF "3" ----------->|                          |
+  |                         |                          |
+  |<-- transfer.wav --------|                          |
+  |                         |                          |
+  |                         |--- INVITE -------------->|
+  |                         |                          |
+  |                         |    ... タイムアウト ...  |
+  |                         |                          |
+  |<-- transfer_fail.wav ---|                          |  失敗案内
+  |                         |                          |
+  |                         | ivr_state = IvrMenuWaiting|  メニューに戻る
+  |<-- intro_ivr_again.wav -|                          |
+```
+
+### 実装案
+
+```rust
+// src/session/session.rs
+
+const TRANSFER_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_transfer.wav");
+const TRANSFER_FAIL_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_transfer_fail.wav");
+
+// DTMF "3" ハンドリング
+(SessState::Established, SessionIn::Dtmf { digit: '3' }) => {
+    if self.ivr_state != IvrState::IvrMenuWaiting {
+        continue;
+    }
+
+    info!("[session {}] initiating transfer to Zoiper", self.call_id);
+    self.ivr_state = IvrState::Transferring;
+
+    // 転送案内音声を再生
+    self.play_audio(TRANSFER_WAV_PATH).await;
+
+    // B レグ作成（UAC INVITE）
+    match self.initiate_b_leg().await {
+        Ok(b_leg) => {
+            info!("[session {}] B-leg established", self.call_id);
+            self.b_leg = Some(b_leg);
+            self.ivr_state = IvrState::B2buaMode;
+        }
+        Err(e) => {
+            warn!("[session {}] transfer failed: {}", self.call_id, e);
+            self.play_audio(TRANSFER_FAIL_WAV_PATH).await;
+            self.play_audio(IVR_INTRO_AGAIN_WAV_PATH).await;
+            self.ivr_state = IvrState::IvrMenuWaiting;
+            self.reset_ivr_timeout();
+        }
+    }
+}
+
+// B2BUA モードでの RTP 中継
+(SessState::Established, SessionIn::Rtp { packet }) => {
+    if self.ivr_state == IvrState::B2buaMode {
+        // A レグから受信した RTP を B レグに転送
+        if let Some(ref b_leg) = self.b_leg {
+            b_leg.forward_rtp(&packet).await;
+        }
+    }
+    // ... 既存の RTP 処理 ...
+}
+
+// B レグからの RTP 受信（別タスクで監視）
+(_, SessionIn::BLegRtp { packet }) => {
+    // B レグから受信した RTP を A レグに転送
+    self.send_rtp_to_a_leg(&packet).await;
+}
+
+// B レグ終了処理
+(_, SessionIn::BLegBye) => {
+    info!("[session {}] B-leg BYE received, ending both legs", self.call_id);
+    // A レグに BYE 送信
+    self.request_hangup();
+}
+```
+
+### 検証方法
+
+```bash
+cargo test session::
+# E2E: DTMF "3" で転送テスト
+# 1. iPhone から通話開始 → IVR メニュー
+# 2. DTMF "3" 入力
+# 3. Zoiper で着信を確認
+# 4. 双方向で音声通話ができることを確認
+# 5. いずれかが BYE → 両方終了を確認
+```
+
+### Open Questions
+
+| # | 質問 | 回答待ち |
+|---|------|---------|
+| Q1 | B レグ SDP のコーデック交渉は A レグと同じで良いか？（PCMU 固定） | Yes（PCMU 固定） |
+| Q2 | RTP タイムスタンプ/SSRC は変換が必要か？ | 要検証（最小限の変換で開始） |
+| Q3 | 転送中の保留音声は必要か？ | 暫定 No（将来検討） |
+
+### リスク/ロールバック観点
+
+| リスク | 対策 |
+|--------|------|
+| B レグ INVITE が Zoiper に到達しない | ネットワーク設定確認、タイムアウト後にフォールバック |
+| RTP 中継による遅延増加 | 最小限の処理でスルーパット優先 |
+| 片方終了時の残存セッション | 両レグ連動終了を徹底 |
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -2114,6 +2416,7 @@ cargo test session::
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-21 | 2.8 | Issue #27 統合: Step-25（B2BUA コール転送）追加、DTMF "3" でZoiper転送、メディアリレー方式 |
 | 2026-01-20 | 2.7 | Step-24 更新: interval ベースの再生ティック安定化、プツプツ音声問題の修正方針追加 |
 | 2026-01-20 | 2.6 | Issue #26 統合: Step-24（BYE 即時応答・音声再生キャンセル）追加、Step-23 状態を完了に更新 |
 | 2026-01-19 | 2.5 | Issue #25 統合: Step-23（IVR メニュー機能）追加、Step-02 状態を完了に更新 |

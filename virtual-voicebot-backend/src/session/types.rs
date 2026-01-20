@@ -2,6 +2,8 @@
 // types.rs
 use std::time::Duration;
 
+use crate::session::b2bua::BLeg;
+
 #[derive(Clone, Debug)]
 pub struct Sdp {
     pub ip: String,
@@ -58,6 +60,8 @@ pub enum IvrState {
     #[default]
     IvrMenuWaiting,
     VoicebotMode,
+    Transferring,
+    B2buaMode,
 }
 
 /// sip/session 間で受け取るイベント（上位: sip・rtp・app からの入力）
@@ -89,6 +93,20 @@ pub enum SessionIn {
         ts: u32,
         payload: Vec<u8>,
     },
+    /// Bレグ確立（B2BUA）
+    B2buaEstablished {
+        b_leg: BLeg,
+    },
+    /// Bレグ転送失敗
+    B2buaFailed {
+        reason: String,
+    },
+    /// BレグからのRTP
+    BLegRtp {
+        payload: Vec<u8>,
+    },
+    /// BレグからのBYE
+    BLegBye,
     /// DTMF tone detected (in-band)
     Dtmf {
         digit: char,
@@ -129,6 +147,8 @@ pub enum SessionOut {
     SipSendUpdate {
         expires: Duration,
     },
+    /// SIP BYE送信（UAC側として終話）
+    SipSendBye,
     /// SIP BYEに対する200
     SipSendBye200,
     /// RTP送信開始指示
@@ -171,6 +191,7 @@ pub(crate) enum SessState {
 pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
     match event {
         SessionIn::SipBye
+        | SessionIn::BLegBye
         | SessionIn::AppHangup
         | SessionIn::SessionTimerFired
         | SessionIn::Abort(_) => SessState::Terminated,

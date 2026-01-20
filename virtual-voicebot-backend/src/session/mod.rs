@@ -3,6 +3,7 @@
 pub mod session;
 pub mod types;
 pub mod writing;
+pub mod b2bua;
 mod capture;
 mod timers;
 

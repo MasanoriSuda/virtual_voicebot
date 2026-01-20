@@ -367,6 +367,43 @@ fn build_update_request(
     Some(builder.build().to_bytes())
 }
 
+fn build_bye_request(ctx: &mut InviteContext, cfg: &SipConfig) -> Option<Vec<u8>> {
+    let req = &ctx.req;
+    let to = req.header_value("From")?.to_string();
+    let mut from = req.header_value("To")?.to_string();
+    if !from.to_ascii_lowercase().contains("tag=") {
+        from = format!("{from};tag=rustbot");
+    }
+    let call_id = req.header_value("Call-ID")?.to_string();
+    let uri = req
+        .header_value("Contact")
+        .map(extract_contact_uri)
+        .unwrap_or_else(|| req.uri.as_str())
+        .to_string();
+    let transport = match ctx.tx.peer {
+        TransportPeer::Udp(_) => "UDP",
+        TransportPeer::Tcp(_) => "TCP",
+    };
+    let via = format!(
+        "SIP/2.0/{} {}:{};branch={}",
+        transport,
+        cfg.advertised_ip,
+        cfg.sip_port,
+        generate_branch()
+    );
+    let cseq = ctx.local_cseq.saturating_add(1).max(1);
+    ctx.local_cseq = cseq;
+
+    let builder = SipRequestBuilder::new(SipMethod::Bye, uri)
+        .header("Via", via)
+        .header("Max-Forwards", "70")
+        .header("From", from)
+        .header("To", to)
+        .header("Call-ID", call_id)
+        .header("CSeq", format!("{cseq} BYE"));
+    Some(builder.build().to_bytes())
+}
+
 fn extract_contact_uri(value: &str) -> &str {
     let trimmed = value.trim();
     if let Some(start) = trimmed.find('<') {
@@ -1222,6 +1259,23 @@ impl SipCore {
                     self.send_payload(peer, payload);
                 } else {
                     log::warn!("[sip update] failed to build UPDATE call_id={}", call_id);
+                }
+            }
+            SessionOut::SipSendBye => {
+                if self.active_call_id.as_ref() == Some(call_id) {
+                    self.active_call_id = None;
+                }
+                let (peer, payload) = if let Some(ctx) = self.invites.get_mut(call_id) {
+                    let peer = ctx.tx.peer;
+                    let payload = build_bye_request(ctx, &self.cfg);
+                    (Some(peer), payload)
+                } else {
+                    (None, None)
+                };
+                if let (Some(peer), Some(payload)) = (peer, payload) {
+                    self.send_payload(peer, payload);
+                } else {
+                    log::warn!("[sip bye] failed to build BYE call_id={}", call_id);
                 }
             }
             SessionOut::SipSendBye200 => {

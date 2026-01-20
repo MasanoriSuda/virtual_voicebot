@@ -305,6 +305,23 @@ pub fn ivr_timeout() -> Duration {
     *IVR_TIMEOUT.get_or_init(|| Duration::from_secs(env_u64("IVR_TIMEOUT_SEC", 10)))
 }
 
+static TRANSFER_TARGET_URI: OnceLock<String> = OnceLock::new();
+
+pub fn transfer_target_uri() -> String {
+    TRANSFER_TARGET_URI
+        .get_or_init(|| {
+            std::env::var("TRANSFER_TARGET_SIP_URI")
+                .unwrap_or_else(|_| "sip:zoiper@192.168.1.4:8000".to_string())
+        })
+        .clone()
+}
+
+static TRANSFER_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+pub fn transfer_timeout() -> Duration {
+    *TRANSFER_TIMEOUT.get_or_init(|| Duration::from_secs(env_u64("TRANSFER_TIMEOUT_SEC", 30)))
+}
+
 fn env_duration_ms(key: &str, default_ms: u64) -> Duration {
     let ms = std::env::var(key)
         .ok()

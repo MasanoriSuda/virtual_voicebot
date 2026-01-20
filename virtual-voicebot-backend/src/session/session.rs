@@ -10,6 +10,7 @@ use tokio::time::{interval, Duration, Instant, MissedTickBehavior};
 
 use crate::session::types::Sdp;
 use crate::session::types::*;
+use crate::session::b2bua;
 
 use crate::app::AppEvent;
 use crate::http::ingest::IngestPort;
@@ -41,6 +42,10 @@ const IVR_SENDAI_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sendai.wav");
 const IVR_INVALID_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_invalid.wav");
+const TRANSFER_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_transfer.wav");
+const TRANSFER_FAIL_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_transfer_fail.wav");
 
 fn intro_wav_path_for_hour(hour: u32) -> &'static str {
     match hour {
@@ -64,6 +69,7 @@ pub struct SessionHandle {
 enum IvrAction {
     EnterVoicebot,
     PlaySendai,
+    Transfer,
     ReplayMenu,
     Invalid,
 }
@@ -72,6 +78,7 @@ fn ivr_action_for_digit(digit: char) -> IvrAction {
     match digit {
         '1' => IvrAction::EnterVoicebot,
         '2' => IvrAction::PlaySendai,
+        '3' => IvrAction::Transfer,
         '9' => IvrAction::ReplayMenu,
         _ => IvrAction::Invalid,
     }
@@ -120,6 +127,8 @@ pub struct Session {
     intro_sent: bool,
     ivr_state: IvrState,
     ivr_timeout_stop: Option<oneshot::Sender<()>>,
+    b_leg: Option<b2bua::BLeg>,
+    transfer_cancel: Option<oneshot::Sender<()>>,
     session_expires: Option<Duration>,
     session_refresher: Option<SessionRefresher>,
 }
@@ -169,6 +178,8 @@ impl Session {
             intro_sent: false,
             ivr_state: IvrState::default(),
             ivr_timeout_stop: None,
+            b_leg: None,
+            transfer_cancel: None,
             session_expires: None,
             session_refresher: None,
         };
@@ -289,8 +300,14 @@ impl Session {
                                 self.call_id,
                                 payload.len()
                             );
+                            let payload_len = payload.len();
                             self.recorder.push_rx_mulaw(&payload);
-                            if self.ivr_state == IvrState::VoicebotMode {
+                            if self.ivr_state == IvrState::B2buaMode {
+                                if let Some(b_leg) = &self.b_leg {
+                                    self.rtp_tx
+                                        .send_payload(&b_leg.rtp_key, payload.clone());
+                                }
+                            } else if self.ivr_state == IvrState::VoicebotMode {
                                 if let Some(buffer) = self.capture.ingest(&payload) {
                                     info!(
                                         "[session {}] buffered audio ready for app ({} bytes)",
@@ -308,7 +325,7 @@ impl Session {
                                 self.call_id.clone(),
                                 SessionOut::Metrics {
                                     name: "rtp_in",
-                                    value: payload.len() as i64,
+                                    value: payload_len as i64,
                                 },
                             ));
                         }
@@ -321,54 +338,161 @@ impl Session {
                                 );
                                 continue;
                             }
-                    self.cancel_playback();
-                    self.stop_ivr_timeout();
-                    let action = ivr_action_for_digit(digit);
-                    match action {
-                        IvrAction::EnterVoicebot => {
-                            info!("[session {}] switching to voicebot mode", self.call_id);
-                            self.ivr_state = ivr_state_after_action(self.ivr_state, action);
+                            self.cancel_playback();
+                            self.stop_ivr_timeout();
+                            let action = ivr_action_for_digit(digit);
+                            match action {
+                                IvrAction::EnterVoicebot => {
+                                    info!(
+                                        "[session {}] switching to voicebot mode",
+                                        self.call_id
+                                    );
+                                    self.ivr_state =
+                                        ivr_state_after_action(self.ivr_state, action);
                                     self.capture.reset();
                                     self.capture.start();
                                 }
-                        IvrAction::PlaySendai => {
-                            info!("[session {}] playing sendai info", self.call_id);
+                                IvrAction::PlaySendai => {
+                                    info!("[session {}] playing sendai info", self.call_id);
+                                    if let Err(e) = self.start_playback(&[
+                                        IVR_SENDAI_WAV_PATH,
+                                        IVR_INTRO_AGAIN_WAV_PATH,
+                                    ]) {
+                                        warn!(
+                                            "[session {}] failed to play sendai flow: {:?}",
+                                            self.call_id, e
+                                        );
+                                        self.reset_ivr_timeout();
+                                    }
+                                }
+                                IvrAction::Transfer => {
+                                    if self.transfer_cancel.is_some() || self.b_leg.is_some() {
+                                        warn!(
+                                            "[session {}] transfer already active",
+                                            self.call_id
+                                        );
+                                        self.reset_ivr_timeout();
+                                        continue;
+                                    }
+                                    info!(
+                                        "[session {}] initiating transfer to B-leg",
+                                        self.call_id
+                                    );
+                                    self.ivr_state = IvrState::Transferring;
+                                    if let Err(e) = self.start_playback(&[TRANSFER_WAV_PATH]) {
+                                        warn!(
+                                            "[session {}] failed to play transfer wav: {:?}",
+                                            self.call_id, e
+                                        );
+                                    }
+                                    self.transfer_cancel = Some(b2bua::spawn_transfer(
+                                        self.call_id.clone(),
+                                        self.tx_in.clone(),
+                                    ));
+                                }
+                                IvrAction::ReplayMenu => {
+                                    info!("[session {}] replaying IVR menu", self.call_id);
+                                    if let Err(e) =
+                                        self.start_playback(&[IVR_INTRO_AGAIN_WAV_PATH])
+                                    {
+                                        warn!(
+                                            "[session {}] failed to replay IVR menu: {:?}",
+                                            self.call_id, e
+                                        );
+                                        self.reset_ivr_timeout();
+                                    }
+                                }
+                                IvrAction::Invalid => {
+                                    info!("[session {}] invalid DTMF: '{}'", self.call_id, digit);
+                                    if let Err(e) = self.start_playback(&[
+                                        IVR_INVALID_WAV_PATH,
+                                        IVR_INTRO_AGAIN_WAV_PATH,
+                                    ]) {
+                                        warn!(
+                                            "[session {}] failed to play invalid flow: {:?}",
+                                            self.call_id, e
+                                        );
+                                        self.reset_ivr_timeout();
+                                    }
+                                }
+                            }
+                        }
+                        (SessState::Established, SessionIn::B2buaEstablished { b_leg }) => {
+                            info!(
+                                "[session {}] B-leg established, entering B2BUA mode",
+                                self.call_id
+                            );
+                            self.transfer_cancel = None;
+                            self.cancel_playback();
+                            self.stop_ivr_timeout();
+                            self.ivr_state = IvrState::B2buaMode;
+                            self.b_leg = Some(b_leg);
+                            if let Some(b_leg) = &self.b_leg {
+                                self.rtp_tx.start(
+                                    b_leg.rtp_key.clone(),
+                                    b_leg.remote_rtp_addr,
+                                    0,
+                                    0x22334455,
+                                    0,
+                                    0,
+                                );
+                            }
+                        }
+                        (SessState::Established, SessionIn::B2buaFailed { reason }) => {
+                            warn!(
+                                "[session {}] transfer failed: {}",
+                                self.call_id, reason
+                            );
+                            self.transfer_cancel = None;
+                            self.ivr_state = IvrState::IvrMenuWaiting;
+                            self.b_leg = None;
                             if let Err(e) = self.start_playback(&[
-                                IVR_SENDAI_WAV_PATH,
+                                TRANSFER_FAIL_WAV_PATH,
                                 IVR_INTRO_AGAIN_WAV_PATH,
                             ]) {
                                 warn!(
-                                    "[session {}] failed to play sendai flow: {:?}",
+                                    "[session {}] failed to play transfer fail flow: {:?}",
                                     self.call_id, e
                                 );
                                 self.reset_ivr_timeout();
                             }
                         }
-                        IvrAction::ReplayMenu => {
-                            info!("[session {}] replaying IVR menu", self.call_id);
-                            if let Err(e) = self.start_playback(&[IVR_INTRO_AGAIN_WAV_PATH]) {
+                        (_, SessionIn::BLegRtp { payload }) => {
+                            if self.ivr_state == IvrState::B2buaMode {
+                                self.align_rtp_clock();
+                                self.recorder.push_tx_mulaw(&payload);
+                                self.rtp_tx
+                                    .send_payload(&self.call_id, payload);
+                                self.rtp_last_sent = Some(Instant::now());
+                            }
+                        }
+                        (_, SessionIn::BLegBye) => {
+                            info!(
+                                "[session {}] B-leg BYE received, ending call",
+                                self.call_id
+                            );
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(false).await;
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            self.send_bye_to_a_leg();
+                            if let Err(e) = self.recorder.stop() {
                                 warn!(
-                                    "[session {}] failed to replay IVR menu: {:?}",
+                                    "[session {}] failed to finalize recording: {:?}",
                                     self.call_id, e
                                 );
-                                self.reset_ivr_timeout();
                             }
+                            self.send_ingest("ended").await;
+                            self.rtp_tx.stop(&self.call_id);
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            let _ = self.app_tx.send(AppEvent::CallEnded {
+                                call_id: self.call_id.clone(),
+                            });
                         }
-                        IvrAction::Invalid => {
-                            info!("[session {}] invalid DTMF: '{}'", self.call_id, digit);
-                            if let Err(e) = self.start_playback(&[
-                                IVR_INVALID_WAV_PATH,
-                                IVR_INTRO_AGAIN_WAV_PATH,
-                            ]) {
-                                warn!(
-                                    "[session {}] failed to play invalid flow: {:?}",
-                                    self.call_id, e
-                                );
-                                self.reset_ivr_timeout();
-                            }
-                        }
-                    }
-                }
                         (SessState::Established, SessionIn::SipReInvite { session_timer, .. }) => {
                             if let Some(timer) = session_timer {
                                 self.update_session_expires(timer);
@@ -391,6 +515,8 @@ impl Session {
                             }
                         }
                         (_, SessionIn::SipBye) => {
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(true).await;
                             self.cancel_playback();
                             self.stop_keepalive_timer();
                             self.stop_session_timer();
@@ -426,6 +552,8 @@ impl Session {
                         }
                         (_, SessionIn::AppHangup) => {
                             warn!("[session {}] app requested hangup", self.call_id);
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(true).await;
                             self.cancel_playback();
                             self.stop_keepalive_timer();
                             self.stop_session_timer();
@@ -483,6 +611,8 @@ impl Session {
                         }
                         (_, SessionIn::SessionTimerFired) => {
                             warn!("[session {}] session timer fired", self.call_id);
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(true).await;
                             self.cancel_playback();
                             self.stop_keepalive_timer();
                             self.stop_session_timer();
@@ -506,6 +636,8 @@ impl Session {
                         }
                         (_, SessionIn::Abort(e)) => {
                             warn!("call {} abort: {e:?}", self.call_id);
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(true).await;
                             self.cancel_playback();
                             self.stop_keepalive_timer();
                             self.stop_session_timer();
@@ -637,6 +769,30 @@ impl Session {
         if let Some(stop) = self.ivr_timeout_stop.take() {
             let _ = stop.send(());
         }
+    }
+
+    fn cancel_transfer(&mut self) {
+        if let Some(cancel) = self.transfer_cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
+
+    async fn shutdown_b_leg(&mut self, send_bye: bool) {
+        if let Some(mut b_leg) = self.b_leg.take() {
+            if send_bye {
+                if let Err(e) = b_leg.send_bye().await {
+                    warn!("[session {}] B-leg BYE failed: {:?}", self.call_id, e);
+                }
+            }
+            b_leg.shutdown();
+            self.rtp_tx.stop(&b_leg.rtp_key);
+        }
+    }
+
+    fn send_bye_to_a_leg(&self) {
+        let _ = self
+            .session_out_tx
+            .send((self.call_id.clone(), SessionOut::SipSendBye));
     }
 
     fn peer_rtp_addr(&self) -> Option<SocketAddr> {
@@ -779,6 +935,7 @@ mod tests {
     fn ivr_action_maps_digit() {
         assert_eq!(ivr_action_for_digit('1'), IvrAction::EnterVoicebot);
         assert_eq!(ivr_action_for_digit('2'), IvrAction::PlaySendai);
+        assert_eq!(ivr_action_for_digit('3'), IvrAction::Transfer);
         assert_eq!(ivr_action_for_digit('9'), IvrAction::ReplayMenu);
         assert_eq!(ivr_action_for_digit('5'), IvrAction::Invalid);
     }
@@ -848,6 +1005,8 @@ mod tests {
             intro_sent: false,
             ivr_state: IvrState::default(),
             ivr_timeout_stop: None,
+            b_leg: None,
+            transfer_cancel: None,
             session_expires: None,
             session_refresher: None,
         }
