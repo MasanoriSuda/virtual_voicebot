@@ -145,7 +145,18 @@ async fn run_transfer(
             recv = sip_socket.recv_from(&mut buf) => {
                 let (len, src) = recv?;
                 let raw = std::str::from_utf8(&buf[..len]).map_err(|_| anyhow!("invalid sip bytes"))?;
-                let msg = parse_sip_message(raw)?;
+                let trimmed = raw.trim_matches(|c| c == '\r' || c == '\n');
+                if trimmed.is_empty() {
+                    // TODO(#28): handle SIP keepalive explicitly if needed.
+                    continue;
+                }
+                let msg = match parse_sip_message(raw) {
+                    Ok(msg) => msg,
+                    Err(err) => {
+                        warn!("[b2bua {}] sip parse failed: {}", a_call_id, err);
+                        continue;
+                    }
+                };
                 let SipMessage::Response(resp) = msg else {
                     continue;
                 };

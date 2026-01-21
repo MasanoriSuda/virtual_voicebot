@@ -27,6 +27,7 @@ use serde_json::json;
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
 const PLAYBACK_FRAME_INTERVAL: Duration = Duration::from_millis(20);
+const TRANSFER_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
 
 const INTRO_MORNING_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_morning.wav");
@@ -129,6 +130,7 @@ pub struct Session {
     ivr_timeout_stop: Option<oneshot::Sender<()>>,
     b_leg: Option<b2bua::BLeg>,
     transfer_cancel: Option<oneshot::Sender<()>>,
+    transfer_announce_stop: Option<oneshot::Sender<()>>,
     session_expires: Option<Duration>,
     session_refresher: Option<SessionRefresher>,
 }
@@ -180,6 +182,7 @@ impl Session {
             ivr_timeout_stop: None,
             b_leg: None,
             transfer_cancel: None,
+            transfer_announce_stop: None,
             session_expires: None,
             session_refresher: None,
         };
@@ -365,31 +368,32 @@ impl Session {
                                         self.reset_ivr_timeout();
                                     }
                                 }
-                                IvrAction::Transfer => {
-                                    if self.transfer_cancel.is_some() || self.b_leg.is_some() {
-                                        warn!(
-                                            "[session {}] transfer already active",
-                                            self.call_id
-                                        );
+                        IvrAction::Transfer => {
+                            if self.transfer_cancel.is_some() || self.b_leg.is_some() {
+                                warn!(
+                                    "[session {}] transfer already active",
+                                    self.call_id
+                                );
                                         self.reset_ivr_timeout();
                                         continue;
-                                    }
-                                    info!(
-                                        "[session {}] initiating transfer to B-leg",
-                                        self.call_id
-                                    );
-                                    self.ivr_state = IvrState::Transferring;
-                                    if let Err(e) = self.start_playback(&[TRANSFER_WAV_PATH]) {
-                                        warn!(
-                                            "[session {}] failed to play transfer wav: {:?}",
-                                            self.call_id, e
-                                        );
-                                    }
-                                    self.transfer_cancel = Some(b2bua::spawn_transfer(
-                                        self.call_id.clone(),
-                                        self.tx_in.clone(),
-                                    ));
-                                }
+                            }
+                            info!(
+                                "[session {}] initiating transfer to B-leg",
+                                self.call_id
+                            );
+                            self.ivr_state = IvrState::Transferring;
+                            if let Err(e) = self.start_playback(&[TRANSFER_WAV_PATH]) {
+                                warn!(
+                                    "[session {}] failed to play transfer wav: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            self.start_transfer_announce();
+                            self.transfer_cancel = Some(b2bua::spawn_transfer(
+                                self.call_id.clone(),
+                                self.tx_in.clone(),
+                            ));
+                        }
                                 IvrAction::ReplayMenu => {
                                     info!("[session {}] replaying IVR menu", self.call_id);
                                     if let Err(e) =
@@ -423,6 +427,7 @@ impl Session {
                                 self.call_id
                             );
                             self.transfer_cancel = None;
+                            self.stop_transfer_announce();
                             self.cancel_playback();
                             self.stop_ivr_timeout();
                             self.ivr_state = IvrState::B2buaMode;
@@ -444,6 +449,7 @@ impl Session {
                                 self.call_id, reason
                             );
                             self.transfer_cancel = None;
+                            self.stop_transfer_announce();
                             self.ivr_state = IvrState::IvrMenuWaiting;
                             self.b_leg = None;
                             if let Err(e) = self.start_playback(&[
@@ -492,6 +498,17 @@ impl Session {
                             let _ = self.app_tx.send(AppEvent::CallEnded {
                                 call_id: self.call_id.clone(),
                             });
+                        }
+                        (_, SessionIn::TransferAnnounce) => {
+                            if self.ivr_state == IvrState::Transferring && self.playback.is_none()
+                            {
+                                if let Err(e) = self.start_playback(&[TRANSFER_WAV_PATH]) {
+                                    warn!(
+                                        "[session {}] failed to replay transfer wav: {:?}",
+                                        self.call_id, e
+                                    );
+                                }
+                            }
                         }
                         (SessState::Established, SessionIn::SipReInvite { session_timer, .. }) => {
                             if let Some(timer) = session_timer {
@@ -775,6 +792,35 @@ impl Session {
         if let Some(cancel) = self.transfer_cancel.take() {
             let _ = cancel.send(());
         }
+        self.stop_transfer_announce();
+    }
+
+    fn start_transfer_announce(&mut self) {
+        self.stop_transfer_announce();
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let tx = self.tx_in.clone();
+        self.transfer_announce_stop = Some(stop_tx);
+        tokio::spawn(async move {
+            let mut tick = interval(TRANSFER_ANNOUNCE_INTERVAL);
+            tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            tick.tick().await;
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        let _ = tx.send(SessionIn::TransferAnnounce);
+                    }
+                    _ = &mut stop_rx => {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    fn stop_transfer_announce(&mut self) {
+        if let Some(stop) = self.transfer_announce_stop.take() {
+            let _ = stop.send(());
+        }
     }
 
     async fn shutdown_b_leg(&mut self, send_bye: bool) {
@@ -1007,6 +1053,7 @@ mod tests {
             ivr_timeout_stop: None,
             b_leg: None,
             transfer_cancel: None,
+            transfer_announce_stop: None,
             session_expires: None,
             session_refresher: None,
         }

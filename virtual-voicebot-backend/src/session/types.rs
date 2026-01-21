@@ -113,6 +113,8 @@ pub enum SessionIn {
     },
     /// IVR menu timeout
     IvrTimeout,
+    /// 転送中アナウンスの繰り返し
+    TransferAnnounce,
     /// app から返ってきたボット応答音声（WAVファイルパス）
     AppBotAudioFile {
         path: String,
