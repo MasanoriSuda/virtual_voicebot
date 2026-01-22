@@ -2400,6 +2400,233 @@ cargo test session::
 
 ---
 
+## Step-26: アウトバウンドゲートウェイ (Issue #29)
+
+**目的**: Linphone からの着信を受け、Voicebot が UAC として Docomo ひかり網に発信し、B2BUA でブリッジする
+
+**関連**: [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29)
+
+**依存**: Step-15〜17（REGISTER/認証）, Step-25（B2BUA 基盤）
+
+### 背景
+
+内線（Linphone）から Voicebot に発信すると、Voicebot が自動的に外線（Docomo ひかり網）に発信し、両者をブリッジする。IVR なしで即座に B2BUA 接続。
+
+```
+[内線: Linphone]          [Voicebot]              [外線: Docomo ひかり]
+       │                      │                          │
+       │─── INVITE ──────────>│                          │
+       │    sip:100@voicebot  │ (UAS として着信)          │
+       │                      │                          │
+       │<── 100 Trying ───────│                          │
+       │                      │                          │
+       │                      │─── INVITE ──────────────>│ (UAC として発信)
+       │                      │    sip:09012345678@docomo│
+       │                      │                          │
+       │                      │<── 407 Proxy Auth ───────│
+       │                      │─── INVITE (with Auth) ──>│ (Digest 認証)
+       │                      │                          │
+       │                      │<── 100 Trying ───────────│
+       │                      │<── 180 Ringing ──────────│
+       │<── 180 Ringing ──────│                          │ (呼出中を伝搬)
+       │                      │                          │
+       │                      │<── 200 OK ───────────────│
+       │<── 200 OK ───────────│                          │
+       │─── ACK ─────────────>│─── ACK ─────────────────>│
+       │                      │                          │
+       │<== RTP ==============>│<== RTP =================>│ (B2BUA メディア中継)
+```
+
+### 電話番号書き換えロジック
+
+環境変数ベースのダイヤルプラン:
+
+```
+判定順序:
+1. DIAL_<番号> 環境変数があれば → その値を使用
+2. 着信番号が電話番号形式（0始まり数字列）なら → そのまま使用
+3. それ以外 → OUTBOUND_DEFAULT_NUMBER を使用
+```
+
+#### 変換例
+
+| 環境変数 | Linphone からの着信 | 網への発信 |
+|----------|---------------------|------------|
+| `DIAL_100=09012345678` | `sip:100@voicebot` | `sip:09012345678@docomo` |
+| `DIAL_101=0312345678` | `sip:101@voicebot` | `sip:0312345678@docomo` |
+| (なし) | `sip:09087654321@voicebot` | `sip:09087654321@docomo` |
+| `OUTBOUND_DEFAULT_NUMBER=09012345678` | `sip:unknown@voicebot` | `sip:09012345678@docomo` |
+
+### DoD (Definition of Done)
+
+#### 着信判定・モード切替
+- [ ] 着信ポート/発信元による B2BUA モード判定
+- [ ] IVR スキップ、即座に外線発信開始
+- [ ] 着信時に発信先番号を決定（ダイヤルプラン適用）
+
+#### UAC INVITE 送信（網向け）
+- [ ] REGISTER 済み認証情報を使用
+- [ ] 407 Proxy Authentication Required 対応（Step-16 流用）
+- [ ] Request-URI: `sip:<電話番号>@<OUTBOUND_DOMAIN>`
+- [ ] From: REGISTER ユーザー
+- [ ] 180 Ringing を A レグに伝搬
+
+#### B2BUA メディアリレー
+- [ ] Step-25 の B2BUA 基盤を流用
+- [ ] A レグ (Linphone) ↔ B レグ (網) の双方向 RTP 中継
+- [ ] SSRC/Seq/Timestamp は脚ごとに独立生成
+
+#### 終了処理
+- [ ] A レグ BYE → B レグ BYE → 両方終了
+- [ ] B レグ BYE → A レグ BYE → 両方終了
+- [ ] 網からの 4xx/5xx → A レグに適切なレスポンス
+
+#### 検証
+- [ ] E2E: Linphone → Voicebot → 網 → 実電話機で通話
+- [ ] 認証フロー（407 → 再送）の確認
+- [ ] 双方向音声の確認
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/session/session.rs` | 着信時のモード判定、B2BUA 即時開始 |
+| `src/session/b2bua.rs` | 網向け UAC INVITE、認証対応 |
+| `src/sip/builder.rs` | 網向け INVITE ビルダー |
+| `src/config.rs` | ダイヤルプラン環境変数 |
+
+### 変更上限
+
+- **行数**: <=400行
+- **ファイル数**: <=5
+
+### 環境変数（追加）
+
+| 変数名 | 説明 | デフォルト |
+|--------|------|-----------|
+| `OUTBOUND_DOMAIN` | 網のドメイン（SIP URI のホスト部） | (REGISTER ドメインを使用) |
+| `OUTBOUND_DEFAULT_NUMBER` | デフォルト発信先番号 | (なし - 必須) |
+| `DIAL_<番号>` | 短縮ダイヤル変換（例: `DIAL_100=09012345678`） | (なし) |
+| `OUTBOUND_ENABLED` | アウトバウンドゲートウェイ有効化 | `false` |
+
+### 型定義（案）
+
+```rust
+// src/config.rs
+pub struct OutboundConfig {
+    pub enabled: bool,
+    pub domain: String,
+    pub default_number: Option<String>,
+    pub dial_plan: HashMap<String, String>,  // "100" -> "09012345678"
+}
+
+impl OutboundConfig {
+    pub fn resolve_number(&self, request_uri: &str) -> Option<String> {
+        // 1. DIAL_<番号> にマッチ
+        if let Some(number) = self.dial_plan.get(extract_user(request_uri)) {
+            return Some(number.clone());
+        }
+        // 2. 電話番号形式ならそのまま
+        let user = extract_user(request_uri);
+        if is_phone_number(user) {
+            return Some(user.to_string());
+        }
+        // 3. デフォルト番号
+        self.default_number.clone()
+    }
+}
+
+fn is_phone_number(s: &str) -> bool {
+    s.starts_with('0') && s.chars().all(|c| c.is_ascii_digit())
+}
+```
+
+### シーケンス
+
+#### ケース 1: 短縮ダイヤル (DIAL_100)
+
+```
+Linphone                Voicebot                   Docomo ひかり
+  |                         |                          |
+  |--- INVITE ------------->|                          |
+  |    sip:100@voicebot     | DIAL_100=09012345678     |
+  |                         |                          |
+  |<-- 100 Trying ----------|                          |
+  |                         |                          |
+  |                         |--- INVITE -------------->|
+  |                         |    sip:09012345678@docomo|
+  |                         |                          |
+  |                         |<-- 407 Proxy Auth -------|
+  |                         |--- INVITE (Auth) ------->|
+  |                         |                          |
+  |                         |<-- 180 Ringing ----------|
+  |<-- 180 Ringing ---------|                          |
+  |                         |                          |
+  |                         |<-- 200 OK ---------------|
+  |<-- 200 OK --------------|                          |
+  |--- ACK ---------------->|--- ACK ----------------->|
+  |                         |                          |
+  |<== RTP ================>|<== RTP =================>|
+```
+
+#### ケース 2: 電話番号直接指定
+
+```
+Linphone                Voicebot                   Docomo ひかり
+  |                         |                          |
+  |--- INVITE ------------->|                          |
+  |    sip:0312345678@vbot  | (電話番号形式 → そのまま)|
+  |                         |                          |
+  |                         |--- INVITE -------------->|
+  |                         |    sip:0312345678@docomo |
+  |                         |                          |
+  ...（以下同様）...
+```
+
+#### ケース 3: 網から拒否 (486 Busy)
+
+```
+Linphone                Voicebot                   Docomo ひかり
+  |                         |                          |
+  |--- INVITE ------------->|                          |
+  |                         |--- INVITE -------------->|
+  |                         |                          |
+  |                         |<-- 486 Busy Here --------|
+  |<-- 486 Busy Here -------|                          |
+  |--- ACK ---------------->|                          |
+```
+
+### 検証方法
+
+```bash
+# 環境変数設定
+export OUTBOUND_ENABLED=true
+export OUTBOUND_DOMAIN=docomo.ne.jp
+export OUTBOUND_DEFAULT_NUMBER=09012345678
+export DIAL_100=09087654321
+
+# Linphone から 100 に発信 → 09087654321 に接続されることを確認
+# Linphone から 0312345678 に発信 → 0312345678 に接続されることを確認
+```
+
+### Open Questions
+
+| # | 質問 | 回答 |
+|---|------|------|
+| Q1 | 認証は REGISTER と同じ認証情報で良いか？ | Yes（Step-16 の認証情報を流用） |
+| Q2 | 発信者番号（From）は REGISTER ユーザーで固定？ | Yes |
+| Q3 | 網からの早期メディア（183 Session Progress）対応は必要？ | 暫定 No（将来検討） |
+
+### リスク/ロールバック観点
+
+| リスク | 対策 |
+|--------|------|
+| 認証失敗で発信できない | 407 応答をログに残し、A レグに 503 を返す |
+| 網の応答遅延 | タイムアウト設定（`TRANSFER_TIMEOUT_SEC` 流用） |
+| 誤発信による課金 | `OUTBOUND_ENABLED=false` をデフォルトに |
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -2416,6 +2643,7 @@ cargo test session::
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-21 | 2.9 | Issue #29 統合: Step-26（アウトバウンドゲートウェイ）追加、Linphone→網のB2BUAブリッジ、環境変数ダイヤルプラン |
 | 2026-01-21 | 2.8 | Issue #27 統合: Step-25（B2BUA コール転送）追加、DTMF "3" でZoiper転送、メディアリレー方式 |
 | 2026-01-20 | 2.7 | Step-24 更新: interval ベースの再生ティック安定化、プツプツ音声問題の修正方針追加 |
 | 2026-01-20 | 2.6 | Issue #26 統合: Step-24（BYE 即時応答・音声再生キャンセル）追加、Step-23 状態を完了に更新 |

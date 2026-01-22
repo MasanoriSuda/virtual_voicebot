@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod auth;
 pub mod register;
 pub mod message;
 pub mod parse;
@@ -110,6 +111,7 @@ struct InviteContext {
     final_ok: Option<FinalOkRetransmit>,
     final_ok_payload: Option<Vec<u8>>,
     local_cseq: u32,
+    expires_at: Option<Instant>,
 }
 
 struct ReliableProvisional {
@@ -718,6 +720,7 @@ impl SipCore {
             final_ok: None,
             final_ok_payload: None,
             local_cseq: 0,
+            expires_at: None,
         };
         self.active_call_id = Some(headers.call_id.clone());
         self.invites.insert(headers.call_id.clone(), ctx);
@@ -1261,6 +1264,25 @@ impl SipCore {
                     log::warn!("[sip update] failed to build UPDATE call_id={}", call_id);
                 }
             }
+            SessionOut::SipSendError { code, reason } => {
+                if self.active_call_id.as_ref() == Some(call_id) {
+                    self.active_call_id = None;
+                }
+                let mut stop_reliable = false;
+                if let Some(ctx) = self.invites.get_mut(call_id) {
+                    if let Some(resp) = response_simple_from_request(&ctx.req, code, &reason) {
+                        let bytes = resp.to_bytes();
+                        ctx.tx.on_final_sent(bytes.clone(), code);
+                        let peer = ctx.tx.peer;
+                        self.send_payload(peer, bytes);
+                        stop_reliable = true;
+                    }
+                    ctx.expires_at = Some(Instant::now() + Duration::from_secs(32));
+                }
+                if stop_reliable {
+                    self.stop_reliable_provisional(call_id);
+                }
+            }
             SessionOut::SipSendBye => {
                 if self.active_call_id.as_ref() == Some(call_id) {
                     self.active_call_id = None;
@@ -1341,6 +1363,18 @@ impl SipCore {
             }
             alive
         });
+        self.invites.retain(|call_id, ctx| {
+            let Some(expires_at) = ctx.expires_at else {
+                return true;
+            };
+            let alive = expires_at > now;
+            if !alive {
+                events.push(SipEvent::TransactionTimeout {
+                    call_id: call_id.clone(),
+                });
+            }
+            alive
+        });
         events
     }
 }
@@ -1368,6 +1402,7 @@ mod tests {
             final_ok: None,
             final_ok_payload: None,
             local_cseq: 0,
+            expires_at: None,
         }
     }
 

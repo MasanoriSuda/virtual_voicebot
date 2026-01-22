@@ -97,9 +97,12 @@ pub enum SessionIn {
     B2buaEstablished {
         b_leg: BLeg,
     },
+    /// Bレグの呼び出し中（180 Ringing）
+    B2buaRinging,
     /// Bレグ転送失敗
     B2buaFailed {
         reason: String,
+        status: Option<u16>,
     },
     /// BレグからのRTP
     BLegRtp {
@@ -148,6 +151,11 @@ pub enum SessionOut {
     /// SIP UPDATE によるセッションリフレッシュ
     SipSendUpdate {
         expires: Duration,
+    },
+    /// SIP エラー応答（INVITE の最終応答）
+    SipSendError {
+        code: u16,
+        reason: String,
     },
     /// SIP BYE送信（UAC側として終話）
     SipSendBye,

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -249,6 +250,50 @@ pub fn registrar_config() -> Option<&'static RegistrarConfig> {
 }
 
 #[derive(Clone, Debug)]
+pub struct OutboundConfig {
+    pub enabled: bool,
+    pub domain: String,
+    pub default_number: Option<String>,
+    pub dial_plan: HashMap<String, String>,
+}
+
+impl OutboundConfig {
+    fn from_env() -> Self {
+        let enabled = env_bool("OUTBOUND_ENABLED", false);
+        let default_number = env_non_empty("OUTBOUND_DEFAULT_NUMBER");
+        let dial_plan = load_dial_plan();
+        let domain = env_non_empty("OUTBOUND_DOMAIN")
+            .or_else(|| registrar_config().map(|cfg| cfg.domain.clone()))
+            .unwrap_or_default();
+        if enabled && domain.is_empty() {
+            log::warn!("[config] OUTBOUND_ENABLED is true but no outbound domain configured");
+        }
+        Self {
+            enabled,
+            domain,
+            default_number,
+            dial_plan,
+        }
+    }
+
+    pub fn resolve_number(&self, user: &str) -> Option<String> {
+        if let Some(number) = self.dial_plan.get(user) {
+            return Some(number.clone());
+        }
+        if is_phone_number(user) {
+            return Some(user.to_string());
+        }
+        self.default_number.clone()
+    }
+}
+
+static OUTBOUND_CONFIG: OnceLock<OutboundConfig> = OnceLock::new();
+
+pub fn outbound_config() -> &'static OutboundConfig {
+    OUTBOUND_CONFIG.get_or_init(OutboundConfig::from_env)
+}
+
+#[derive(Clone, Debug)]
 pub struct Timeouts {
     pub ai_http: Duration,
     pub ingest_http: Duration,
@@ -330,6 +375,18 @@ fn env_duration_ms(key: &str, default_ms: u64) -> Duration {
     Duration::from_millis(ms)
 }
 
+fn env_bool(key: &str, default_value: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default_value)
+}
+
 fn env_u16(key: &str, default_value: u16) -> u16 {
     std::env::var(key)
         .ok()
@@ -358,10 +415,55 @@ fn env_non_empty(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn load_dial_plan() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for (key, value) in std::env::vars() {
+        let Some(suffix) = key.strip_prefix("DIAL_") else {
+            continue;
+        };
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        map.insert(suffix.to_string(), trimmed.to_string());
+    }
+    map
+}
+
+fn is_phone_number(s: &str) -> bool {
+    s.starts_with('0') && s.chars().all(|c| c.is_ascii_digit())
+}
+
 fn resolve_socket_addr(host: &str, port: u16) -> Option<SocketAddr> {
     (host, port).to_socket_addrs().ok()?.next()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outbound_resolve_number_prefers_dial_plan() {
+        let mut dial_plan = HashMap::new();
+        dial_plan.insert("100".to_string(), "09012345678".to_string());
+        let cfg = OutboundConfig {
+            enabled: true,
+            domain: "example.com".to_string(),
+            default_number: Some("09000000000".to_string()),
+            dial_plan,
+        };
+        assert_eq!(cfg.resolve_number("100"), Some("09012345678".to_string()));
+        assert_eq!(cfg.resolve_number("09011112222"), Some("09011112222".to_string()));
+        assert_eq!(cfg.resolve_number("unknown"), Some("09000000000".to_string()));
+    }
+
+    #[test]
+    fn outbound_phone_number_check() {
+        assert!(is_phone_number("09012345678"));
+        assert!(!is_phone_number("9012345678"));
+        assert!(!is_phone_number("abc"));
+    }
+}
 #[derive(Clone, Debug)]
 pub enum LogMode {
     Stdout,
@@ -454,14 +556,4 @@ static AI_CONFIG: OnceLock<AiConfig> = OnceLock::new();
 
 pub fn ai_config() -> &'static AiConfig {
     AI_CONFIG.get_or_init(AiConfig::from_env)
-}
-
-fn env_bool(key: &str, default_value: bool) -> bool {
-    match std::env::var(key) {
-        Ok(value) => {
-            let lower = value.to_ascii_lowercase();
-            lower == "1" || lower == "true" || lower == "yes"
-        }
-        Err(_) => default_value,
-    }
 }

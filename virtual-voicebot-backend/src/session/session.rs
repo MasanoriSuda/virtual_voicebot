@@ -11,6 +11,7 @@ use tokio::time::{interval, Duration, Instant, MissedTickBehavior};
 use crate::session::types::Sdp;
 use crate::session::types::*;
 use crate::session::b2bua;
+use crate::sip::{parse_name_addr, parse_uri};
 
 use crate::app::AppEvent;
 use crate::http::ingest::IngestPort;
@@ -59,6 +60,24 @@ fn intro_wav_path_for_hour(hour: u32) -> &'static str {
 fn get_intro_wav_path() -> &'static str {
     let hour = Local::now().hour();
     intro_wav_path_for_hour(hour)
+}
+
+fn extract_user_from_to(value: &str) -> Option<String> {
+    if let Ok(name_addr) = parse_name_addr(value) {
+        return name_addr.uri.user;
+    }
+    let trimmed = value.trim();
+    let addr = if let Some(start) = trimmed.find('<') {
+        if let Some(end) = trimmed[start + 1..].find('>') {
+            &trimmed[start + 1..start + 1 + end]
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    };
+    let addr = addr.split(';').next().unwrap_or(addr).trim();
+    parse_uri(addr).ok().and_then(|uri| uri.user)
 }
 
 #[derive(Clone)]
@@ -131,6 +150,10 @@ pub struct Session {
     b_leg: Option<b2bua::BLeg>,
     transfer_cancel: Option<oneshot::Sender<()>>,
     transfer_announce_stop: Option<oneshot::Sender<()>>,
+    outbound_mode: bool,
+    outbound_answered: bool,
+    outbound_sent_180: bool,
+    invite_rejected: bool,
     session_expires: Option<Duration>,
     session_refresher: Option<SessionRefresher>,
 }
@@ -183,6 +206,10 @@ impl Session {
             b_leg: None,
             transfer_cancel: None,
             transfer_announce_stop: None,
+            outbound_mode: false,
+            outbound_answered: false,
+            outbound_sent_180: false,
+            invite_rejected: false,
             session_expires: None,
             session_refresher: None,
         };
@@ -215,19 +242,71 @@ impl Session {
                             }
                             let answer = self.build_answer_pcmu8k();
                             self.local_sdp = Some(answer.clone());
-                            let _ = self
-                                .session_out_tx
-                                .send((self.call_id.clone(), SessionOut::SipSend100));
-                            let _ = self
-                                .session_out_tx
-                                .send((self.call_id.clone(), SessionOut::SipSend180));
-                            let _ = self
-                                .session_out_tx
-                                .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
+                            self.outbound_mode = false;
+                            self.outbound_answered = false;
+                            self.outbound_sent_180 = false;
+                            self.invite_rejected = false;
+                            if config::outbound_config().enabled {
+                                let outbound_cfg = config::outbound_config();
+                                let registrar = config::registrar_config();
+                                let user =
+                                    extract_user_from_to(self.to_uri.as_str()).unwrap_or_default();
+                                let skip_outbound = registrar
+                                    .map(|cfg| cfg.user == user)
+                                    .unwrap_or(false);
+                                if !skip_outbound {
+                                    let target = outbound_cfg.resolve_number(user.as_str());
+                                    if outbound_cfg.domain.is_empty()
+                                        || registrar.is_none()
+                                        || target.is_none()
+                                    {
+                                        warn!(
+                                            "[session {}] outbound disabled (missing config)",
+                                            self.call_id
+                                        );
+                                        let _ = self.session_out_tx.send((
+                                            self.call_id.clone(),
+                                            SessionOut::SipSendError {
+                                                code: 503,
+                                                reason: "Service Unavailable".to_string(),
+                                            },
+                                        ));
+                                        self.invite_rejected = true;
+                                        advance_state = false;
+                                    } else {
+                                        self.outbound_mode = true;
+                                        self.ivr_state = IvrState::Transferring;
+                                        if let Some(number) = target {
+                                            self.transfer_cancel = Some(b2bua::spawn_outbound(
+                                                self.call_id.clone(),
+                                                number,
+                                                self.tx_in.clone(),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            if advance_state {
+                                let _ = self
+                                    .session_out_tx
+                                    .send((self.call_id.clone(), SessionOut::SipSend100));
+                                if !self.outbound_mode {
+                                    let _ = self
+                                        .session_out_tx
+                                        .send((self.call_id.clone(), SessionOut::SipSend180));
+                                    let _ = self.session_out_tx.send((
+                                        self.call_id.clone(),
+                                        SessionOut::SipSend200 { answer },
+                                    ));
+                                }
+                            }
                         }
                         (SessState::Early, SessionIn::SipAck) => {
                             // 相手SDPからRTP宛先を確定して送信開始
                             if self.intro_sent {
+                                advance_state = false;
+                            }
+                            if self.invite_rejected {
                                 advance_state = false;
                             }
                             if !advance_state {
@@ -280,19 +359,21 @@ impl Session {
                                 call_id: self.call_id.clone(),
                             });
 
-                    self.ivr_state = IvrState::IvrMenuWaiting;
-                    if let Err(e) = self.start_playback(&[IVR_INTRO_WAV_PATH]) {
-                        warn!(
-                            "[session {}] failed to send IVR intro wav: {:?}",
-                            self.call_id, e
-                        );
-                        self.reset_ivr_timeout();
-                    } else {
-                        info!(
-                            "[session {}] sent IVR intro wav {}",
-                            self.call_id, IVR_INTRO_WAV_PATH
-                        );
-                    }
+                            if !self.outbound_mode {
+                                self.ivr_state = IvrState::IvrMenuWaiting;
+                                if let Err(e) = self.start_playback(&[IVR_INTRO_WAV_PATH]) {
+                                    warn!(
+                                        "[session {}] failed to send IVR intro wav: {:?}",
+                                        self.call_id, e
+                                    );
+                                    self.reset_ivr_timeout();
+                                } else {
+                                    info!(
+                                        "[session {}] sent IVR intro wav {}",
+                                        self.call_id, IVR_INTRO_WAV_PATH
+                                    );
+                                }
+                            }
 
                             self.start_keepalive_timer();
                             self.start_session_timer_if_needed();
@@ -368,32 +449,32 @@ impl Session {
                                         self.reset_ivr_timeout();
                                     }
                                 }
-                        IvrAction::Transfer => {
-                            if self.transfer_cancel.is_some() || self.b_leg.is_some() {
-                                warn!(
-                                    "[session {}] transfer already active",
-                                    self.call_id
-                                );
+                                IvrAction::Transfer => {
+                                    if self.transfer_cancel.is_some() || self.b_leg.is_some() {
+                                        warn!(
+                                            "[session {}] transfer already active",
+                                            self.call_id
+                                        );
                                         self.reset_ivr_timeout();
                                         continue;
-                            }
-                            info!(
-                                "[session {}] initiating transfer to B-leg",
-                                self.call_id
-                            );
-                            self.ivr_state = IvrState::Transferring;
-                            if let Err(e) = self.start_playback(&[TRANSFER_WAV_PATH]) {
-                                warn!(
-                                    "[session {}] failed to play transfer wav: {:?}",
-                                    self.call_id, e
-                                );
-                            }
-                            self.start_transfer_announce();
-                            self.transfer_cancel = Some(b2bua::spawn_transfer(
-                                self.call_id.clone(),
-                                self.tx_in.clone(),
-                            ));
-                        }
+                                    }
+                                    info!(
+                                        "[session {}] initiating transfer to B-leg",
+                                        self.call_id
+                                    );
+                                    self.ivr_state = IvrState::Transferring;
+                                    if let Err(e) = self.start_playback(&[TRANSFER_WAV_PATH]) {
+                                        warn!(
+                                            "[session {}] failed to play transfer wav: {:?}",
+                                            self.call_id, e
+                                        );
+                                    }
+                                    self.start_transfer_announce();
+                                    self.transfer_cancel = Some(b2bua::spawn_transfer(
+                                        self.call_id.clone(),
+                                        self.tx_in.clone(),
+                                    ));
+                                }
                                 IvrAction::ReplayMenu => {
                                     info!("[session {}] replaying IVR menu", self.call_id);
                                     if let Err(e) =
@@ -421,7 +502,7 @@ impl Session {
                                 }
                             }
                         }
-                        (SessState::Established, SessionIn::B2buaEstablished { b_leg }) => {
+                        (_, SessionIn::B2buaEstablished { b_leg }) => {
                             info!(
                                 "[session {}] B-leg established, entering B2BUA mode",
                                 self.call_id
@@ -442,25 +523,47 @@ impl Session {
                                     0,
                                 );
                             }
+                            if self.outbound_mode && !self.outbound_answered {
+                                if let Some(answer) = self.local_sdp.clone() {
+                                    let _ = self.session_out_tx.send((
+                                        self.call_id.clone(),
+                                        SessionOut::SipSend200 { answer },
+                                    ));
+                                    self.outbound_answered = true;
+                                }
+                            }
                         }
-                        (SessState::Established, SessionIn::B2buaFailed { reason }) => {
+                        (_, SessionIn::B2buaFailed { reason, status }) => {
                             warn!(
                                 "[session {}] transfer failed: {}",
                                 self.call_id, reason
                             );
                             self.transfer_cancel = None;
                             self.stop_transfer_announce();
-                            self.ivr_state = IvrState::IvrMenuWaiting;
-                            self.b_leg = None;
-                            if let Err(e) = self.start_playback(&[
-                                TRANSFER_FAIL_WAV_PATH,
-                                IVR_INTRO_AGAIN_WAV_PATH,
-                            ]) {
-                                warn!(
-                                    "[session {}] failed to play transfer fail flow: {:?}",
-                                    self.call_id, e
-                                );
-                                self.reset_ivr_timeout();
+                            if self.outbound_mode {
+                                let code = status.unwrap_or(503);
+                                let _ = self.session_out_tx.send((
+                                    self.call_id.clone(),
+                                    SessionOut::SipSendError {
+                                        code,
+                                        reason: "Service Unavailable".to_string(),
+                                    },
+                                ));
+                                self.outbound_mode = false;
+                                self.invite_rejected = true;
+                            } else {
+                                self.ivr_state = IvrState::IvrMenuWaiting;
+                                self.b_leg = None;
+                                if let Err(e) = self.start_playback(&[
+                                    TRANSFER_FAIL_WAV_PATH,
+                                    IVR_INTRO_AGAIN_WAV_PATH,
+                                ]) {
+                                    warn!(
+                                        "[session {}] failed to play transfer fail flow: {:?}",
+                                        self.call_id, e
+                                    );
+                                    self.reset_ivr_timeout();
+                                }
                             }
                         }
                         (_, SessionIn::BLegRtp { payload }) => {
@@ -498,6 +601,15 @@ impl Session {
                             let _ = self.app_tx.send(AppEvent::CallEnded {
                                 call_id: self.call_id.clone(),
                             });
+                        }
+                        (_, SessionIn::B2buaRinging) => {
+                            if self.outbound_mode && !self.outbound_sent_180 {
+                                let _ = self.session_out_tx.send((
+                                    self.call_id.clone(),
+                                    SessionOut::SipSend180,
+                                ));
+                                self.outbound_sent_180 = true;
+                            }
                         }
                         (_, SessionIn::TransferAnnounce) => {
                             if self.ivr_state == IvrState::Transferring && self.playback.is_none()
@@ -596,22 +708,22 @@ impl Session {
                         (_, SessionIn::SipSessionExpires { timer }) => {
                             self.update_session_expires(timer);
                         }
-                (_, SessionIn::IvrTimeout) => {
-                    if self.ivr_state == IvrState::IvrMenuWaiting {
-                        info!(
-                            "[session {}] IVR timeout, replaying menu",
-                            self.call_id
-                        );
-                        self.stop_ivr_timeout();
-                        if let Err(e) = self.start_playback(&[IVR_INTRO_AGAIN_WAV_PATH]) {
-                            warn!(
-                                "[session {}] failed to replay IVR menu: {:?}",
-                                self.call_id, e
-                            );
-                            self.reset_ivr_timeout();
+                        (_, SessionIn::IvrTimeout) => {
+                            if self.ivr_state == IvrState::IvrMenuWaiting {
+                                info!(
+                                    "[session {}] IVR timeout, replaying menu",
+                                    self.call_id
+                                );
+                                self.stop_ivr_timeout();
+                                if let Err(e) = self.start_playback(&[IVR_INTRO_AGAIN_WAV_PATH]) {
+                                    warn!(
+                                        "[session {}] failed to replay IVR menu: {:?}",
+                                        self.call_id, e
+                                    );
+                                    self.reset_ivr_timeout();
+                                }
+                            }
                         }
-                    }
-                }
                         (_, SessionIn::SessionRefreshDue) => {
                             if let (Some(expires), Some(SessionRefresher::Uas)) =
                                 (self.session_expires, self.session_refresher)
@@ -1054,6 +1166,10 @@ mod tests {
             b_leg: None,
             transfer_cancel: None,
             transfer_announce_stop: None,
+            outbound_mode: false,
+            outbound_answered: false,
+            outbound_sent_180: false,
+            invite_rejected: false,
             session_expires: None,
             session_refresher: None,
         }
