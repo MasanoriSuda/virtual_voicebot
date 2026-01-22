@@ -1269,15 +1269,18 @@ impl SipCore {
                     self.active_call_id = None;
                 }
                 let mut stop_reliable = false;
+                let mut send_payload = None;
                 if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(resp) = response_simple_from_request(&ctx.req, code, &reason) {
                         let bytes = resp.to_bytes();
                         ctx.tx.on_final_sent(bytes.clone(), code);
-                        let peer = ctx.tx.peer;
-                        self.send_payload(peer, bytes);
+                        send_payload = Some((ctx.tx.peer, bytes));
                         stop_reliable = true;
                     }
                     ctx.expires_at = Some(Instant::now() + Duration::from_secs(32));
+                }
+                if let Some((peer, payload)) = send_payload {
+                    self.send_payload(peer, payload);
                 }
                 if stop_reliable {
                     self.stop_reliable_provisional(call_id);
