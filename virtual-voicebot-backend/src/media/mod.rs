@@ -8,6 +8,7 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
 
 use crate::recording;
+use crate::rtp::codec::mulaw_to_linear16;
 
 pub struct Recorder {
     call_id: String,
@@ -71,6 +72,8 @@ impl Recorder {
     }
 
     fn push_mulaw(&mut self, pcm_mulaw: &[u8]) {
+        #[cfg(debug_assertions)]
+        dump_raw_mulaw(pcm_mulaw);
         if let Some(w) = self.writer.as_mut() {
             for &b in pcm_mulaw {
                 let _ = w.write_sample(mulaw_to_linear16(b));
@@ -123,19 +126,14 @@ impl Recorder {
     }
 }
 
-fn mulaw_to_linear16(mu: u8) -> i16 {
-    const BIAS: i16 = 0x84;
-    let mu = !mu;
-    let sign = (mu & 0x80) != 0;
-    let segment = (mu & 0x70) >> 4;
-    let mantissa = mu & 0x0F;
-
-    let mut value = ((mantissa as i16) << 4) + 0x08;
-    value <<= segment as i16;
-    value -= BIAS;
-    if sign {
-        -value
-    } else {
-        value
+#[cfg(debug_assertions)]
+fn dump_raw_mulaw(pcm_mulaw: &[u8]) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/raw_mulaw.bin")
+    {
+        let _ = f.write_all(pcm_mulaw);
     }
 }

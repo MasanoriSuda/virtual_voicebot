@@ -21,7 +21,7 @@ use crate::rtp::tx::RtpTxHandle;
 use crate::session::{
     spawn_session, MediaConfig, SessionIn, SessionMap, SessionOut, SessionRegistry,
 };
-use crate::sip::{SipConfig, SipCore, SipEvent};
+use crate::sip::{b2bua_bridge, SipConfig, SipCore, SipEvent};
 use crate::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendRequest};
 
 #[tokio::main]
@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
     // session → sip 指示
     let (session_out_tx, mut session_out_rx) =
         unbounded_channel::<(crate::session::types::CallId, SessionOut)>();
+    b2bua_bridge::init(sip_send_tx.clone(), sip_port);
 
     // --- ソケット準備 (SIP/RTPポートは環境変数で指定) ---
     let sip_sock = UdpSocket::bind((sip_bind_ip.as_str(), sip_port)).await?;

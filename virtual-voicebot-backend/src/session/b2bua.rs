@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use log::{info, warn};
 use rand::Rng;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::Notify;
 use tokio::time::sleep;
 
@@ -16,11 +16,13 @@ use crate::rtp::codec::{codec_from_pt, decode_to_mulaw};
 use crate::rtp::parser::parse_rtp_packet;
 use crate::session::types::{SessionIn, Sdp};
 use crate::sip::auth::{build_authorization_header, parse_digest_challenge};
+use crate::sip::auth_cache::{self, DigestAuthChallenge, DigestAuthHeader};
+use crate::sip::b2bua_bridge::{self, B2buaRegistration, B2buaSipMessage};
 use crate::sip::builder::response_simple_from_request;
 use crate::sip::message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
-use crate::sip::{parse_sip_message, parse_uri, SipRequestBuilder};
+use crate::sip::{parse_uri, SipRequestBuilder};
+use crate::transport::TransportPeer;
 
-const SIP_BUFFER_SIZE: usize = 2048;
 const RTP_BUFFER_SIZE: usize = 2048;
 const DEFAULT_SIP_PORT: u16 = 5060;
 
@@ -29,7 +31,6 @@ pub struct BLeg {
     pub call_id: String,
     pub rtp_key: String,
     pub remote_rtp_addr: SocketAddr,
-    sip_socket: Arc<UdpSocket>,
     sip_peer: SocketAddr,
     from_header: String,
     to_header: String,
@@ -37,6 +38,7 @@ pub struct BLeg {
     cseq: u32,
     via_host: String,
     via_port: u16,
+    _b2bua_reg: B2buaRegistration,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
 }
@@ -53,9 +55,7 @@ impl BLeg {
             .header("Call-ID", self.call_id.clone())
             .header("CSeq", format!("{} BYE", self.cseq))
             .build();
-        self.sip_socket
-            .send_to(&req.to_bytes(), self.sip_peer)
-            .await?;
+        send_b2bua_payload(TransportPeer::Udp(self.sip_peer), req.to_bytes())?;
         Ok(())
     }
 
@@ -123,8 +123,7 @@ async fn run_transfer(
     let target_uri = config::transfer_target_uri();
     let target_addr = resolve_target_addr(&target_uri)?;
 
-    let sip_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-    let sip_port = sip_socket.local_addr()?.port();
+    let sip_port = cfg.sip_port;
     let via_host = cfg.advertised_ip.clone();
     let via = build_via(via_host.as_str(), sip_port);
     let local_tag = generate_tag();
@@ -134,6 +133,7 @@ async fn run_transfer(
     );
     let to_header = format!("<{}>", target_uri);
     let b_call_id = format!("b2bua-{}-{}", a_call_id, rand::thread_rng().gen::<u32>());
+    let (b2bua_reg, mut sip_rx) = b2bua_bridge::register(b_call_id.clone());
 
     let rtp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
     let rtp_port = rtp_socket.local_addr()?.port();
@@ -155,12 +155,11 @@ async fn run_transfer(
         .build();
 
     log_invite("transfer", target_addr, &invite);
-    sip_socket.send_to(&invite.to_bytes(), target_addr).await?;
+    send_b2bua_payload(TransportPeer::Udp(target_addr), invite.to_bytes())?;
 
     let timeout = config::transfer_timeout();
     let timeout_sleep = sleep(timeout);
     tokio::pin!(timeout_sleep);
-    let mut buf = vec![0u8; SIP_BUFFER_SIZE];
     let mut provisional_received = false;
 
     loop {
@@ -175,29 +174,19 @@ async fn run_transfer(
                         .header("Call-ID", b_call_id.clone())
                         .header("CSeq", format!("{cseq} CANCEL"))
                         .build();
-                    let _ = sip_socket.send_to(&cancel.to_bytes(), target_addr).await;
+                    let _ = send_b2bua_payload(TransportPeer::Udp(target_addr), cancel.to_bytes());
                 }
                 return Ok(None);
             }
             _ = &mut timeout_sleep => {
                 return Err(anyhow!("transfer timeout after {}s", timeout.as_secs()));
             }
-            recv = sip_socket.recv_from(&mut buf) => {
-                let (len, src) = recv?;
-                let raw = std::str::from_utf8(&buf[..len]).map_err(|_| anyhow!("invalid sip bytes"))?;
-                let trimmed = raw.trim_matches(|c| c == '\r' || c == '\n');
-                if trimmed.is_empty() {
-                    // TODO(#28): handle SIP keepalive explicitly if needed.
-                    continue;
-                }
-                let msg = match parse_sip_message(raw) {
-                    Ok(msg) => msg,
-                    Err(err) => {
-                        warn!("[b2bua {}] sip parse failed: {}", a_call_id, err);
-                        continue;
-                    }
+            maybe_msg = sip_rx.recv() => {
+                let Some(msg) = maybe_msg else {
+                    return Err(anyhow!("transfer sip channel closed"));
                 };
-                let SipMessage::Response(resp) = msg else {
+                let B2buaSipMessage { peer, message } = msg;
+                let SipMessage::Response(resp) = message else {
                     continue;
                 };
                 if !response_matches_call_id(&resp, &b_call_id) {
@@ -206,8 +195,8 @@ async fn run_transfer(
                 if resp.status_code < 200 {
                     provisional_received = true;
                     info!(
-                        "[b2bua {}] provisional response {} from {}",
-                        a_call_id, resp.status_code, src
+                        "[b2bua {}] provisional response {} from {:?}",
+                        a_call_id, resp.status_code, peer
                     );
                     continue;
                 }
@@ -240,14 +229,14 @@ async fn run_transfer(
                     .header("Call-ID", b_call_id.clone())
                     .header("CSeq", format!("{cseq} ACK"))
                     .build();
-                sip_socket.send_to(&ack.to_bytes(), sip_peer).await?;
+                send_b2bua_payload(TransportPeer::Udp(sip_peer), ack.to_bytes())?;
 
                 let shutdown = Arc::new(AtomicBool::new(false));
                 let shutdown_notify = Arc::new(Notify::new());
                 spawn_sip_listener(
                     a_call_id.clone(),
                     b_call_id.clone(),
-                    sip_socket.clone(),
+                    sip_rx,
                     tx_in.clone(),
                     shutdown.clone(),
                     shutdown_notify.clone(),
@@ -264,7 +253,6 @@ async fn run_transfer(
                     call_id: b_call_id,
                     rtp_key: format!("{}-b", a_call_id),
                     remote_rtp_addr,
-                    sip_socket,
                     sip_peer,
                     from_header,
                     to_header,
@@ -272,6 +260,7 @@ async fn run_transfer(
                     cseq: 1,
                     via_host,
                     via_port: sip_port,
+                    _b2bua_reg: b2bua_reg,
                     shutdown,
                     shutdown_notify,
                 };
@@ -319,8 +308,7 @@ async fn run_outbound(
     let request_uri = format!("sip:{}@{}", number, outbound_domain);
     let sip_peer = registrar.addr;
 
-    let sip_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-    let sip_port = sip_socket.local_addr()?.port();
+    let sip_port = cfg.sip_port;
     let from_header = format!(
         "<sip:{}@{}>;tag={}",
         registrar.user,
@@ -329,6 +317,7 @@ async fn run_outbound(
     );
     let to_header = format!("<{}>", request_uri);
     let call_id = format!("outbound-{}-{}", a_call_id, rand::thread_rng().gen::<u32>());
+    let (b2bua_reg, mut sip_rx) = b2bua_bridge::register(call_id.clone());
     let via_host = registrar.contact_host.clone();
 
     let rtp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
@@ -336,12 +325,27 @@ async fn run_outbound(
     let sdp = build_sdp(cfg.advertised_ip.as_str(), rtp_port);
 
     let mut cseq: u32 = 1;
-    let mut auth_attempted = false;
+    let mut auth_attempts: u32 = 0;
+    let mut max_auth_attempts: u32 = 1;
     let mut auth_nc: u32 = 0;
+    let mut auth_nonce: Option<String> = None;
 
     let mut invite_via = build_via(via_host.as_str(), sip_port);
+    let mut initial_auth: Option<(&'static str, String)> = None;
+    if let Some(cached) = auth_cache::load() {
+        if let Some(auth_value) = build_outbound_auth_value(
+            registrar,
+            request_uri.as_str(),
+            &cached.challenge,
+            &mut auth_nc,
+            &mut auth_nonce,
+        ) {
+            initial_auth = Some((cached.header.as_str(), auth_value));
+            auth_attempts = 1;
+            max_auth_attempts = 2;
+        }
+    }
     send_outbound_invite(
-        &sip_socket,
         sip_peer,
         &request_uri,
         &from_header,
@@ -352,14 +356,13 @@ async fn run_outbound(
         sip_port,
         registrar,
         &sdp,
-        None,
+        initial_auth,
     )
     .await?;
 
     let timeout = config::transfer_timeout();
     let timeout_sleep = sleep(timeout);
     tokio::pin!(timeout_sleep);
-    let mut buf = vec![0u8; SIP_BUFFER_SIZE];
     let mut provisional_received = false;
 
     loop {
@@ -374,29 +377,18 @@ async fn run_outbound(
                         .header("Call-ID", call_id.clone())
                         .header("CSeq", format!("{cseq} CANCEL"))
                         .build();
-                    let _ = sip_socket.send_to(&cancel.to_bytes(), sip_peer).await;
+                    let _ = send_b2bua_payload(TransportPeer::Udp(sip_peer), cancel.to_bytes());
                 }
                 return Ok(None);
             }
             _ = &mut timeout_sleep => {
                 return Err(anyhow!("outbound timeout after {}s", timeout.as_secs()));
             }
-            recv = sip_socket.recv_from(&mut buf) => {
-                let (len, _src) = recv?;
-                let raw = std::str::from_utf8(&buf[..len]).map_err(|_| anyhow!("invalid sip bytes"))?;
-                let trimmed = raw.trim_matches(|c| c == '\r' || c == '\n');
-                if trimmed.is_empty() {
-                    // TODO(#28): handle SIP keepalive explicitly if needed.
-                    continue;
-                }
-                let msg = match parse_sip_message(raw) {
-                    Ok(msg) => msg,
-                    Err(err) => {
-                        warn!("[b2bua {}] sip parse failed: {}", a_call_id, err);
-                        continue;
-                    }
+            maybe_msg = sip_rx.recv() => {
+                let Some(msg) = maybe_msg else {
+                    return Err(anyhow!("outbound sip channel closed"));
                 };
-                let SipMessage::Response(resp) = msg else { continue; };
+                let SipMessage::Response(resp) = msg.message else { continue; };
                 if !response_matches_call_id(&resp, &call_id) {
                     continue;
                 }
@@ -408,7 +400,7 @@ async fn run_outbound(
                     continue;
                 }
                 if resp.status_code == 401 || resp.status_code == 407 {
-                    if auth_attempted {
+                    if auth_attempts >= max_auth_attempts {
                         return Err(anyhow!(OutboundError { status: resp.status_code }));
                     }
                     let (challenge_header, auth_header) = if resp.status_code == 401 {
@@ -422,24 +414,26 @@ async fn run_outbound(
                     let Some(challenge) = parse_digest_challenge(challenge_value) else {
                         return Err(anyhow!(OutboundError { status: resp.status_code }));
                     };
-                    auth_nc = auth_nc.saturating_add(1);
-                    let password = registrar.auth_password.as_ref().unwrap();
-                    let Some(auth_value) = build_authorization_header(
-                        registrar.auth_username.as_str(),
-                        password.as_str(),
-                        "INVITE",
+                    if let Some(header_kind) = DigestAuthHeader::from_name(auth_header) {
+                        auth_cache::store(DigestAuthChallenge {
+                            header: header_kind,
+                            challenge: challenge.clone(),
+                        });
+                    }
+                    let Some(auth_value) = build_outbound_auth_value(
+                        registrar,
                         request_uri.as_str(),
                         &challenge,
-                        auth_nc,
+                        &mut auth_nc,
+                        &mut auth_nonce,
                     ) else {
                         return Err(anyhow!(OutboundError { status: resp.status_code }));
                     };
-                    auth_attempted = true;
+                    auth_attempts = auth_attempts.saturating_add(1);
                     cseq = cseq.saturating_add(1);
                     provisional_received = false;
                     invite_via = build_via(via_host.as_str(), sip_port);
                     send_outbound_invite(
-                        &sip_socket,
                         sip_peer,
                         &request_uri,
                         &from_header,
@@ -489,14 +483,14 @@ async fn run_outbound(
                     .header("Call-ID", call_id.clone())
                     .header("CSeq", format!("{} ACK", cseq))
                     .build();
-                sip_socket.send_to(&ack.to_bytes(), sip_peer).await?;
+                send_b2bua_payload(TransportPeer::Udp(sip_peer), ack.to_bytes())?;
 
                 let shutdown = Arc::new(AtomicBool::new(false));
                 let shutdown_notify = Arc::new(Notify::new());
                 spawn_sip_listener(
                     a_call_id.clone(),
                     call_id.clone(),
-                    sip_socket.clone(),
+                    sip_rx,
                     tx_in.clone(),
                     shutdown.clone(),
                     shutdown_notify.clone(),
@@ -513,7 +507,6 @@ async fn run_outbound(
                     call_id,
                     rtp_key: format!("{}-b", a_call_id),
                     remote_rtp_addr,
-                    sip_socket,
                     sip_peer,
                     from_header,
                     to_header,
@@ -521,6 +514,7 @@ async fn run_outbound(
                     cseq,
                     via_host,
                     via_port: sip_port,
+                    _b2bua_reg: b2bua_reg,
                     shutdown,
                     shutdown_notify,
                 };
@@ -533,13 +527,12 @@ async fn run_outbound(
 fn spawn_sip_listener(
     a_call_id: String,
     b_call_id: String,
-    sip_socket: Arc<UdpSocket>,
+    mut sip_rx: UnboundedReceiver<B2buaSipMessage>,
     tx_in: UnboundedSender<SessionIn>,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
 ) {
     tokio::spawn(async move {
-        let mut buf = vec![0u8; SIP_BUFFER_SIZE];
         loop {
             if shutdown.load(Ordering::SeqCst) {
                 break;
@@ -550,18 +543,17 @@ fn spawn_sip_listener(
                         break;
                     }
                 }
-                recv = sip_socket.recv_from(&mut buf) => {
-                    let Ok((len, peer)) = recv else { continue; };
-                    let Ok(raw) = std::str::from_utf8(&buf[..len]) else { continue; };
-                    let Ok(msg) = parse_sip_message(raw) else { continue; };
-                    match msg {
+                maybe_msg = sip_rx.recv() => {
+                    let Some(msg) = maybe_msg else { break; };
+                    let B2buaSipMessage { peer, message } = msg;
+                    match message {
                         SipMessage::Request(req) => {
                             if !request_matches_call_id(&req, &b_call_id) {
                                 continue;
                             }
                             if matches!(req.method, SipMethod::Bye) {
                                 if let Some(resp) = response_simple_from_request(&req, 200, "OK") {
-                                    let _ = sip_socket.send_to(&resp.to_bytes(), peer).await;
+                                    let _ = send_b2bua_payload(peer, resp.to_bytes());
                                 }
                                 let _ = tx_in.send(SessionIn::BLegBye);
                                 break;
@@ -617,6 +609,14 @@ fn spawn_rtp_listener(
         }
         info!("[b2bua {}] rtp listener ended", a_call_id);
     });
+}
+
+fn send_b2bua_payload(peer: TransportPeer, payload: Vec<u8>) -> Result<()> {
+    if b2bua_bridge::send(peer, payload) {
+        Ok(())
+    } else {
+        Err(anyhow!("b2bua transport not initialized"))
+    }
 }
 
 fn resolve_target_addr(uri: &str) -> Result<SocketAddr> {
@@ -676,8 +676,32 @@ fn build_sdp(ip: &str, port: u16) -> String {
     )
 }
 
+fn build_outbound_auth_value(
+    registrar: &RegistrarConfig,
+    request_uri: &str,
+    challenge: &crate::sip::auth::DigestChallenge,
+    auth_nc: &mut u32,
+    last_nonce: &mut Option<String>,
+) -> Option<String> {
+    let password = registrar.auth_password.as_deref()?;
+    if last_nonce.as_deref() != Some(challenge.nonce.as_str()) {
+        *last_nonce = Some(challenge.nonce.clone());
+        *auth_nc = 0;
+    }
+    let next_nc = auth_nc.saturating_add(1);
+    let auth_value = build_authorization_header(
+        registrar.auth_username.as_str(),
+        password,
+        "INVITE",
+        request_uri,
+        challenge,
+        next_nc,
+    )?;
+    *auth_nc = next_nc;
+    Some(auth_value)
+}
+
 async fn send_outbound_invite(
-    sip_socket: &UdpSocket,
     peer: SocketAddr,
     request_uri: &str,
     from_header: &str,
@@ -710,7 +734,7 @@ async fn send_outbound_invite(
     }
     let request = builder.build();
     log_invite("outbound", peer, &request);
-    sip_socket.send_to(&request.to_bytes(), peer).await?;
+    send_b2bua_payload(TransportPeer::Udp(peer), request.to_bytes())?;
     Ok(())
 }
 

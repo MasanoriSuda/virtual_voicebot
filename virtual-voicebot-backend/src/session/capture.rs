@@ -1,4 +1,5 @@
 use crate::config::VadConfig;
+use crate::rtp::codec::mulaw_to_linear16;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,23 +147,6 @@ fn rms_energy(payload: &[u8]) -> u32 {
     }
     let mean = sum / payload.len() as u64;
     (mean as f64).sqrt() as u32
-}
-
-fn mulaw_to_linear16(mu: u8) -> i16 {
-    const BIAS: i16 = 0x84;
-    let mu = !mu;
-    let sign = (mu & 0x80) != 0;
-    let segment = (mu & 0x70) >> 4;
-    let mantissa = mu & 0x0F;
-
-    let mut value = ((mantissa as i16) << 4) + 0x08;
-    value <<= segment as i16;
-    value -= BIAS;
-    if sign {
-        -value
-    } else {
-        value
-    }
 }
 
 #[cfg(test)]

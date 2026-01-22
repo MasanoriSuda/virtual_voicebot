@@ -1,3 +1,5 @@
+use super::codec::mulaw_to_linear16;
+
 const SAMPLE_RATE: f64 = 8000.0;
 const MIN_SIGNAL_ENERGY: f64 = 1.0e6;
 const MIN_TONE_FRAMES: u8 = 2;
@@ -113,17 +115,6 @@ fn max_and_second(values: &[f64; 4]) -> (usize, f64, f64) {
         }
     }
     (max_idx, max_val, second_val)
-}
-fn mulaw_to_linear16(mu: u8) -> i16 {
-    const BIAS: i16 = 0x84;
-    let mu = !mu;
-    let sign = (mu & 0x80) != 0;
-    let segment = (mu & 0x70) >> 4;
-    let mantissa = mu & 0x0F;
-    let mut value = ((mantissa as i16) << 4) + 0x08;
-    value <<= segment as i16;
-    value -= BIAS;
-    if sign { -value } else { value }
 }
 #[cfg(test)]
 mod tests {

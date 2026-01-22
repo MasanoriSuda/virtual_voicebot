@@ -1,5 +1,7 @@
 pub mod builder;
 pub mod auth;
+pub mod auth_cache;
+pub mod b2bua_bridge;
 pub mod register;
 pub mod message;
 pub mod parse;
@@ -545,6 +547,10 @@ impl SipCore {
             Ok(m) => m,
             Err(_) => return vec![SipEvent::Unknown],
         };
+
+        if b2bua_bridge::dispatch_message(input.peer, &msg) {
+            return vec![];
+        }
 
         let mut ev = match msg {
             SipMessage::Request(req) => self.handle_request(req, input.peer),

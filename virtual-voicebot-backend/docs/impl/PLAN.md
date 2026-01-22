@@ -10,7 +10,7 @@
 | **Owner** | TBD |
 | **Last Updated** | 2026-01-22 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30) |
 
 ---
 
@@ -52,6 +52,7 @@
 | [Step-24](#step-24-bye-即時応答音声再生キャンセル-issue-26) | BYE 即時応答・音声再生キャンセル (Issue #26) | - | 完了 |
 | [Step-25](#step-25-b2bua-コール転送-issue-27) | B2BUA コール転送 (Issue #27) | → Step-02, Step-23 | 着手中 |
 | [Step-26](#step-26-アウトバウンドゲートウェイ-issue-29) | アウトバウンドゲートウェイ (Issue #29) | → Step-15〜17, Step-25 | 着手中 |
+| [Step-27](#step-27-録音音質劣化修正-issue-30) | 録音・音質劣化修正 (Issue #30) | - | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -2629,6 +2630,125 @@ export DIAL_100=09087654321
 
 ---
 
+## Step-27: 録音・音質劣化修正 (Issue #30)
+
+### 背景
+
+- **症状**: 通常のボイスボット会話でASRが誤認識する
+- **根本原因**: 録音ファイル (`storage/recordings/<call_id>/mixed.wav`) および ASR入力 (`/tmp/asr_input_*.wav`) がプツプツ途切れる・ノイズが乗る
+- **重要**: Wiresharkで同じRTPストリームを再生すると**問題なし** → **Rust側の処理に問題がある**
+
+### 調査済み事項（除外された原因）
+
+| 調査項目 | 結果 | 除外理由 |
+|----------|------|----------|
+| RTP Extension ヘッダー | `Extension=False` | 拡張ヘッダーなし |
+| RTP CSRC | `CC=0` | CSRCなし |
+| RTP Padding | `Padding=False` | パディングなし |
+| コーデック | `PT=0 (PCMU)` | 正しいコーデック |
+| ペイロードサイズ | `160バイト` | 正常（20ms @ 8kHz） |
+| タイムスタンプ | 正常に進行 | 問題なし |
+| ジッターバッファ | `drop late/dup` ログなし | パケットドロップなし |
+
+### 推定原因
+
+**μ-lawデコード実装** または **WAV書き込み処理** に問題がある可能性が高い。
+
+関連ファイル:
+- `src/media/mod.rs:126-141` - `mulaw_to_linear16()`
+- `src/ai/asr.rs:85-100` - `mulaw_to_linear16()` (重複定義)
+- `src/session/capture.rs:151-166` - `mulaw_to_linear16()` (重複定義)
+- `src/rtp/codec.rs:36-47` - `mulaw_to_linear16()` (重複定義)
+
+### DoD (Definition of Done)
+
+#### 調査
+- [ ] 生μ-lawデータを `/tmp/raw_mulaw.bin` に保存して品質確認
+- [ ] `sox -r 8000 -c 1 -t ul /tmp/raw_mulaw.bin /tmp/raw_check.wav` で変換・再生
+- [ ] 問題箇所を特定（デコード or 受信経路）
+
+#### 修正
+- [ ] 問題の根本原因を修正
+- [ ] `mulaw_to_linear16()` の重複定義を共通モジュールに統一
+- [ ] `mixed.wav` と `/tmp/asr_input_*.wav` の音質が正常になる
+- [ ] ASRの認識精度が改善する
+
+#### 検証
+- [ ] 通話録音ファイルがWireshark再生と同等の品質
+- [ ] DTMF "1" 後のボイスボット会話でASRが正常に認識
+
+### 推奨調査手順
+
+#### Step 1: 生μ-lawデータの保存
+
+`src/media/mod.rs` の `push_mulaw()` にデバッグコードを追加:
+
+```rust
+fn push_mulaw(&mut self, pcm_mulaw: &[u8]) {
+    // デバッグ: 生μ-lawデータを保存
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/raw_mulaw.bin")
+    {
+        let _ = f.write_all(pcm_mulaw);
+    }
+
+    if let Some(w) = self.writer.as_mut() {
+        for &b in pcm_mulaw {
+            let _ = w.write_sample(mulaw_to_linear16(b));
+            self.samples_written += 1;
+        }
+    }
+}
+```
+
+#### Step 2: 生データの確認
+
+```bash
+# テスト通話後に実行
+sox -r 8000 -c 1 -t ul /tmp/raw_mulaw.bin /tmp/raw_check.wav
+aplay /tmp/raw_check.wav
+```
+
+#### Step 3: 結果に基づく対応
+
+| raw_check.wav | mixed.wav | 対応 |
+|---------------|-----------|------|
+| 正常 | プツプツ/ノイズ | `mulaw_to_linear16()` の実装を修正 |
+| プツプツ/ノイズ | プツプツ/ノイズ | RTP受信〜Recorder間の経路を調査 |
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/media/mod.rs` | `mulaw_to_linear16()` 修正、または共通化 |
+| `src/ai/asr.rs` | 共通モジュールへの参照に変更 |
+| `src/session/capture.rs` | 共通モジュールへの参照に変更 |
+| `src/rtp/codec.rs` | 共通モジュールへの参照に変更 |
+
+### 変更上限
+
+- **行数**: <=100行
+- **ファイル数**: <=5
+
+### Open Questions
+
+| # | 質問 | 回答 |
+|---|------|------|
+| Q1 | μ-lawデコードはITU-T G.711準拠か？ | 要確認 |
+| Q2 | 既存ライブラリ（例: audiopus）への置き換えは検討するか？ | TBD |
+
+### リスク/ロールバック観点
+
+| リスク | 対策 |
+|--------|------|
+| デコード修正で既存動作が壊れる | デバッグコードで事前確認、段階的修正 |
+| 共通化による影響範囲拡大 | 各呼び出し箇所のテスト実施 |
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -2645,6 +2765,7 @@ export DIAL_100=09087654321
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-22 | 3.0 | Issue #30 統合: Step-27（録音・音質劣化修正）追加、μ-lawデコード調査・修正方針 |
 | 2026-01-21 | 2.9 | Issue #29 統合: Step-26（アウトバウンドゲートウェイ）追加、Linphone→網のB2BUAブリッジ、環境変数ダイヤルプラン |
 | 2026-01-21 | 2.8 | Issue #27 統合: Step-25（B2BUA コール転送）追加、DTMF "3" でZoiper転送、メディアリレー方式 |
 | 2026-01-20 | 2.7 | Step-24 更新: interval ベースの再生ティック安定化、プツプツ音声問題の修正方針追加 |

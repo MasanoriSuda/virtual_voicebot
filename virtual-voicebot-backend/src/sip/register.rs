@@ -2,12 +2,11 @@ use rand::Rng;
 use std::time::{Duration, Instant};
 
 use crate::config::{RegistrarConfig, RegistrarTransport};
+use crate::sip::auth::{build_authorization_header, parse_digest_challenge};
+use crate::sip::auth_cache::{self, DigestAuthChallenge, DigestAuthHeader};
 use crate::sip::builder::build_register_request;
 use crate::sip::{SipHeader, SipRequest, SipResponse};
 use crate::transport::TransportPeer;
-
-#[path = "auth.rs"]
-mod auth;
 
 pub struct RegisterClient {
     cfg: RegistrarConfig,
@@ -255,13 +254,19 @@ impl RegisterClient {
             );
             return None;
         };
-        let Some(challenge) = auth::parse_digest_challenge(challenge_value) else {
+        let Some(challenge) = parse_digest_challenge(challenge_value) else {
             log::warn!(
                 "[sip register] unsupported auth challenge call_id={}",
                 self.call_id
             );
             return None;
         };
+        if let Some(header_kind) = DigestAuthHeader::from_name(auth_header) {
+            auth_cache::store(DigestAuthChallenge {
+                header: header_kind,
+                challenge: challenge.clone(),
+            });
+        }
 
         if self.last_nonce.as_deref() != Some(challenge.nonce.as_str()) {
             self.last_nonce = Some(challenge.nonce.clone());
@@ -279,7 +284,7 @@ impl RegisterClient {
         self.cseq = self.cseq.saturating_add(1);
         self.auth_nc = self.auth_nc.saturating_add(1);
         let request_uri = format!("{}:{}", self.cfg.transport.scheme(), self.cfg.domain);
-        let Some(header_value) = auth::build_authorization_header(
+        let Some(header_value) = build_authorization_header(
             &self.cfg.auth_username,
             password,
             "REGISTER",

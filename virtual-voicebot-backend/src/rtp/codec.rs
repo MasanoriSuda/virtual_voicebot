@@ -33,17 +33,20 @@ pub fn encode_from_mulaw(codec: Codec, payload: &[u8]) -> Vec<u8> {
     }
 }
 
-fn mulaw_to_linear16(mu: u8) -> i16 {
+pub(crate) fn mulaw_to_linear16(mu: u8) -> i16 {
     const BIAS: i16 = 0x84;
     let mu = !mu;
     let sign = (mu & 0x80) != 0;
     let segment = (mu & 0x70) >> 4;
     let mantissa = mu & 0x0F;
 
-    let mut value = ((mantissa as i16) << 4) + 0x08;
+    let mut value = ((mantissa as i16) << 3) + BIAS;
     value <<= segment as i16;
-    value -= BIAS;
-    if sign { -value } else { value }
+    if sign {
+        BIAS - value
+    } else {
+        value - BIAS
+    }
 }
 
 fn linear16_to_mulaw(sample: i16) -> u8 {
