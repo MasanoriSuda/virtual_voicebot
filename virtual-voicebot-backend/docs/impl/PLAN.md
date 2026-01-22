@@ -8,9 +8,9 @@
 |------|-----|
 | **Status** | Active |
 | **Owner** | TBD |
-| **Last Updated** | 2026-01-20 |
+| **Last Updated** | 2026-01-22 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29) |
 
 ---
 
@@ -49,7 +49,9 @@
 | [Step-21](#step-21-時間帯別イントロ-issue-22) | 時間帯別イントロ (Issue #22) | - | 未着手 |
 | [Step-22](#step-22-ハルシネーション時謝罪音声-issue-23) | ハルシネーション時謝罪音声 (Issue #23) | → Step-20 | 未着手 |
 | [Step-23](#step-23-ivr-メニュー機能-issue-25) | IVR メニュー機能 (Issue #25) | → Step-02 | 完了 |
-| [Step-24](#step-24-bye-即時応答音声再生キャンセル-issue-26) | BYE 即時応答・音声再生キャンセル (Issue #26) | - | 未着手 |
+| [Step-24](#step-24-bye-即時応答音声再生キャンセル-issue-26) | BYE 即時応答・音声再生キャンセル (Issue #26) | - | 完了 |
+| [Step-25](#step-25-b2bua-コール転送-issue-27) | B2BUA コール転送 (Issue #27) | → Step-02, Step-23 | 着手中 |
+| [Step-26](#step-26-アウトバウンドゲートウェイ-issue-29) | アウトバウンドゲートウェイ (Issue #29) | → Step-15〜17, Step-25 | 着手中 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
