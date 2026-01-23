@@ -536,6 +536,7 @@ pub struct AiConfig {
     pub use_aws_transcribe: bool,
     pub aws_transcribe_bucket: Option<String>,
     pub aws_transcribe_prefix: String,
+    pub ser_url: Option<String>,
 }
 
 impl AiConfig {
@@ -548,6 +549,7 @@ impl AiConfig {
             aws_transcribe_bucket: std::env::var("AWS_TRANSCRIBE_BUCKET").ok(),
             aws_transcribe_prefix: std::env::var("AWS_TRANSCRIBE_PREFIX")
                 .unwrap_or_else(|_| "voicebot".to_string()),
+            ser_url: std::env::var("SER_URL").ok(),
         }
     }
 }

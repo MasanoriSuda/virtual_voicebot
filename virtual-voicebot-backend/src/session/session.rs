@@ -18,6 +18,7 @@ use crate::http::ingest::IngestPort;
 use crate::media::Recorder;
 use crate::recording;
 use crate::recording::storage::StoragePort;
+use crate::rtp::codec::mulaw_to_linear16;
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::capture::AudioCapture;
 use crate::config;
@@ -398,9 +399,14 @@ impl Session {
                                         self.call_id,
                                         buffer.len()
                                     );
+                                    let pcm_linear16: Vec<i16> = buffer
+                                        .iter()
+                                        .map(|&b| mulaw_to_linear16(b))
+                                        .collect();
                                     let _ = self.app_tx.send(AppEvent::AudioBuffered {
                                         call_id: self.call_id.clone(),
                                         pcm_mulaw: buffer,
+                                        pcm_linear16,
                                     });
                                     self.capture.start();
                                 }

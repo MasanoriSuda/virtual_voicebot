@@ -20,7 +20,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_transcribe as transcribe;
 
 use crate::config;
-use crate::ports::ai::{AiFuture, AiPort, AsrChunk, ChatMessage, Role};
+use crate::ports::ai::{AiFuture, AiPort, AsrChunk, ChatMessage, Role, SerInputPcm, SerOutcome, SerPort};
 
 #[derive(Serialize)]
 struct OllamaChatRequest {
@@ -74,6 +74,7 @@ struct WhisperResponse {
 
 pub mod asr;
 pub mod llm;
+pub mod ser;
 pub mod tts;
 
 const SYSTEM_PROMPT: &str = "あなたはボイスボットです。120文字以内で回答してください。";
@@ -250,6 +251,12 @@ impl AiPort for DefaultAiPort {
 
     fn synth_to_wav(&self, text: String, path: Option<String>) -> AiFuture<Result<String>> {
         Box::pin(async move { tts::synth_to_wav(&text, path.as_deref()).await })
+    }
+}
+
+impl SerPort for DefaultAiPort {
+    fn analyze(&self, input: SerInputPcm) -> AiFuture<SerOutcome> {
+        Box::pin(async move { ser::analyze(input).await })
     }
 }
 

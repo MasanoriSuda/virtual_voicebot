@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-use crate::ports::ai::{AiPort, AsrChunk, ChatMessage, Role};
+use crate::ports::ai::{AiSerPort, AsrChunk, ChatMessage, Role, SerInputPcm};
 use crate::session::SessionOut;
 
 const SORRY_WAV_PATH: &str =
@@ -16,7 +16,11 @@ const SORRY_WAV_PATH: &str =
 #[derive(Debug)]
 pub enum AppEvent {
     CallStarted { call_id: String },
-    AudioBuffered { call_id: String, pcm_mulaw: Vec<u8> },
+    AudioBuffered {
+        call_id: String,
+        pcm_mulaw: Vec<u8>,
+        pcm_linear16: Vec<i16>,
+    },
     CallEnded { call_id: String },
 }
 
@@ -25,7 +29,7 @@ pub enum AppEvent {
 pub fn spawn_app_worker(
     call_id: String,
     session_out_tx: UnboundedSender<(String, SessionOut)>,
-    ai_port: Arc<dyn AiPort>,
+    ai_port: Arc<dyn AiSerPort>,
 ) -> UnboundedSender<AppEvent> {
     let (tx, rx) = unbounded_channel();
     let worker = AppWorker::new(call_id, session_out_tx, rx, ai_port);
@@ -39,7 +43,7 @@ struct AppWorker {
     rx: UnboundedReceiver<AppEvent>,
     active: bool,
     history: Vec<ChatMessage>,
-    ai_port: Arc<dyn AiPort>,
+    ai_port: Arc<dyn AiSerPort>,
 }
 
 impl AppWorker {
@@ -47,7 +51,7 @@ impl AppWorker {
         call_id: String,
         session_out_tx: UnboundedSender<(String, SessionOut)>,
         rx: UnboundedReceiver<AppEvent>,
-        ai_port: Arc<dyn AiPort>,
+        ai_port: Arc<dyn AiSerPort>,
     ) -> Self {
         Self {
             call_id,
@@ -72,7 +76,11 @@ impl AppWorker {
                     }
                     self.active = true;
                 }
-                AppEvent::AudioBuffered { call_id, pcm_mulaw } => {
+                AppEvent::AudioBuffered {
+                    call_id,
+                    pcm_mulaw,
+                    pcm_linear16,
+                } => {
                     if call_id != self.call_id {
                         log::warn!(
                             "[app {}] AudioBuffered received for mismatched call_id={}",
@@ -88,7 +96,9 @@ impl AppWorker {
                         continue;
                     }
                     let call_id = self.call_id.clone();
-                    if let Err(e) = self.handle_audio_buffer(&call_id, pcm_mulaw).await {
+                    if let Err(e) =
+                        self.handle_audio_buffer(&call_id, pcm_mulaw, pcm_linear16).await
+                    {
                         log::warn!("[app {}] audio handling failed: {:?}", self.call_id, e);
                     }
                 }
@@ -112,6 +122,7 @@ impl AppWorker {
         &mut self,
         call_id: &str,
         pcm_mulaw: Vec<u8>,
+        pcm_linear16: Vec<i16>,
     ) -> anyhow::Result<()> {
         // ASR: チャンクI/F（1チャンクのみだが将来拡張用）
         let asr_chunks = vec![AsrChunk {
@@ -129,6 +140,26 @@ impl AppWorker {
                 "すみません、聞き取れませんでした。".to_string()
             }
         };
+
+        let ser_input = SerInputPcm {
+            session_id: call_id.to_string(),
+            stream_id: "main".to_string(),
+            pcm: pcm_linear16,
+            sample_rate: 8000,
+            channels: 1,
+        };
+        match self.ai_port.analyze(ser_input).await {
+            Ok(result) => {
+                log::info!(
+                    "[app {call_id}] ser emotion={:?} confidence={:.2}",
+                    result.emotion,
+                    result.confidence
+                );
+            }
+            Err(err) => {
+                log::warn!("[app {call_id}] SER failed: {}", err.reason);
+            }
+        }
 
         let trimmed = user_text.trim();
         if trimmed.is_empty() {

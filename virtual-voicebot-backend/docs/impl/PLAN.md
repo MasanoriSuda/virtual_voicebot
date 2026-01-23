@@ -8,9 +8,9 @@
 |------|-----|
 | **Status** | Active |
 | **Owner** | TBD |
-| **Last Updated** | 2026-01-22 |
+| **Last Updated** | 2026-01-23 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31) |
 
 ---
 
@@ -53,6 +53,7 @@
 | [Step-25](#step-25-b2bua-コール転送-issue-27) | B2BUA コール転送 (Issue #27) | → Step-02, Step-23 | 着手中 |
 | [Step-26](#step-26-アウトバウンドゲートウェイ-issue-29) | アウトバウンドゲートウェイ (Issue #29) | → Step-15〜17, Step-25 | 着手中 |
 | [Step-27](#step-27-録音音質劣化修正-issue-30) | 録音・音質劣化修正 (Issue #30) | - | 未着手 |
+| [Step-28](#step-28-音声感情分析ser-issue-31) | 音声感情分析 SER (Issue #31) | - | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -2749,6 +2750,181 @@ aplay /tmp/raw_check.wav
 
 ---
 
+## Step-28: 音声感情分析 SER (Issue #31)
+
+### 背景
+
+通話中のユーザー音声から感情（怒り、悲しみ、喜び、中立など）をリアルタイムで分析し、対話品質向上・エスカレーション判断に活用する。
+
+### 確定方針
+
+| 項目 | 決定 |
+|------|------|
+| モデル実行環境 | ローカル（Wav2Vec2等） |
+| MVP処理モード | バッチ（ASR確定後に同一PCMを分析） |
+| 感情ラベル | 4種（neutral/happy/sad/angry）、将来6種拡張可 |
+| メタデータ保存 | Yes（録音メタデータに感情タイムラインを追加） |
+| 日本語対応 | 要検証（ファインチューニングの必要性を評価） |
+
+### アーキテクチャ
+
+```text
++-------------------------+
+|      app (dialog)       |  ← 感情に基づく対話分岐の判断
++-------------------------+
+|  ai (asr/llm/tts/ser)   |  ← ai::ser を追加
++-------------------------+
+|         session         |
++-------------------------+
+```
+
+**依存関係ルール（design.md §4.2 準拠）**:
+- `app → ai::ser` のみ許可
+- `ser` から `sip/rtp/session/transport` への直接依存は禁止
+- PCM は `session → app` 経由で受け取る（ASR と同一経路）
+
+### モジュール設計
+
+#### 入力 DTO
+```rust
+SerInputPcm {
+    session_id: String,
+    stream_id: String,
+    pcm: Vec<i16>,      // 8000Hz, mono（ASRと同一形式）
+    sample_rate: u32,
+    channels: u8,
+}
+```
+
+#### 出力 DTO
+```rust
+SerResult {
+    session_id: String,
+    stream_id: String,
+    emotion: Emotion,       // 感情ラベル
+    confidence: f32,        // 信頼度 0.0〜1.0
+    arousal: Option<f32>,   // 覚醒度（将来拡張）
+    valence: Option<f32>,   // 感情価（将来拡張）
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Emotion {
+    Neutral,    // 中立
+    Happy,      // 喜び
+    Sad,        // 悲しみ
+    Angry,      // 怒り
+    Unknown,    // 判定不能
+}
+
+SerError {
+    session_id: String,
+    reason: String,
+}
+```
+
+#### Port 定義
+```rust
+#[async_trait]
+pub trait SerPort: Send + Sync {
+    async fn analyze(&self, input: SerInputPcm) -> Result<SerResult, SerError>;
+}
+```
+
+### イベントフロー
+
+```text
+[rtp → session]     PcmInputChunk
+[session → app]     PcmReceived
+[app → ai::asr]     AsrInputPcm        # ASR処理
+[ai::asr → app]     AsrResult          # ASR確定
+[app → ai::ser]     SerInputPcm        # ASR確定後に同一PCMで感情分析
+[ai::ser → app]     SerResult / SerError
+[app]               感情に基づく対話分岐判断
+```
+
+### モデル候補
+
+| 候補 | 特徴 | 日本語対応 |
+|------|------|-----------|
+| Wav2Vec2-Emotion | HuggingFace、OSS | 要ファインチューニング |
+| SpeechBrain | 感情認識パイプライン | 英語中心 |
+| 独自モデル | PyTorch/ONNX | 要学習 |
+
+### app での活用例
+
+```rust
+// dialog.rs での分岐例
+match ser_result.emotion {
+    Emotion::Angry if ser_result.confidence > 0.8 => {
+        self.escalation_needed = true;
+        self.llm_context.push("ユーザーは怒っている様子です。");
+    }
+    Emotion::Sad => {
+        self.llm_context.push("ユーザーは落ち込んでいる様子です。");
+    }
+    _ => {}
+}
+```
+
+### 録音メタデータ拡張
+
+```json
+{
+  "callId": "xxx",
+  "emotions": [
+    { "startSec": 0.0, "endSec": 3.5, "emotion": "neutral", "confidence": 0.85 },
+    { "startSec": 3.5, "endSec": 8.2, "emotion": "angry", "confidence": 0.72 }
+  ]
+}
+```
+
+### DoD (Definition of Done)
+
+#### Phase 1: モジュール基盤
+- [ ] `ai::ser` モジュール作成（`src/ai/ser.rs`）
+- [ ] `SerPort` trait 定義（`src/ports/ai.rs` に追加）
+- [ ] `SerInputPcm`, `SerResult`, `SerError`, `Emotion` DTO 定義
+- [ ] ダミー実装（常に `Neutral` を返す）で app 連携確認
+
+#### Phase 2: モデル統合
+- [ ] Wav2Vec2 または選定モデルの統合
+- [ ] 日本語音声での精度検証
+- [ ] 必要に応じてファインチューニング
+
+#### Phase 3: app 連携
+- [ ] ASR確定後に `SerInputPcm` を送信するフロー実装
+- [ ] 感情に基づく LLM プロンプト拡張
+- [ ] エスカレーションフラグの追加
+
+#### Phase 4: メタデータ
+- [ ] 録音メタデータ（`meta.json`）に感情タイムライン追加
+- [ ] Frontend での感情可視化対応（別Issue）
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/ai/mod.rs` | `ser` サブモジュール追加 |
+| `src/ai/ser.rs` | 新規作成: SER 実装 |
+| `src/ports/ai.rs` | `SerPort` trait 追加 |
+| `src/app/dialog.rs` | 感情に基づく対話分岐 |
+| `src/media/mod.rs` | メタデータに感情追加 |
+
+### 変更上限
+
+- **Phase 1**: <=150行 / <=5ファイル
+- **Phase 2-4**: 別PRで段階的に実装
+
+### リスク/ロールバック観点
+
+| リスク | 対策 |
+|--------|------|
+| 日本語感情認識の精度不足 | 信頼度閾値を高く設定、段階的導入 |
+| レイテンシ増加 | バッチモード優先、非同期処理 |
+| モデルサイズ大 | ONNX最適化、量子化検討 |
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -2765,6 +2941,7 @@ aplay /tmp/raw_check.wav
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-23 | 3.1 | Issue #31 統合: Step-28（音声感情分析 SER）追加、Wav2Vec2ローカル実行、バッチモード、4種感情ラベル |
 | 2026-01-22 | 3.0 | Issue #30 統合: Step-27（録音・音質劣化修正）追加、μ-lawデコード調査・修正方針 |
 | 2026-01-21 | 2.9 | Issue #29 統合: Step-26（アウトバウンドゲートウェイ）追加、Linphone→網のB2BUAブリッジ、環境変数ダイヤルプラン |
 | 2026-01-21 | 2.8 | Issue #27 統合: Step-25（B2BUA コール転送）追加、DTMF "3" でZoiper転送、メディアリレー方式 |

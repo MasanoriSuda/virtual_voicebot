@@ -29,3 +29,47 @@ pub trait AiPort: Send + Sync {
     fn generate_answer(&self, messages: Vec<ChatMessage>) -> AiFuture<Result<String>>;
     fn synth_to_wav(&self, text: String, path: Option<String>) -> AiFuture<Result<String>>;
 }
+
+#[derive(Debug, Clone)]
+pub struct SerInputPcm {
+    pub session_id: String,
+    pub stream_id: String,
+    pub pcm: Vec<i16>,
+    pub sample_rate: u32,
+    pub channels: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emotion {
+    Neutral,
+    Happy,
+    Sad,
+    Angry,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct SerResult {
+    pub session_id: String,
+    pub stream_id: String,
+    pub emotion: Emotion,
+    pub confidence: f32,
+    pub arousal: Option<f32>,
+    pub valence: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SerError {
+    pub session_id: String,
+    pub reason: String,
+}
+
+pub type SerOutcome = std::result::Result<SerResult, SerError>;
+
+pub trait SerPort: Send + Sync {
+    fn analyze(&self, input: SerInputPcm) -> AiFuture<SerOutcome>;
+}
+
+pub trait AiSerPort: AiPort + SerPort {}
+
+impl<T: AiPort + SerPort> AiSerPort for T {}
