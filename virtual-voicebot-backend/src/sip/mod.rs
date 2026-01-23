@@ -1220,6 +1220,62 @@ impl SipCore {
                     self.send_payload(peer, bytes);
                 }
             }
+            SessionOut::SipSend183 { answer } => {
+                let provision = if let Some(ctx) = self.invites.get_mut(call_id) {
+                    if let Some(mut resp) = response_final_with_sdp(
+                        &ctx.req,
+                        183,
+                        "Session Progress",
+                        &self.cfg.advertised_ip,
+                        self.cfg.sip_port,
+                        &answer,
+                    ) {
+                        let reliable = supports_100rel(&ctx.req);
+                        let mut rseq = None;
+                        let mut reliable_send = reliable;
+                        if reliable {
+                            rseq = next_rseq(ctx);
+                            if let Some(value) = rseq {
+                                resp.headers.push(SipHeader::new("Require", "100rel"));
+                                resp.headers.push(SipHeader::new("RSeq", value.to_string()));
+                            } else {
+                                log::warn!(
+                                    "[sip 100rel] RSeq max reached; sending non-100rel provisional call_id={}",
+                                    call_id
+                                );
+                                reliable_send = false;
+                            }
+                        }
+                        if let Ok(sdp) = std::str::from_utf8(&resp.body) {
+                            let sdp_inline = sdp.replace('\r', "").replace('\n', "\\n");
+                            log::info!("[sip 183 sdp] call_id={} sdp={}", call_id, sdp_inline);
+                        } else {
+                            log::info!(
+                                "[sip 183 sdp] call_id={} sdp_len={}",
+                                call_id,
+                                resp.body.len()
+                            );
+                        }
+                        let bytes = resp.to_bytes();
+                        let peer = ctx.tx.peer;
+                        ctx.tx.remember_provisional(bytes.clone());
+                        Some((peer, bytes, reliable_send, rseq))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some((peer, bytes, reliable, rseq)) = provision {
+                    if reliable {
+                        if let Some(rseq) = rseq {
+                            self.start_reliable_provisional(call_id, peer, bytes.clone(), rseq);
+                        }
+                    }
+                    self.send_payload(peer, bytes);
+                }
+            }
             SessionOut::SipSend200 { answer } => {
                 if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(mut resp) = response_final_with_sdp(

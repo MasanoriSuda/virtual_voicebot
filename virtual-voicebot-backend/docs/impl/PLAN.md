@@ -2428,6 +2428,7 @@ cargo test session::
        │                      │    sip:09012345678@docomo│
        │                      │                          │
        │                      │<── 407 Proxy Auth ───────│
+       │                      │─── ACK ──────────────────>│ ★ RFC 3261 必須
        │                      │─── INVITE (with Auth) ──>│ (Digest 認証)
        │                      │                          │
        │                      │<── 100 Trying ───────────│
@@ -2471,14 +2472,19 @@ cargo test session::
 #### UAC INVITE 送信（網向け）
 - [ ] REGISTER 済み認証情報を使用
 - [ ] 407 Proxy Authentication Required 対応（Step-16 流用）
+- [ ] **401/407 受信時に ACK 送信（RFC 3261 §17.1.1.3 準拠）** ★ 現状未実装
+- [ ] **3xx-6xx 受信時に ACK 送信（RFC 3261 準拠）** ★ 現状未実装
 - [ ] Request-URI: `sip:<電話番号>@<OUTBOUND_DOMAIN>`
 - [ ] From: REGISTER ユーザー
 - [ ] 180 Ringing を A レグに伝搬
+- [ ] **183 Session Progress（SDP 付き）受信時に Early Media 開始**
+- [ ] **Early Media RTP を A レグに中継**
 
 #### B2BUA メディアリレー
 - [ ] Step-25 の B2BUA 基盤を流用
 - [ ] A レグ (Linphone) ↔ B レグ (網) の双方向 RTP 中継
 - [ ] SSRC/Seq/Timestamp は脚ごとに独立生成
+- [ ] **A レグ RTP を B2buaEstablished 時に登録（200 OK 送信前）** ★ 片方向音声バグ修正
 
 #### 終了処理
 - [ ] A レグ BYE → B レグ BYE → 両方終了
@@ -2487,8 +2493,200 @@ cargo test session::
 
 #### 検証
 - [ ] E2E: Linphone → Voicebot → 網 → 実電話機で通話
-- [ ] 認証フロー（407 → 再送）の確認
+- [ ] 認証フロー（407 → ACK → 再送）の確認
 - [ ] 双方向音声の確認
+
+### RFC 3261 準拠: 非 2xx 応答への ACK（バグ修正）
+
+#### 問題
+
+現状の `run_outbound()` ([b2bua.rs:402-450](src/session/b2bua.rs#L402-L450)) では、401/407 受信時に ACK を送信せず、直接 INVITE を再送している。これは RFC 3261 §17.1.1.3 違反。
+
+```
+【現状】                           【あるべき姿】
+Rust -> 網: INVITE                 Rust -> 網: INVITE
+Rust <- 網: 407                    Rust <- 網: 407
+Rust -> 網: INVITE (with Auth)     Rust -> 網: ACK       ← 欠落
+                                   Rust -> 網: INVITE (with Auth)
+```
+
+#### 根拠
+
+> **RFC 3261 §17.1.1.3**: The ACK request constructed by the client transaction MUST contain values for the Call-ID, From, and To headers that match the request being acknowledged.
+
+INVITE トランザクションでは、**すべての最終応答（2xx〜6xx）に ACK が必要**。
+
+#### 修正箇所
+
+| ファイル | 行 | 修正内容 |
+|---------|-----|---------|
+| `src/session/b2bua.rs` | 402-450 | 401/407 受信時に ACK 送信を追加 |
+| `src/session/b2bua.rs` | 452-460 | 3xx-6xx 受信時に ACK 送信を追加 |
+| `src/session/b2bua.rs` | 203-204 | `run_transfer` 側も同様に修正 |
+
+#### 修正コード例
+
+```rust
+// 401/407 受信時
+if resp.status_code == 401 || resp.status_code == 407 {
+    // ★ 401/407 への ACK を送信
+    let to_header_resp = header_value(&resp.headers, "To")
+        .unwrap_or(&to_header)
+        .to_string();
+    let ack = SipRequestBuilder::new(SipMethod::Ack, request_uri.clone())
+        .header("Via", invite_via.clone())
+        .header("Max-Forwards", "70")
+        .header("From", from_header.clone())
+        .header("To", to_header_resp)
+        .header("Call-ID", call_id.clone())
+        .header("CSeq", format!("{cseq} ACK"))
+        .build();
+    send_b2bua_payload(TransportPeer::Udp(sip_peer), ack.to_bytes())?;
+
+    // ... 以降は既存の認証処理 ...
+}
+```
+
+### B2BUA 片方向音声修正（バグ修正）
+
+#### 問題
+
+発信モード（Linphone → 網）で、網からの音声が Linphone で聞こえない。Linphone → 網 の音声は正常。
+
+```
+【ログ出力】
+2026-01-23T15:55:53.570Z INFO  [session GTQsTQ5RKQ] B-leg established, entering B2BUA mode
+2026-01-23T15:55:53.570Z INFO  [sip ->] ... SIP/2.0 200 OK
+2026-01-23T15:55:53.572Z WARN  [rtp tx] send requested but stream key not found
+2026-01-23T15:55:53.592Z WARN  [rtp tx] send requested but stream key not found
+... (多数のドロップ) ...
+2026-01-23T15:55:53.836Z INFO  ACK for call_id=GTQsTQ5RKQ
+```
+
+#### 原因
+
+1. `B2buaEstablished` イベント発生時、即座に 200 OK を Linphone に送信
+2. 網から BLegRtp が到着開始
+3. **しかし A レグ RTP ストリームは `SipAck` 受信時まで登録されない**（[session.rs:343-344](src/session/session.rs#L343-L344)）
+4. `SipAck` は 200 OK 送信の **約 260ms 後** に到着
+5. この間の BLegRtp は全て `"stream key not found"` でドロップ
+
+```
+【タイムライン】
+t+0ms     B2buaEstablished → 200 OK 送信
+t+2ms     BLegRtp 到着開始 → ドロップ（stream 未登録）
+t+260ms   SipAck 到着 → A レグ stream 登録
+t+260ms~  BLegRtp → 正常送信
+```
+
+#### 修正箇所
+
+| ファイル | 行 | 修正内容 |
+|---------|-----|---------|
+| `src/session/session.rs` | B2buaEstablished ハンドラ | 200 OK 送信**前**に A レグ RTP ストリームを登録 |
+
+#### 修正コード例
+
+```rust
+// src/session/session.rs - B2buaEstablished ハンドラ内
+// 200 OK 送信前に A レグ RTP ストリームを登録
+if self.outbound_mode && !self.outbound_answered {
+    // A レグ（Linphone 宛）RTP ストリームを先に登録
+    let (ip, port) = self.peer_rtp_dst();  // Linphone の RTP アドレス
+    if let Ok(dst_addr) = format!("{ip}:{port}").parse() {
+        self.rtp_tx.start(
+            self.call_id.clone(),
+            dst_addr,
+            0,          // initial seq
+            0x12345678, // SSRC
+            0,          // timestamp offset
+            0,          // payload type
+        );
+    }
+    // その後で 200 OK を送信
+    self.send_200_ok_to_leg_a();
+}
+```
+
+#### 影響
+
+- A レグ RTP ストリーム登録タイミングが `SipAck` → `B2buaEstablished` に前倒し
+- 発信モードでのみ影響（着信モードは従来通り）
+- `SipAck` ハンドラでの重複登録回避が必要（既に登録済みなら skip）
+
+### 183 Session Progress（Early Media）対応
+
+#### 背景
+
+網が 200 OK の前に 183 Session Progress（SDP 付き）を返す場合、その時点から RTP（Early Media）が開始される。これは呼出音（Ring Back Tone）やアナウンスを相手に聞かせるために使用される。
+
+```
+【シーケンス】
+Linphone          Voicebot                    網
+   |                  |                        |
+   |-- INVITE ------->|                        |
+   |<-- 100 Trying ---|                        |
+   |                  |-- INVITE ------------->|
+   |                  |<-- 183 + SDP ----------| ★ Early Media 開始
+   |                  |<== RTP (Ring Back) ====| ★ この時点で RTP 到着
+   |<-- 183 ---------|                        |
+   |<== RTP =========|                        | ★ A レグに中継
+   |                  |<-- 200 OK -------------|
+   |<-- 200 OK -------|                        |
+```
+
+#### 現状の問題
+
+1. 183 受信時に SDP をパースしていない
+2. Early Media RTP の受信準備ができていない
+3. A レグへの RTP 中継が開始されない
+
+#### 修正内容
+
+1. **183 + SDP 受信時**:
+   - SDP から網の RTP アドレス/ポートを取得
+   - B レグ RTP ストリームを登録
+   - `B2buaEarlyMedia` イベントを session に通知
+
+2. **session 側**:
+   - `B2buaEarlyMedia` イベントで A レグ RTP ストリームを登録
+   - 183 を A レグに伝搬（または無視してもよい）
+   - BLegRtp を A レグに中継開始
+
+#### 修正箇所
+
+| ファイル | 修正内容 |
+|---------|---------|
+| `src/session/b2bua.rs` | 183 + SDP 受信時の処理追加、`B2buaEarlyMedia` イベント送信 |
+| `src/session/session.rs` | `B2buaEarlyMedia` ハンドラ追加、A レグ RTP 登録 |
+| `src/session/mod.rs` | `SessionIn::B2buaEarlyMedia` 定義追加 |
+
+#### 修正コード例
+
+```rust
+// src/session/b2bua.rs - run_outbound 内
+if resp.status_code == 183 {
+    if let Some(sdp) = parse_sdp(&resp.body) {
+        // SDP から RTP アドレスを取得
+        let rtp_addr = sdp.media_connection();
+        // Early Media 通知
+        let _ = tx_in.send(SessionIn::B2buaEarlyMedia { rtp_addr });
+    }
+    continue;
+}
+
+// src/session/session.rs
+(_, SessionIn::B2buaEarlyMedia { rtp_addr }) => {
+    if self.outbound_mode && !self.early_media_started {
+        self.early_media_started = true;
+        // A レグ RTP ストリームを登録（片方向音声修正と同じ処理）
+        let (ip, port) = self.peer_rtp_dst();
+        if let Ok(dst_addr) = format!("{ip}:{port}").parse() {
+            self.rtp_tx.start(self.call_id.clone(), dst_addr, 0, 0x12345678, 0, 0);
+        }
+    }
+}
+```
 
 ### 対象パス
 
@@ -2619,7 +2817,7 @@ export DIAL_100=09087654321
 |---|------|------|
 | Q1 | 認証は REGISTER と同じ認証情報で良いか？ | Yes（Step-16 の認証情報を流用） |
 | Q2 | 発信者番号（From）は REGISTER ユーザーで固定？ | Yes |
-| Q3 | 網からの早期メディア（183 Session Progress）対応は必要？ | 暫定 No（将来検討） |
+| Q3 | 網からの早期メディア（183 Session Progress）対応は必要？ | Yes |
 
 ### リスク/ロールバック観点
 
@@ -2941,6 +3139,9 @@ match ser_result.emotion {
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-24 | 3.4 | Issue #29 更新: Step-26 に 183 Early Media 対応追加（Q3 回答変更: No → Yes） |
+| 2026-01-24 | 3.3 | Issue #29 更新: Step-26 に B2BUA 片方向音声バグ修正追加（発信時 A レグ RTP 登録タイミング） |
+| 2026-01-23 | 3.2 | Issue #29 更新: Step-26 に RFC 3261 準拠バグ修正追加（401/407/3xx-6xx への ACK 送信） |
 | 2026-01-23 | 3.1 | Issue #31 統合: Step-28（音声感情分析 SER）追加、Wav2Vec2ローカル実行、バッチモード、4種感情ラベル |
 | 2026-01-22 | 3.0 | Issue #30 統合: Step-27（録音・音質劣化修正）追加、μ-lawデコード調査・修正方針 |
 | 2026-01-21 | 2.9 | Issue #29 統合: Step-26（アウトバウンドゲートウェイ）追加、Linphone→網のB2BUAブリッジ、環境変数ダイヤルプラン |

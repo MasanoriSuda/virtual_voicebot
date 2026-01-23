@@ -139,6 +139,7 @@ pub struct Session {
     started_at: Option<Instant>,
     started_wall: Option<std::time::SystemTime>,
     rtp_last_sent: Option<Instant>,
+    a_leg_rtp_started: bool,
     timers: SessionTimers,
     sending_audio: bool,
     playback: Option<PlaybackState>,
@@ -154,6 +155,7 @@ pub struct Session {
     outbound_mode: bool,
     outbound_answered: bool,
     outbound_sent_180: bool,
+    outbound_sent_183: bool,
     invite_rejected: bool,
     session_expires: Option<Duration>,
     session_refresher: Option<SessionRefresher>,
@@ -196,6 +198,7 @@ impl Session {
             started_at: None,
             started_wall: None,
             rtp_last_sent: None,
+            a_leg_rtp_started: false,
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             playback: None,
@@ -210,6 +213,7 @@ impl Session {
             outbound_mode: false,
             outbound_answered: false,
             outbound_sent_180: false,
+            outbound_sent_183: false,
             invite_rejected: false,
             session_expires: None,
             session_refresher: None,
@@ -246,6 +250,7 @@ impl Session {
                             self.outbound_mode = false;
                             self.outbound_answered = false;
                             self.outbound_sent_180 = false;
+                            self.outbound_sent_183 = false;
                             self.invite_rejected = false;
                             if config::outbound_config().enabled {
                                 let outbound_cfg = config::outbound_config();
@@ -321,36 +326,10 @@ impl Session {
                                     self.call_id, e
                                 );
                             }
-
-                            let (ip, port) = self.peer_rtp_dst();
-                            let dst_addr = match format!("{ip}:{port}").parse() {
-                                Ok(a) => Some(a),
-                                Err(e) => {
-                                    warn!(
-                                        "[session {}] invalid RTP destination {}:{} ({:?})",
-                                        self.call_id, ip, port, e
-                                    );
-                                    advance_state = false;
-                                    None
-                                }
-                            };
-                            let Some(dst_addr) = dst_addr else {
+                            if !self.ensure_a_leg_rtp_started() {
+                                advance_state = false;
                                 continue;
-                            };
-
-                            // rtp側でソケットを持つように変更
-                            // RTP送信開始（rtp 側で Seq/TS/SSRC を管理）
-                            self.rtp_tx
-                                .start(self.call_id.clone(), dst_addr, 0, 0x12345678, 0, 0);
-
-                            let _ = self.session_out_tx.send((
-                                self.call_id.clone(),
-                                SessionOut::RtpStartTx {
-                                    dst_ip: ip.clone(),
-                                    dst_port: port,
-                                    pt: 0,
-                                },
-                            )); // PCMU
+                            }
                             self.capture.reset();
                             self.intro_sent = true;
 
@@ -529,6 +508,7 @@ impl Session {
                                     0,
                                 );
                             }
+                            let _ = self.ensure_a_leg_rtp_started();
                             if self.outbound_mode && !self.outbound_answered {
                                 if let Some(answer) = self.local_sdp.clone() {
                                     let _ = self.session_out_tx.send((
@@ -609,12 +589,33 @@ impl Session {
                             });
                         }
                         (_, SessionIn::B2buaRinging) => {
-                            if self.outbound_mode && !self.outbound_sent_180 {
+                            if self.outbound_mode
+                                && !self.outbound_sent_180
+                                && !self.outbound_sent_183
+                            {
                                 let _ = self.session_out_tx.send((
                                     self.call_id.clone(),
                                     SessionOut::SipSend180,
                                 ));
                                 self.outbound_sent_180 = true;
+                            }
+                        }
+                        (_, SessionIn::B2buaEarlyMedia) => {
+                            if !self.outbound_mode || self.invite_rejected {
+                                continue;
+                            }
+                            self.ivr_state = IvrState::B2buaMode;
+                            if !self.ensure_a_leg_rtp_started() {
+                                continue;
+                            }
+                            if !self.outbound_sent_183 {
+                                if let Some(answer) = self.local_sdp.clone() {
+                                    let _ = self.session_out_tx.send((
+                                        self.call_id.clone(),
+                                        SessionOut::SipSend183 { answer },
+                                    ));
+                                    self.outbound_sent_183 = true;
+                                }
                             }
                         }
                         (_, SessionIn::TransferAnnounce) => {
@@ -819,6 +820,35 @@ impl Session {
         } else {
             ("0.0.0.0".to_string(), 0)
         }
+    }
+
+    fn ensure_a_leg_rtp_started(&mut self) -> bool {
+        if self.a_leg_rtp_started {
+            return true;
+        }
+        let (ip, port) = self.peer_rtp_dst();
+        let dst_addr: SocketAddr = match format!("{ip}:{port}").parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                warn!(
+                    "[session {}] invalid RTP destination {}:{} ({:?})",
+                    self.call_id, ip, port, e
+                );
+                return false;
+            }
+        };
+        self.rtp_tx
+            .start(self.call_id.clone(), dst_addr, 0, 0x12345678, 0, 0);
+        let _ = self.session_out_tx.send((
+            self.call_id.clone(),
+            SessionOut::RtpStartTx {
+                dst_ip: ip,
+                dst_port: port,
+                pt: 0,
+            },
+        ));
+        self.a_leg_rtp_started = true;
+        true
     }
 
     fn align_rtp_clock(&mut self) {
@@ -1161,6 +1191,7 @@ mod tests {
             started_at: None,
             started_wall: None,
             rtp_last_sent: None,
+            a_leg_rtp_started: false,
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             playback: None,
@@ -1175,6 +1206,7 @@ mod tests {
             outbound_mode: false,
             outbound_answered: false,
             outbound_sent_180: false,
+            outbound_sent_183: false,
             invite_rejected: false,
             session_expires: None,
             session_refresher: None,

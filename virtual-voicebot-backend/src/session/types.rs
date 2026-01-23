@@ -99,6 +99,8 @@ pub enum SessionIn {
     },
     /// Bレグの呼び出し中（180 Ringing）
     B2buaRinging,
+    /// Bレグの早期メディア（183 Session Progress）
+    B2buaEarlyMedia,
     /// Bレグ転送失敗
     B2buaFailed {
         reason: String,
@@ -144,6 +146,10 @@ pub enum SessionOut {
     SipSend100,
     /// SIP provisional (180)
     SipSend180,
+    /// SIP provisional (183 + SDP)
+    SipSend183 {
+        answer: Sdp,
+    },
     /// SIP final (200 + SDP)
     SipSend200 {
         answer: Sdp,

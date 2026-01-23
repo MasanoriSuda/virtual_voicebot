@@ -201,6 +201,16 @@ async fn run_transfer(
                     continue;
                 }
                 if resp.status_code >= 300 {
+                    let ack_to = header_value(&resp.headers, "To").unwrap_or(to_header.as_str());
+                    send_non2xx_ack(
+                        peer,
+                        target_uri.as_str(),
+                        via.as_str(),
+                        from_header.as_str(),
+                        ack_to,
+                        b_call_id.as_str(),
+                        cseq,
+                    );
                     return Err(anyhow!("transfer failed status {}", resp.status_code));
                 }
 
@@ -364,6 +374,10 @@ async fn run_outbound(
     let timeout_sleep = sleep(timeout);
     tokio::pin!(timeout_sleep);
     let mut provisional_received = false;
+    let mut early_media_sent = false;
+    let mut rtp_listener_started = false;
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_notify = Arc::new(Notify::new());
 
     loop {
         tokio::select! {
@@ -388,7 +402,8 @@ async fn run_outbound(
                 let Some(msg) = maybe_msg else {
                     return Err(anyhow!("outbound sip channel closed"));
                 };
-                let SipMessage::Response(resp) = msg.message else { continue; };
+                let B2buaSipMessage { peer, message } = msg;
+                let SipMessage::Response(resp) = message else { continue; };
                 if !response_matches_call_id(&resp, &call_id) {
                     continue;
                 }
@@ -396,10 +411,36 @@ async fn run_outbound(
                     provisional_received = true;
                     if resp.status_code == 180 {
                         let _ = tx_in.send(SessionIn::B2buaRinging);
+                    } else if resp.status_code == 183
+                        && !early_media_sent
+                        && !resp.body.is_empty()
+                    {
+                        let _ = tx_in.send(SessionIn::B2buaEarlyMedia);
+                        if !rtp_listener_started {
+                            spawn_rtp_listener(
+                                a_call_id.clone(),
+                                rtp_socket.clone(),
+                                tx_in.clone(),
+                                shutdown.clone(),
+                                shutdown_notify.clone(),
+                            );
+                            rtp_listener_started = true;
+                        }
+                        early_media_sent = true;
                     }
                     continue;
                 }
                 if resp.status_code == 401 || resp.status_code == 407 {
+                    let ack_to = header_value(&resp.headers, "To").unwrap_or(to_header.as_str());
+                    send_non2xx_ack(
+                        peer,
+                        request_uri.as_str(),
+                        invite_via.as_str(),
+                        from_header.as_str(),
+                        ack_to,
+                        call_id.as_str(),
+                        cseq,
+                    );
                     if auth_attempts >= max_auth_attempts {
                         return Err(anyhow!(OutboundError { status: resp.status_code }));
                     }
@@ -450,6 +491,16 @@ async fn run_outbound(
                     continue;
                 }
                 if resp.status_code >= 300 {
+                    let ack_to = header_value(&resp.headers, "To").unwrap_or(to_header.as_str());
+                    send_non2xx_ack(
+                        peer,
+                        request_uri.as_str(),
+                        invite_via.as_str(),
+                        from_header.as_str(),
+                        ack_to,
+                        call_id.as_str(),
+                        cseq,
+                    );
                     if resp.status_code == 403 {
                         info!(
                             "[b2bua {}] outbound response dump:\n{}",
@@ -485,8 +536,6 @@ async fn run_outbound(
                     .build();
                 send_b2bua_payload(TransportPeer::Udp(sip_peer), ack.to_bytes())?;
 
-                let shutdown = Arc::new(AtomicBool::new(false));
-                let shutdown_notify = Arc::new(Notify::new());
                 spawn_sip_listener(
                     a_call_id.clone(),
                     call_id.clone(),
@@ -495,13 +544,15 @@ async fn run_outbound(
                     shutdown.clone(),
                     shutdown_notify.clone(),
                 );
-                spawn_rtp_listener(
-                    a_call_id.clone(),
-                    rtp_socket.clone(),
-                    tx_in.clone(),
-                    shutdown.clone(),
-                    shutdown_notify.clone(),
-                );
+                if !rtp_listener_started {
+                    spawn_rtp_listener(
+                        a_call_id.clone(),
+                        rtp_socket.clone(),
+                        tx_in.clone(),
+                        shutdown.clone(),
+                        shutdown_notify.clone(),
+                    );
+                }
 
                 let b_leg = BLeg {
                     call_id,
@@ -616,6 +667,28 @@ fn send_b2bua_payload(peer: TransportPeer, payload: Vec<u8>) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow!("b2bua transport not initialized"))
+    }
+}
+
+fn send_non2xx_ack(
+    peer: TransportPeer,
+    request_uri: &str,
+    via: &str,
+    from_header: &str,
+    to_header: &str,
+    call_id: &str,
+    cseq: u32,
+) {
+    let ack = SipRequestBuilder::new(SipMethod::Ack, request_uri.to_string())
+        .header("Via", via.to_string())
+        .header("Max-Forwards", "70")
+        .header("From", from_header.to_string())
+        .header("To", to_header.to_string())
+        .header("Call-ID", call_id.to_string())
+        .header("CSeq", format!("{cseq} ACK"))
+        .build();
+    if let Err(err) = send_b2bua_payload(peer, ack.to_bytes()) {
+        warn!("[b2bua] failed to send non-2xx ACK: {}", err);
     }
 }
 
