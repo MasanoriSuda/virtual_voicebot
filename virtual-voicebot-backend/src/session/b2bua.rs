@@ -339,6 +339,54 @@ impl std::fmt::Display for OutboundError {
 
 impl std::error::Error for OutboundError {}
 
+struct RtpListenerGuard {
+    shutdown: Arc<AtomicBool>,
+    shutdown_notify: Arc<Notify>,
+    started: bool,
+}
+
+impl RtpListenerGuard {
+    fn new(shutdown: Arc<AtomicBool>, shutdown_notify: Arc<Notify>) -> Self {
+        Self {
+            shutdown,
+            shutdown_notify,
+            started: false,
+        }
+    }
+
+    fn start(
+        &mut self,
+        a_call_id: &str,
+        rtp_socket: Arc<UdpSocket>,
+        tx_in: UnboundedSender<SessionIn>,
+    ) {
+        if self.started {
+            return;
+        }
+        spawn_rtp_listener(
+            a_call_id.to_string(),
+            rtp_socket,
+            tx_in,
+            self.shutdown.clone(),
+            self.shutdown_notify.clone(),
+        );
+        self.started = true;
+    }
+
+    fn disarm(&mut self) {
+        self.started = false;
+    }
+}
+
+impl Drop for RtpListenerGuard {
+    fn drop(&mut self) {
+        if self.started {
+            self.shutdown.store(true, Ordering::SeqCst);
+            self.shutdown_notify.notify_waiters();
+        }
+    }
+}
+
 async fn run_outbound(
     a_call_id: String,
     number: String,
@@ -416,14 +464,16 @@ async fn run_outbound(
     )
     .await?;
 
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_notify = Arc::new(Notify::new());
+    let mut rtp_guard = RtpListenerGuard::new(shutdown.clone(), shutdown_notify.clone());
+    rtp_guard.start(a_call_id.as_str(), rtp_socket.clone(), tx_in.clone());
+
     let timeout = config::transfer_timeout();
     let timeout_sleep = sleep(timeout);
     tokio::pin!(timeout_sleep);
     let mut provisional_received = false;
     let mut early_media_sent = false;
-    let mut rtp_listener_started = false;
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_notify = Arc::new(Notify::new());
     let mut cancel_requested = false;
     let mut cancel_sent = false;
     let mut cancel_fut: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(async move {
@@ -488,16 +538,7 @@ async fn run_outbound(
                         && !resp.body.is_empty()
                     {
                         let _ = tx_in.send(SessionIn::B2buaEarlyMedia);
-                        if !rtp_listener_started {
-                            spawn_rtp_listener(
-                                a_call_id.clone(),
-                                rtp_socket.clone(),
-                                tx_in.clone(),
-                                shutdown.clone(),
-                                shutdown_notify.clone(),
-                            );
-                            rtp_listener_started = true;
-                        }
+                        rtp_guard.start(a_call_id.as_str(), rtp_socket.clone(), tx_in.clone());
                         early_media_sent = true;
                     }
                     continue;
@@ -633,15 +674,7 @@ async fn run_outbound(
                     shutdown.clone(),
                     shutdown_notify.clone(),
                 );
-                if !rtp_listener_started {
-                    spawn_rtp_listener(
-                        a_call_id.clone(),
-                        rtp_socket.clone(),
-                        tx_in.clone(),
-                        shutdown.clone(),
-                        shutdown_notify.clone(),
-                    );
-                }
+                rtp_guard.start(a_call_id.as_str(), rtp_socket.clone(), tx_in.clone());
 
                 let b_leg = BLeg {
                     call_id,
@@ -658,6 +691,7 @@ async fn run_outbound(
                     shutdown,
                     shutdown_notify,
                 };
+                rtp_guard.disarm();
                 return Ok(Some(b_leg));
             }
         }

@@ -10,7 +10,7 @@
 | **Owner** | TBD |
 | **Last Updated** | 2026-01-24 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36), [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36), [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37), [Issue #38](https://github.com/MasanoriSuda/virtual_voicebot/issues/38) |
 
 ---
 
@@ -60,6 +60,7 @@
 | [Step-32](#step-32-reazonspeech-検証-issue-35) | ReazonSpeech 検証 (Issue #35) | - | 未着手 |
 | [Step-33](#step-33-a-leg-cancel-受信処理-issue-36) | A-leg CANCEL 受信処理 (Issue #36) | - | 未着手 |
 | [Step-34](#step-34-b2bua-keepalive無音干渉修正-issue-37) | B2BUA Keepalive無音干渉修正 (Issue #37) | - | 未着手 |
+| [Step-35](#step-35-発信時rtpリスナー早期起動-issue-38) | 発信時RTPリスナー早期起動 (Issue #38) | - | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -4076,6 +4077,148 @@ Codex指摘:
 
 ---
 
+## Step-35: 発信時RTPリスナー早期起動 (Issue #38)
+
+**Refs:** [Issue #38](https://github.com/MasanoriSuda/virtual_voicebot/issues/38)
+
+### 概要
+
+発信（outbound）時にRTPリスナー（`recv_from`ループ）の起動が183/200受信まで遅延しているため、初期RTPパケットが取りこぼされる問題を修正する。RTPソケット確保と同時にリスナーを起動し、音声遅延を解消する。
+
+### 現状（問題）
+
+**問題箇所:** [b2bua.rs](src/session/b2bua.rs) の `run_outbound()`
+
+| タイミング | 処理 | 状態 |
+|-----------|------|------|
+| INVITE送信前 | `UdpSocket::bind()` | ✓ 早期に完了 |
+| INVITE→183/200間 | RTPリスナー未起動 | ❌ **recv_fromループ停止中** |
+| 183 or 200受信 | `spawn_rtp_listener()` | ← ここで初めて起動 |
+
+**現象:**
+```
+T=0ms:    INVITE送信、RTPソケット確保（bind済）
+T=100ms:  相手がRTP送信開始 → OSバッファに溜まるが受信処理されない
+T=200ms:  180 Ringing受信 → リスナー起動されない
+T=300ms:  200 OK受信 → spawn_rtp_listener() 起動
+T=305ms:  recv_from() で初めて受信開始
+
+→ ~300ms の遅延 + 初期パケット喪失（「もしもし」が聞こえない）
+```
+
+**比較:**
+| 経路 | 遅延 | 理由 |
+|------|------|------|
+| スマホ → Zoiper（直接） | ほぼなし | ソケット確保と同時にリスナー起動 |
+| スマホ → Rust → 網 | あり | リスナー起動が183/200受信まで遅延 |
+
+### 変更後（After）
+
+RTPソケット確保と同時に`spawn_rtp_listener()`を起動する。
+
+```
+T=0ms:    INVITE送信前
+          ├─ UdpSocket::bind()
+          └─ spawn_rtp_listener() ← 即座に起動 ✓
+T=100ms:  相手がRTP送信開始 → 即座にrecv_from()で受信 ✓
+T=200ms:  180 Ringing受信
+T=300ms:  200 OK受信
+
+→ 遅延なし、パケット喪失なし
+```
+
+### 境界条件
+
+#### 入力
+
+| 条件 | 値 |
+|------|-----|
+| 対象 | 発信（outbound）時のB-leg RTP受信 |
+| トリガー | RTPソケット確保時 |
+
+#### 出力
+
+| 項目 | 内容 |
+|------|------|
+| 期待動作 | RTPソケット確保と同時にリスナー起動 |
+| 効果 | 初期RTPパケット喪失なし、音声遅延解消 |
+
+### DoD (Definition of Done)
+
+- [ ] `run_outbound()` でRTPソケット確保直後に`spawn_rtp_listener()`を呼び出し
+- [ ] 183/200受信時の重複起動を防ぐ（`rtp_listener_started`フラグ活用）
+- [ ] 発信時の「もしもし」が即座に聞こえることを確認
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/session/b2bua.rs` | `run_outbound()` でリスナー早期起動 |
+
+### 実装指針（確定）
+
+#### 方法A: RTPソケット確保と同時にリスナー起動 ✅ **採用**
+
+**変更前** (行379付近):
+```rust
+let rtp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+let rtp_port = rtp_socket.local_addr()?.port();
+let sdp = build_sdp(cfg.advertised_ip.as_str(), rtp_port);
+// ... INVITE送信
+// spawn_rtp_listener() は 183/200受信まで呼ばれない
+```
+
+**変更後**:
+```rust
+let rtp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+let rtp_port = rtp_socket.local_addr()?.port();
+let sdp = build_sdp(cfg.advertised_ip.as_str(), rtp_port);
+
+// 追加: RTPソケット確保と同時にリスナー起動
+spawn_rtp_listener(
+    a_call_id.clone(),
+    rtp_socket.clone(),
+    tx_in.clone(),
+    shutdown.clone(),
+    shutdown_notify.clone(),
+);
+let rtp_listener_started = true;  // フラグを即座にtrueに
+
+// ... INVITE送信
+```
+
+**183/200受信時の処理**:
+```rust
+// 既にリスナー起動済みなので、以下の分岐は実行されない
+if !rtp_listener_started {
+    spawn_rtp_listener(...);  // ← スキップされる
+    rtp_listener_started = true;
+}
+```
+
+### 変更上限
+
+- <=20行 / <=1ファイル
+
+### 検証方法
+
+```bash
+# 1. Linphone → Rust → 網 で発信
+# 2. 相手が応答する前に「もしもし」と発話
+# 3. 相手側で「もしもし」が即座に聞こえることを確認
+# 4. Wireshark で INVITE送信直後からRTP受信が開始されていることを確認
+```
+
+### リスク/ロールバック観点
+
+| リスク | 対策 |
+|--------|------|
+| 不要なRTP受信処理 | 発信が失敗した場合もリスナーが動くが、shutdown通知で停止するため問題なし |
+| リソース消費 | recv_fromループは軽量、問題なし |
+| ロールバック | 数行の変更のみ、git revert で容易に切り戻し可能 |
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -4092,6 +4235,7 @@ Codex指摘:
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-24 | 3.15 | Issue #38 統合: Step-35（発信時RTPリスナー早期起動）追加、RTPソケット確保と同時にspawn_rtp_listener起動 |
 | 2026-01-24 | 3.14 | Issue #37 更新: Step-34 実装方法確定（方法1: B2BUAモード判定を採用） |
 | 2026-01-24 | 3.13 | Issue #37 統合: Step-34（B2BUA Keepalive無音干渉修正）追加、send_silence_frame に B2BUA モード判定追加 |
 | 2026-01-24 | 3.12 | Issue #36 統合: Step-33（A-leg CANCEL 受信処理）追加、handle_request に CANCEL 分岐追加、487 応答・B-leg CANCEL 連携 |
