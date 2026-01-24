@@ -12,6 +12,30 @@ use crate::session::SessionOut;
 
 const SORRY_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sorry.wav");
+const SPEC_FILTER_RESPONSE: &str = "それは無理です、管理者に報告します。";
+const SPEC_FILTER_KEYWORDS: [&str; 21] = [
+    "仕様",
+    "内部",
+    "システム",
+    "システムプロンプト",
+    "プロンプト",
+    "設定",
+    "制限",
+    "ポリシー",
+    "モデル",
+    "llm",
+    "gpt",
+    "claude",
+    "スペック",
+    "version",
+    "バージョン",
+    "構成",
+    "アーキテクチャ",
+    "ログ",
+    "運用",
+    "api",
+    "トークン",
+];
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -175,6 +199,27 @@ impl AppWorker {
             return Ok(());
         }
 
+        if is_spec_question(trimmed) {
+            log::warn!(
+                "[security] spec question blocked: call_id={} input={}",
+                call_id,
+                trimmed
+            );
+            let answer_text = SPEC_FILTER_RESPONSE.to_string();
+            match self.ai_port.synth_to_wav(answer_text, None).await {
+                Ok(bot_wav) => {
+                    let _ = self.session_out_tx.send((
+                        self.call_id.clone(),
+                        SessionOut::AppSendBotAudioFile { path: bot_wav },
+                    ));
+                }
+                Err(e) => {
+                    log::warn!("[app {call_id}] TTS failed: {e:?}");
+                }
+            }
+            return Ok(());
+        }
+
         let mut messages = Vec::with_capacity(self.history.len() + 1);
         messages.extend(self.history.iter().cloned());
         messages.push(ChatMessage {
@@ -217,6 +262,13 @@ impl AppWorker {
     // build_prompt はロール分離に伴い廃止
 }
 
+fn is_spec_question(input: &str) -> bool {
+    let lowered = input.to_ascii_lowercase();
+    SPEC_FILTER_KEYWORDS
+        .iter()
+        .any(|kw| lowered.contains(kw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +276,16 @@ mod tests {
     #[test]
     fn sorry_wav_path_points_to_data_dir() {
         assert!(SORRY_WAV_PATH.ends_with("/data/zundamon_sorry.wav"));
+    }
+
+    #[test]
+    fn spec_filter_detects_keywords() {
+        assert!(is_spec_question("使ってるモデルは？"));
+        assert!(is_spec_question("LLMは何？"));
+    }
+
+    #[test]
+    fn spec_filter_allows_normal_text() {
+        assert!(!is_spec_question("今日の天気は？"));
     }
 }

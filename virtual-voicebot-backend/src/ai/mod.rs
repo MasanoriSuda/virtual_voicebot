@@ -77,8 +77,6 @@ pub mod llm;
 pub mod ser;
 pub mod tts;
 
-const SYSTEM_PROMPT: &str = "あなたはボイスボットです。120文字以内で回答してください。";
-
 fn http_client(timeout: Duration) -> Result<Client> {
     Ok(Client::builder().timeout(timeout).build()?)
 }
@@ -180,9 +178,10 @@ async fn call_ollama(messages: &[ChatMessage]) -> Result<String> {
     let client = http_client(config::timeouts().ai_http)?;
 
     let mut ollama_messages = Vec::with_capacity(messages.len() + 1);
+    let system_prompt = llm::system_prompt();
     ollama_messages.push(OllamaMessage {
         role: "system".to_string(),
-        content: SYSTEM_PROMPT.to_string(),
+        content: system_prompt,
     });
     for msg in messages {
         let role = match msg.role {
@@ -313,10 +312,11 @@ async fn call_gemini(messages: &[ChatMessage]) -> Result<String> {
     );
 
     let mut contents = Vec::with_capacity(messages.len() + 1);
+    let system_prompt = llm::system_prompt();
     contents.push(GeminiContent {
         role: Some("user".to_string()),
         parts: vec![GeminiPart {
-            text: SYSTEM_PROMPT.to_string(),
+            text: system_prompt,
         }],
     });
     for msg in messages {

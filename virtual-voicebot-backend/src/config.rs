@@ -332,7 +332,7 @@ impl RtpConfig {
         // Defaults (MVP/NEXT): jitter reorder 5, RTCP interval 5s.
         // Env: RTP_JITTER_MAX_REORDER / RTCP_INTERVAL_MS.
         Self {
-            jitter_max_reorder: env_u16("RTP_JITTER_MAX_REORDER", 10),
+            jitter_max_reorder: env_u16("RTP_JITTER_MAX_REORDER", 30),
             rtcp_interval: env_duration_ms("RTCP_INTERVAL_MS", 5_000),
         }
     }
