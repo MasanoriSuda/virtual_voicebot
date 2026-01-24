@@ -39,6 +39,8 @@ const INTRO_EVENING_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_evening.wav");
 const IVR_INTRO_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr.wav");
+const VOICEBOT_INTRO_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr_1.wav");
 const IVR_INTRO_AGAIN_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr_again.wav");
 const IVR_SENDAI_WAV_PATH: &str =
@@ -107,7 +109,7 @@ fn ivr_action_for_digit(digit: char) -> IvrAction {
 
 fn ivr_state_after_action(state: IvrState, action: IvrAction) -> IvrState {
     match (state, action) {
-        (IvrState::IvrMenuWaiting, IvrAction::EnterVoicebot) => IvrState::VoicebotMode,
+        (IvrState::IvrMenuWaiting, IvrAction::EnterVoicebot) => IvrState::VoicebotIntroPlaying,
         _ => state,
     }
 }
@@ -400,6 +402,13 @@ impl Session {
                         }
                         (SessState::Established, SessionIn::Dtmf { digit }) => {
                             info!("[session {}] DTMF received: '{}'", self.call_id, digit);
+                            if self.ivr_state == IvrState::VoicebotIntroPlaying {
+                                info!(
+                                    "[session {}] ignoring DTMF during voicebot intro",
+                                    self.call_id
+                                );
+                                continue;
+                            }
                             if self.ivr_state != IvrState::IvrMenuWaiting {
                                 debug!(
                                     "[session {}] ignoring DTMF in {:?}",
@@ -413,13 +422,22 @@ impl Session {
                             match action {
                                 IvrAction::EnterVoicebot => {
                                     info!(
-                                        "[session {}] switching to voicebot mode",
+                                        "[session {}] starting voicebot intro",
                                         self.call_id
                                     );
-                                    self.ivr_state =
-                                        ivr_state_after_action(self.ivr_state, action);
-                                    self.capture.reset();
-                                    self.capture.start();
+                                    if let Err(e) = self.start_playback(&[VOICEBOT_INTRO_WAV_PATH])
+                                    {
+                                        warn!(
+                                            "[session {}] voicebot intro failed: {:?}",
+                                            self.call_id, e
+                                        );
+                                        self.ivr_state = IvrState::VoicebotMode;
+                                        self.capture.reset();
+                                        self.capture.start();
+                                    } else {
+                                        self.ivr_state =
+                                            ivr_state_after_action(self.ivr_state, action);
+                                    }
                                 }
                                 IvrAction::PlaySendai => {
                                     info!("[session {}] playing sendai info", self.call_id);
@@ -1037,6 +1055,11 @@ impl Session {
     fn finish_playback(&mut self, restart_ivr_timeout: bool) {
         self.playback = None;
         self.sending_audio = false;
+        if self.ivr_state == IvrState::VoicebotIntroPlaying {
+            self.ivr_state = IvrState::VoicebotMode;
+            self.capture.reset();
+            self.capture.start();
+        }
         if restart_ivr_timeout && self.ivr_state == IvrState::IvrMenuWaiting {
             self.reset_ivr_timeout();
         }
@@ -1138,7 +1161,7 @@ mod tests {
     fn ivr_state_transitions() {
         assert_eq!(
             ivr_state_after_action(IvrState::IvrMenuWaiting, IvrAction::EnterVoicebot),
-            IvrState::VoicebotMode
+            IvrState::VoicebotIntroPlaying
         );
         assert_eq!(
             ivr_state_after_action(IvrState::IvrMenuWaiting, IvrAction::ReplayMenu),

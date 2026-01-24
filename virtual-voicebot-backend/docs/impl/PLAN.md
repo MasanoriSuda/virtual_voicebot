@@ -8,9 +8,9 @@
 |------|-----|
 | **Status** | Active |
 | **Owner** | TBD |
-| **Last Updated** | 2026-01-23 |
+| **Last Updated** | 2026-01-24 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35) |
 
 ---
 
@@ -55,6 +55,9 @@
 | [Step-27](#step-27-録音音質劣化修正-issue-30) | 録音・音質劣化修正 (Issue #30) | - | 未着手 |
 | [Step-28](#step-28-音声感情分析ser-issue-31) | 音声感情分析 SER (Issue #31) | - | 未着手 |
 | [Step-29](#step-29-カスタムプロンプトペルソナ設定-issue-32) | カスタムプロンプト/ペルソナ設定 (Issue #32) | - | 未着手 |
+| [Step-30](#step-30-dtmf-1-ボイスボットイントロ-issue-33) | DTMF「1」ボイスボットイントロ (Issue #33) | → Step-23 | 未着手 |
+| [Step-31](#step-31-kotoba-whisper-移行-issue-34) | Kotoba-Whisper 移行 (Issue #34) | - | 未着手 |
+| [Step-32](#step-32-reazonspeech-検証-issue-35) | ReazonSpeech 検証 (Issue #35) | - | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -3266,6 +3269,435 @@ warn!("[security] spec question blocked: input={}", user_input);
 
 ---
 
+## Step-30: DTMF「1」ボイスボットイントロ (Issue #33)
+
+**Refs:** [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33)
+
+### 概要
+
+IVRメニュー待機中にDTMF「1」が押下された場合、ボイスボットモードへ遷移する前に専用イントロ音声を**1回だけ**再生する。
+
+### 現状（Before）
+
+```
+DTMF「1」押下 → 即座にVoicebotMode遷移 → キャプチャ開始（音声対話開始）
+```
+
+- イントロ音声なし
+
+### 変更後（After）
+
+```
+DTMF「1」押下 → zundamon_intro_ivr_1.wav 再生（1回のみ）→ 再生完了後 VoicebotMode遷移 → キャプチャ開始
+```
+
+### 境界条件
+
+#### 入力
+
+| 条件 | 値 |
+|------|-----|
+| トリガー | DTMF「1」押下 |
+| 前提状態 | `SessState::Established` かつ `IvrState::IvrMenuWaiting` |
+
+#### 出力
+
+| 項目 | 内容 |
+|------|------|
+| 再生ファイル | `data/zundamon_intro_ivr_1.wav` |
+| 再生回数 | 1回のみ（ボイスボット中は再生しない） |
+| 遷移先状態 | 再生完了後 `IvrState::VoicebotMode` |
+
+#### エラー・例外
+
+| ケース | 動作 |
+|--------|------|
+| イントロ再生中に別DTMF押下 | 無視する（再生完了まで待機） |
+| イントロ再生中に通話切断 | 通常の切断処理（特別処理なし） |
+| イントロ再生失敗（ファイル読込エラー等） | ボイスボットモードへ即遷移（フォールバック） |
+
+### 不変条件
+
+- イントロ音声は「DTMF 1 → ボイスボット開始」の遷移時に**1回のみ**再生される
+- ボイスボットモード中（`IvrState::VoicebotMode`）ではイントロ音声は再生されない
+- 既存のDTMF「2」「3」「9」「その他」の動作に影響しない
+
+### DoD (Definition of Done)
+
+- [ ] DTMF「1」押下後、`zundamon_intro_ivr_1.wav` が発信元に再生される
+- [ ] イントロ音声は1回のみ再生される
+- [ ] イントロ再生完了後にボイスボットモードが開始される
+- [ ] イントロ再生中のDTMF入力は無視される
+- [ ] イントロ再生失敗時はボイスボットモードへ即遷移
+- [ ] DTMF「2」「3」「9」の動作に変更なし
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/session/session.rs` | 定数追加 `VOICEBOT_INTRO_WAV_PATH`、`EnterVoicebot` 処理変更 |
+| `src/session/types.rs` | IVR状態追加 `VoicebotIntroPlaying` |
+
+### 実装指針
+
+1. **定数追加**（`src/session/session.rs`）
+   ```rust
+   const VOICEBOT_INTRO_WAV_PATH: &str = "data/zundamon_intro_ivr_1.wav";
+   ```
+
+2. **IVR状態追加**（`src/session/types.rs`）
+   ```rust
+   pub enum IvrState {
+       // 既存...
+       VoicebotIntroPlaying,  // 新規追加
+   }
+   ```
+
+3. **EnterVoicebot処理変更**
+   ```rust
+   IvrAction::EnterVoicebot => {
+       self.cancel_playback();
+       self.stop_ivr_timeout();
+       // イントロ再生開始
+       if let Err(e) = self.start_playback(&[VOICEBOT_INTRO_WAV_PATH]) {
+           warn!("[session {}] voicebot intro failed: {}, fallback to voicebot mode", self.call_id, e);
+           // フォールバック: 即座にボイスボットモードへ
+           self.ivr_state = IvrState::VoicebotMode;
+           self.start_capture();
+       } else {
+           self.ivr_state = IvrState::VoicebotIntroPlaying;
+       }
+   }
+   ```
+
+4. **再生完了処理追加**（`finish_playback()` 内）
+   ```rust
+   if self.ivr_state == IvrState::VoicebotIntroPlaying {
+       self.ivr_state = IvrState::VoicebotMode;
+       self.start_capture();
+   }
+   ```
+
+5. **DTMF無視条件追加**（DTMF受信処理）
+   ```rust
+   // VoicebotIntroPlaying 中はDTMFを無視
+   if self.ivr_state == IvrState::VoicebotIntroPlaying {
+       info!("[session {}] ignoring DTMF during voicebot intro", self.call_id);
+       return;
+   }
+   ```
+
+### 変更上限
+
+- <=80行 / <=2ファイル
+
+### 検証方法
+
+```bash
+# 手動テスト（Zoiper等）
+# 1. 着信 → IVRメニュー再生
+# 2. DTMF「1」押下 → zundamon_intro_ivr_1.wav 再生確認
+# 3. イントロ完了後、音声対話（ASR/LLM/TTS）が開始されること確認
+# 4. イントロ再生中に別DTMFを押しても無視されることを確認
+```
+
+### リスク/ロールバック観点
+
+| リスク | 対策 |
+|--------|------|
+| 状態遷移の複雑化によるバグ | 状態遷移図をドキュメント化、単体テスト追加 |
+| 再生完了イベントの漏れ | `finish_playback()` での遷移を確実に実装 |
+| ロールバック | 変更箇所が限定的（定数追加 + EnterVoicebot処理 + finish_playback処理）、git revertで容易に切り戻し可能 |
+
+---
+
+## Step-31: Kotoba-Whisper 移行 (Issue #34)
+
+**Refs:** [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34)
+
+### 概要
+
+ASR（音声認識）エンジンを OpenAI Whisper (`large-v2`) から日本語特化モデル Kotoba-Whisper (`kotoba-tech/kotoba-whisper-v2.2`) へ移行し、日本語認識精度の向上を図る。
+
+### 現状（Before）
+
+| 項目 | 値 |
+|------|-----|
+| ファイル | `script/whisper_server.py` |
+| ライブラリ | `whisper` (OpenAI) |
+| モデル | `large-v2` |
+| API | `model.transcribe(tmp_path, language="ja")` |
+
+```python
+import whisper
+model = whisper.load_model("large-v2")
+result = model.transcribe(tmp_path, language="ja")
+```
+
+### 変更後（After）
+
+| 項目 | 値 |
+|------|-----|
+| ファイル | `script/whisper_server.py` |
+| ライブラリ | `transformers`, `torch`, `accelerate` |
+| モデル | `kotoba-tech/kotoba-whisper-v2.2` |
+| API | `pipeline("automatic-speech-recognition", ...)` |
+
+```python
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+import torch
+import os
+
+# キャッシュディレクトリ指定
+CACHE_DIR = os.environ.get("HF_HOME", "/var/cache/huggingface")
+
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+
+model_id = "kotoba-tech/kotoba-whisper-v2.2"
+
+# Flash Attention 2 有効化（GPU環境のみ）
+attn_implementation = "flash_attention_2" if torch.cuda.is_available() else "sdpa"
+
+model = AutoModelForSpeechSeq2Seq.from_pretrained(
+    model_id,
+    torch_dtype=torch_dtype,
+    low_cpu_mem_usage=True,
+    attn_implementation=attn_implementation,
+    cache_dir=CACHE_DIR,
+)
+model.to(device)
+processor = AutoProcessor.from_pretrained(model_id, cache_dir=CACHE_DIR)
+
+pipe = pipeline(
+    "automatic-speech-recognition",
+    model=model,
+    tokenizer=processor.tokenizer,
+    feature_extractor=processor.feature_extractor,
+    torch_dtype=torch_dtype,
+    device=device,
+)
+
+# 推論
+result = pipe(tmp_path, generate_kwargs={"language": "ja", "task": "transcribe"})
+text = result["text"]
+```
+
+### 境界条件
+
+#### 入力
+
+| 条件 | 値 |
+|------|-----|
+| 入力形式 | WAV ファイル（既存と同一） |
+| サンプリングレート | 16kHz（Whisper標準） |
+
+#### 出力
+
+| 項目 | 内容 |
+|------|------|
+| レスポンス形式 | `{"text": "認識結果"}` （既存と同一） |
+| API エンドポイント | `POST /transcribe` （変更なし） |
+
+#### 環境要件
+
+| 項目 | 現行 | 変更後 |
+|------|------|--------|
+| GPU | 推奨 | 推奨（Flash Attention対応で高速化可能） |
+| メモリ | ~10GB VRAM | ~10GB VRAM（同等） |
+| 追加依存 | - | `transformers`, `accelerate`, `torch` |
+
+### DoD (Definition of Done)
+
+- [ ] `whisper_server.py` を Kotoba-Whisper に移行
+- [ ] `requirements.txt` に依存パッケージ追加
+- [ ] 既存 API インターフェース（`POST /transcribe`）を維持
+- [ ] 日本語音声での認識テスト実施
+- [ ] GPU/CPU 両環境での動作確認
+- [ ] レイテンシ比較（現行 vs Kotoba-Whisper）
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `script/whisper_server.py` | モデルロード・推論処理を Kotoba-Whisper に変更 |
+| `script/requirements.txt` | `transformers`, `accelerate`, `torch` 追加 |
+
+### 変更上限
+
+- <=50行 / <=2ファイル
+
+### 検証方法
+
+```bash
+# 1. サーバー起動
+python script/whisper_server.py
+
+# 2. テスト音声で認識確認
+curl -X POST -F "file=@test.wav" http://localhost:9000/transcribe
+
+# 3. 日本語認識精度の確認（主観評価）
+# 4. レイテンシ計測（time コマンド等）
+```
+
+### Open Questions
+
+| # | 質問 | 回答 |
+|---|------|------|
+| Q1 | Flash Attention 2 を有効化するか？（高速化、ただし依存追加） | Yes |
+| Q2 | モデルのキャッシュディレクトリを指定するか？ | Yes |
+| Q3 | CPU フォールバック時の dtype は `float32` でよいか？ | Yes（暫定） |
+
+### リスク/ロールバック観点
+
+| リスク | 対策 |
+|--------|------|
+| 依存パッケージの追加によるビルド複雑化 | requirements.txt でバージョン固定 |
+| モデルロード時間の増加 | 初回起動時のみ。キャッシュ後は同等 |
+| 認識精度の退化（想定外） | 現行 whisper_server.py をバックアップ、切り戻し可能 |
+| ロールバック | `whisper_server.py` を元に戻すだけで切り戻し可能 |
+
+### 参考
+
+- [kotoba-tech/kotoba-whisper-v2.2 - Hugging Face](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.2)
+- [Kotoba-Whisper 公式ドキュメント](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.2#usage)
+
+---
+
+## Step-32: ReazonSpeech 検証 (Issue #35)
+
+**Refs:** [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35)
+
+### 概要
+
+ASR（音声認識）エンジンの代替として ReazonSpeech (`reazon-research/reazonspeech-nemo-v2`) を検証する。35,000時間の日本語TV放送データで学習された高精度モデル。
+
+### Kotoba-Whisper との比較
+
+| 観点 | Kotoba-Whisper (Step-31) | ReazonSpeech (本Step) |
+|------|--------------------------|----------------------|
+| ベース | Whisper (OpenAI) | NeMo (NVIDIA) |
+| モデル | `kotoba-tech/kotoba-whisper-v2.2` | `reazon-research/reazonspeech-nemo-v2` |
+| 学習データ | 日本語音声（詳細非公開） | 35,000時間の日本語TV放送（公開） |
+| ライセンス | Apache 2.0 | Apache 2.0 |
+| 依存 | `transformers` | `nemo_toolkit[asr]` |
+| API互換性 | Whisper互換 | NeMo固有API |
+
+### 実装例（切り替え可能方式）
+
+環境変数 `ASR_ENGINE` で Kotoba-Whisper / ReazonSpeech を切り替える。
+
+```python
+import os
+
+ASR_ENGINE = os.environ.get("ASR_ENGINE", "kotoba")  # "kotoba" or "reazon"
+
+if ASR_ENGINE == "reazon":
+    import nemo.collections.asr as nemo_asr
+    model = nemo_asr.models.ASRModel.from_pretrained("reazon-research/reazonspeech-nemo-v2")
+
+    def transcribe_audio(tmp_path: str) -> str:
+        return model.transcribe([tmp_path])[0]
+else:
+    # Kotoba-Whisper（既存実装）
+    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+    # ... (既存のKotoba-Whisper初期化コード)
+
+    def transcribe_audio(tmp_path: str) -> str:
+        result = pipe(tmp_path, generate_kwargs={"language": "ja", "task": "transcribe"})
+        return result.get("text", "")
+```
+
+**切り替え方法:**
+```bash
+# Kotoba-Whisper（デフォルト）
+ASR_ENGINE=kotoba python script/whisper_server.py
+
+# ReazonSpeech
+ASR_ENGINE=reazon python script/whisper_server.py
+```
+
+### 境界条件
+
+#### 入力
+
+| 条件 | 値 |
+|------|-----|
+| 入力形式 | WAV ファイル（既存と同一） |
+| サンプリングレート | 16kHz |
+
+#### 出力
+
+| 項目 | 内容 |
+|------|------|
+| レスポンス形式 | `{"text": "認識結果"}` （既存と同一） |
+| API エンドポイント | `POST /transcribe` （変更なし） |
+
+#### 環境要件
+
+| 項目 | 値 |
+|------|-----|
+| GPU | 推奨（CUDA対応） |
+| メモリ | ~8GB VRAM |
+| 追加依存 | `nemo_toolkit[asr]`, `pytorch-lightning` |
+
+### DoD (Definition of Done)
+
+- [ ] ReazonSpeech 版 `whisper_server.py` を作成（または切り替え可能に）
+- [ ] `requirements.txt` に依存パッケージ追加
+- [ ] 既存 API インターフェース（`POST /transcribe`）を維持
+- [ ] 日本語音声での認識テスト実施
+- [ ] Kotoba-Whisper との精度比較（同一音声での WER 比較）
+- [ ] レイテンシ比較（Kotoba-Whisper vs ReazonSpeech）
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `script/whisper_server.py` | ReazonSpeech 対応（または別ファイル作成） |
+| `script/requirements.txt` | `nemo_toolkit[asr]` 追加 |
+
+### 変更上限
+
+- <=60行 / <=2ファイル
+
+### 検証方法
+
+```bash
+# 1. サーバー起動
+python script/whisper_server.py
+
+# 2. テスト音声で認識確認
+curl -X POST -F "file=@test.wav" http://localhost:9000/transcribe
+
+# 3. Kotoba-Whisper との精度比較
+# - 同一テスト音声セットで WER (Word Error Rate) を測定
+# - レイテンシを計測（time コマンド等）
+```
+
+### Open Questions
+
+| # | 質問 | 回答 |
+|---|------|------|
+| Q1 | Kotoba-Whisper と切り替え可能にするか、別サーバーにするか？ | 切り替え可能にする |
+| Q2 | 精度比較用のテスト音声セットは何を使うか？ | TBD |
+| Q3 | NeMo の依存が重いが許容するか？ | 許容する |
+
+### リスク/ロールバック観点
+
+| リスク | 対策 |
+|--------|------|
+| NeMo 依存の追加によるビルド複雑化 | 別コンテナ化 or 別サーバー運用を検討 |
+| API互換性の差異 | レスポンス形式は統一（`{"text": "..."}`） |
+| ロールバック | Kotoba-Whisper 版に戻すだけで切り戻し可能 |
+
+### 参考
+
+- [reazon-research/reazonspeech-nemo-v2 - Hugging Face](https://huggingface.co/reazon-research/reazonspeech-nemo-v2)
+- [ReazonSpeech 公式ドキュメント](https://research.reazon.jp/projects/ReazonSpeech/)
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -3282,6 +3714,11 @@ warn!("[security] spec question blocked: input={}", user_input);
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-24 | 3.11 | Issue #35 更新: Step-32 Q1/Q3 回答（切り替え可能方式、NeMo依存許容）、環境変数 ASR_ENGINE で切り替え |
+| 2026-01-24 | 3.10 | Issue #35 統合: Step-32（ReazonSpeech 検証）追加、NeMo ベース日本語 ASR、Kotoba-Whisper との比較検証 |
+| 2026-01-24 | 3.9 | Issue #34 更新: Step-31 Q1/Q2 回答（Flash Attention 2 有効化、キャッシュディレクトリ指定） |
+| 2026-01-24 | 3.8 | Issue #34 統合: Step-31（Kotoba-Whisper 移行）追加、ASR 日本語特化モデル、transformers パイプライン |
+| 2026-01-24 | 3.7 | Issue #33 統合: Step-30（DTMF「1」ボイスボットイントロ）追加、zundamon_intro_ivr_1.wav 再生、VoicebotIntroPlaying 状態 |
 | 2026-01-24 | 3.6 | Issue #32 更新: Step-29 Q4/Q6/Q7 回答（ハードコード、正規表現不要、ホットリロード不要） |
 | 2026-01-24 | 3.5 | Issue #32 統合: Step-29（カスタムプロンプト/ペルソナ設定）追加、キーワードフィルタ、仕様漏洩防止 |
 | 2026-01-24 | 3.4 | Issue #29 更新: Step-26 に 183 Early Media 対応追加（Q3 回答変更: No → Yes） |

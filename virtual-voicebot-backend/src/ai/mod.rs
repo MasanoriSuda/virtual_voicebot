@@ -195,7 +195,7 @@ async fn call_ollama(messages: &[ChatMessage]) -> Result<String> {
     }
 
     let req = OllamaChatRequest {
-        model: "gemma3:4b".to_string(),
+        model: "gemma3:27b".to_string(),
         messages: ollama_messages,
         stream: false,
     };

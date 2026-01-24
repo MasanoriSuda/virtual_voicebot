@@ -59,6 +59,7 @@ pub struct SessionTimerInfo {
 pub enum IvrState {
     #[default]
     IvrMenuWaiting,
+    VoicebotIntroPlaying,
     VoicebotMode,
     Transferring,
     B2buaMode,

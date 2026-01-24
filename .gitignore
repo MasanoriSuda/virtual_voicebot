@@ -34,5 +34,10 @@ Thumbs.db
 # Optional: local data
 data/
 
+# Python
+__pycache__/
+*.pyc
+virtual-voicebot-backend/script/.venv/
+
 # Local prompt
 prompt.local.txt

@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+python-multipart
+numpy<2
+scipy>=1.11.4,<2
+transformers
+accelerate
+torch<2.10
+pykakasi
+nemo_toolkit[asr]
+pytorch-lightning
