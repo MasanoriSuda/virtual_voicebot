@@ -10,7 +10,7 @@
 | **Owner** | TBD |
 | **Last Updated** | 2026-01-24 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36), [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37) |
 
 ---
 
@@ -59,6 +59,7 @@
 | [Step-31](#step-31-kotoba-whisper-移行-issue-34) | Kotoba-Whisper 移行 (Issue #34) | - | 未着手 |
 | [Step-32](#step-32-reazonspeech-検証-issue-35) | ReazonSpeech 検証 (Issue #35) | - | 未着手 |
 | [Step-33](#step-33-a-leg-cancel-受信処理-issue-36) | A-leg CANCEL 受信処理 (Issue #36) | - | 未着手 |
+| [Step-34](#step-34-b2bua-keepalive無音干渉修正-issue-37) | B2BUA Keepalive無音干渉修正 (Issue #37) | - | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -3905,6 +3906,176 @@ A-leg           voicebot (SIP)      voicebot (Session)      B-leg (網)
 
 ---
 
+## Step-34: B2BUA Keepalive無音干渉修正 (Issue #37)
+
+**Refs:** [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37)
+
+### 概要
+
+B2BUAモードで網からのRTPをアプリに転送する際、20msごとのkeepalive無音フレーム（μ-law 0xFF）がB-leg音声と交互に混ざり、音質が著しく劣化する問題を修正する。
+
+### 現状（問題）
+
+**問題箇所:**
+
+| ファイル | 行 | 処理 |
+|---------|-----|------|
+| [session.rs:666-670](src/session/session.rs#L666-L670) | MediaTimerTick | 20msごとに`send_silence_frame()`呼び出し |
+| [session.rs:1105-1118](src/session/session.rs#L1105-L1118) | send_silence_frame | `sending_audio`がfalseなら0xFF無音送信 |
+| [session.rs:573-580](src/session/session.rs#L573-L580) | BLegRtp | B-leg RTP転送（**sending_audio未変更**） |
+
+**問題の流れ:**
+
+```
+B2BUAモード中:
+
+[20ms] B-leg RTP受信 → A-legに転送（正常音声）
+[20ms] MediaTimerTick → send_silence_frame() → 0xFF送信（無音）❌
+[20ms] B-leg RTP受信 → A-legに転送（正常音声）
+[20ms] MediaTimerTick → send_silence_frame() → 0xFF送信（無音）❌
+...
+
+→ 音声と無音が交互に混ざり、音質劣化
+```
+
+**send_silence_frame() の問題:**
+
+```rust
+async fn send_silence_frame(&mut self) -> Result<(), Error> {
+    if self.sending_audio {  // ← WAV再生時のみtrue
+        return Ok(());
+    }
+    // B2BUAモードではsending_audio=falseなので無音が送信される！
+    let frame = vec![0xFFu8; 160];
+    self.rtp_tx.send_payload(&self.call_id, frame);
+    ...
+}
+```
+
+### 変更後（After）
+
+B2BUAモード中、またはB-legからRTPを受信して転送中は、keepalive無音を送信しない。
+
+```rust
+async fn send_silence_frame(&mut self) -> Result<(), Error> {
+    if self.sending_audio {
+        return Ok(());
+    }
+    // B2BUAモード中は無音を送らない
+    if self.ivr_state == IvrState::B2buaMode {
+        return Ok(());
+    }
+    // または: 最近RTPを送信していたら無音を送らない
+    if let Some(last) = self.rtp_last_sent {
+        if last.elapsed() < Duration::from_millis(20) {
+            return Ok(());
+        }
+    }
+    ...
+}
+```
+
+### 境界条件
+
+#### 入力
+
+| 条件 | 値 |
+|------|-----|
+| 対象モード | B2BUA（転送モード） |
+| 問題発生条件 | B-leg RTP転送中にkeepalive無音が混入 |
+
+#### 出力
+
+| 項目 | 内容 |
+|------|------|
+| 期待動作 | B2BUAモード中はkeepalive無音を送信しない |
+| A-legへの音声 | B-legからのRTPのみ（無音混入なし） |
+
+### DoD (Definition of Done)
+
+- [ ] `send_silence_frame()` でB2BUAモード判定を追加
+- [ ] B2BUAモード中はkeepalive無音を送信しない
+- [ ] または `rtp_last_sent` をチェックし、最近送信があれば無音をスキップ
+- [ ] B2BUA転送時の音質が正常になることを確認
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/session/session.rs` | `send_silence_frame()` にB2BUAモード判定追加 |
+
+### 実装指針（確定）
+
+#### 方法1: B2BUAモード判定を追加 ✅ **採用**
+
+```rust
+async fn send_silence_frame(&mut self) -> Result<(), Error> {
+    if self.peer_sdp.is_none() {
+        return Ok(());
+    }
+    if self.sending_audio {
+        return Ok(());
+    }
+    // 追加: B2BUAモード中は無音を送らない
+    if self.ivr_state == IvrState::B2buaMode {
+        return Ok(());
+    }
+
+    self.align_rtp_clock();
+    let frame = vec![0xFFu8; 160];
+    self.rtp_tx.send_payload(&self.call_id, frame);
+    self.rtp_last_sent = Some(Instant::now());
+    Ok(())
+}
+```
+
+#### 方法2: 最近の送信をチェック（不採用）
+
+```rust
+async fn send_silence_frame(&mut self) -> Result<(), Error> {
+    // ...既存のチェック...
+
+    // 追加: 最近RTPを送信していたら無音を送らない
+    if let Some(last) = self.rtp_last_sent {
+        if last.elapsed() < KEEPALIVE_INTERVAL {
+            return Ok(());
+        }
+    }
+    // ...
+}
+```
+
+### 変更上限
+
+- <=10行 / <=1ファイル
+
+### 検証方法
+
+```bash
+# 1. Linphone → voicebot → 網 の転送を開始
+# 2. 網側の音声がLinphoneで正常に聞こえることを確認
+# 3. Wireshark で A-leg RTP を確認
+#    - B-leg からの音声パケットのみ
+#    - 0xFF 無音フレームが混入していないこと
+```
+
+### リスク/ロールバック観点
+
+| リスク | 対策 |
+|--------|------|
+| 他のモードへの影響 | B2BUAモード限定の条件追加で局所化 |
+| keepalive停止による問題 | B-legからのRTPが20ms以下で到着するため問題なし |
+| ロールバック | 1行のif文追加のみ、git revert で容易に切り戻し可能 |
+
+### 二次的な問題（将来課題）
+
+Codex指摘:
+> "ジッタバッファ未実装で、B-legの到着ジッタをそのままA-legへ流している"
+
+これは本Stepのスコープ外。別Issueで対応を検討。
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -3921,6 +4092,8 @@ A-leg           voicebot (SIP)      voicebot (Session)      B-leg (網)
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-24 | 3.14 | Issue #37 更新: Step-34 実装方法確定（方法1: B2BUAモード判定を採用） |
+| 2026-01-24 | 3.13 | Issue #37 統合: Step-34（B2BUA Keepalive無音干渉修正）追加、send_silence_frame に B2BUA モード判定追加 |
 | 2026-01-24 | 3.12 | Issue #36 統合: Step-33（A-leg CANCEL 受信処理）追加、handle_request に CANCEL 分岐追加、487 応答・B-leg CANCEL 連携 |
 | 2026-01-24 | 3.11 | Issue #35 更新: Step-32 Q1/Q3 回答（切り替え可能方式、NeMo依存許容）、環境変数 ASR_ENGINE で切り替え |
 | 2026-01-24 | 3.10 | Issue #35 統合: Step-32（ReazonSpeech 検証）追加、NeMo ベース日本語 ASR、Kotoba-Whisper との比較検証 |

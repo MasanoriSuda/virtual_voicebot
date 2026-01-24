@@ -1106,6 +1106,9 @@ impl Session {
         if self.peer_sdp.is_none() {
             return Ok(());
         }
+        if self.ivr_state == IvrState::B2buaMode {
+            return Ok(());
+        }
         if self.sending_audio {
             return Ok(());
         }
@@ -1275,5 +1278,18 @@ mod tests {
         session.cancel_playback();
         assert!(session.playback.is_none());
         assert!(!session.sending_audio);
+    }
+
+    #[tokio::test]
+    async fn keepalive_silence_skipped_in_b2bua() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        assert!(session.rtp_last_sent.is_none());
+        session.send_silence_frame().await.unwrap();
+        assert!(session.rtp_last_sent.is_some());
+
+        session.rtp_last_sent = None;
+        session.ivr_state = IvrState::B2buaMode;
+        session.send_silence_frame().await.unwrap();
+        assert!(session.rtp_last_sent.is_none());
     }
 }
