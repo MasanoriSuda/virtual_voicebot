@@ -10,7 +10,7 @@
 | **Owner** | TBD |
 | **Last Updated** | 2026-01-24 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36) |
 
 ---
 
@@ -58,6 +58,7 @@
 | [Step-30](#step-30-dtmf-1-ボイスボットイントロ-issue-33) | DTMF「1」ボイスボットイントロ (Issue #33) | → Step-23 | 未着手 |
 | [Step-31](#step-31-kotoba-whisper-移行-issue-34) | Kotoba-Whisper 移行 (Issue #34) | - | 未着手 |
 | [Step-32](#step-32-reazonspeech-検証-issue-35) | ReazonSpeech 検証 (Issue #35) | - | 未着手 |
+| [Step-33](#step-33-a-leg-cancel-受信処理-issue-36) | A-leg CANCEL 受信処理 (Issue #36) | - | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -3698,6 +3699,212 @@ curl -X POST -F "file=@test.wav" http://localhost:9000/transcribe
 
 ---
 
+## Step-33: A-leg CANCEL 受信処理 (Issue #36)
+
+**Refs:** [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36)
+
+### 概要
+
+A-leg（発信元クライアント）からのCANCELリクエストを正しく処理する。現状、`handle_request` にCANCEL分岐がなく、Unknown扱いで破棄されているため、通話成立前のキャンセルが網側に伝わらない問題を修正する。
+
+### 現状（問題）
+
+**[mod.rs:607-618](src/sip/mod.rs#L607-L618)**
+
+```rust
+fn handle_request(&mut self, req: SipRequest, peer: TransportPeer) -> Vec<SipEvent> {
+    match req.method {
+        SipMethod::Invite => ...
+        SipMethod::Ack => ...
+        SipMethod::Bye => ...
+        // ...
+        _ => vec![SipEvent::Unknown],  // ← CANCELがここに落ちる！
+    }
+}
+```
+
+**現象:**
+```
+A-leg (Linphone) → CANCEL送信
+       ↓
+mod.rs handle_request → Unknown扱いで破棄 ❌
+       ↓
+B-leg cancel_rx は発火しない
+       ↓
+網側スマホは応答待ち継続
+       ↓
+留守電代理応答 → 200 OK
+       ↓
+ACK送信 → BYE送信 → 切断（遅延）
+```
+
+### 変更後（After）
+
+```
+A-leg (Linphone) → CANCEL送信
+       ↓
+mod.rs handle_request → handle_cancel() 呼び出し
+       ↓
+1. 200 OK (CANCEL) を A-leg に返す
+2. 進行中 INVITE に 487 Request Terminated を返す
+3. B-leg に CANCEL を送信
+   └─ B-leg が既に 200 OK なら即 BYE
+       ↓
+即座に切断 ✓
+```
+
+### 境界条件
+
+#### 入力
+
+| 条件 | 値 |
+|------|-----|
+| トリガー | A-leg から CANCEL 受信 |
+| 前提状態 | INVITE トランザクション進行中（最終応答未送信） |
+
+#### 出力
+
+| 項目 | 内容 |
+|------|------|
+| A-leg への応答 | 200 OK (CANCEL) + 487 Request Terminated (INVITE) |
+| B-leg への送信 | CANCEL（または BYE if 200 OK 受信済） |
+
+#### エラー・例外
+
+| ケース | 動作 |
+|--------|------|
+| 該当 Call-ID が存在しない | 481 Call/Transaction Does Not Exist |
+| 既に最終応答送信済み | CANCEL 無視（RFC 3261 準拠） |
+| B-leg が既に 200 OK | BYE を送信 |
+
+### DoD (Definition of Done)
+
+- [ ] `handle_request` に `SipMethod::Cancel` 分岐を追加
+- [ ] `handle_cancel()` 関数を実装
+- [ ] A-leg に 200 OK (CANCEL) を返す
+- [ ] 進行中 INVITE に 487 Request Terminated を返す
+- [ ] B-leg に CANCEL を送信（session 経由で `cancel_transfer()` 発火）
+- [ ] B-leg が既に 200 OK の場合は BYE を送信
+- [ ] 既存の CANCEL 送信処理（b2bua.rs）との整合性確認
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/sip/mod.rs` | `handle_request` に CANCEL 分岐追加、`handle_cancel()` 実装 |
+| `src/session/session.rs` | CANCEL 受信時の状態遷移処理 |
+
+### 実装指針
+
+#### 1. handle_request に CANCEL 分岐追加
+
+```rust
+fn handle_request(&mut self, req: SipRequest, peer: TransportPeer) -> Vec<SipEvent> {
+    match req.method {
+        SipMethod::Invite => self.handle_invite(req, headers, peer),
+        SipMethod::Ack => self.handle_ack(headers.call_id),
+        SipMethod::Bye => self.handle_non_invite(req, headers, peer, 200, "OK", true),
+        SipMethod::Cancel => self.handle_cancel(req, headers, peer),  // ← 追加
+        // ...
+    }
+}
+```
+
+#### 2. handle_cancel() 実装
+
+```rust
+fn handle_cancel(&mut self, req: SipRequest, headers: CoreHeaderSnapshot, peer: TransportPeer) -> Vec<SipEvent> {
+    // 1. 該当 INVITE トランザクションを検索
+    let ctx = match self.invites.get_mut(&headers.call_id) {
+        Some(ctx) => ctx,
+        None => {
+            // 481 Call/Transaction Does Not Exist
+            if let Some(resp) = response_simple_from_request(&req, 481, "Call/Transaction Does Not Exist") {
+                self.send_payload(peer, resp.to_bytes());
+            }
+            return vec![];
+        }
+    };
+
+    // 2. 200 OK (CANCEL) を返す
+    if let Some(resp) = response_simple_from_request(&req, 200, "OK") {
+        self.send_payload(peer, resp.to_bytes());
+    }
+
+    // 3. 487 Request Terminated (INVITE) を返す
+    // ... (元の INVITE リクエストに対する応答)
+
+    // 4. セッションにキャンセル通知
+    vec![SipEvent::Cancel { call_id: headers.call_id }]
+}
+```
+
+#### 3. SipEvent に Cancel を追加
+
+```rust
+pub enum SipEvent {
+    // ...
+    Cancel { call_id: String },
+}
+```
+
+### シーケンス図
+
+```
+A-leg           voicebot (SIP)      voicebot (Session)      B-leg (網)
+  |                 |                     |                     |
+  |--- INVITE ----->|                     |                     |
+  |<-- 100 Trying --|                     |                     |
+  |                 |--- spawn_outbound -->|                    |
+  |                 |                     |--- INVITE --------->|
+  |                 |                     |<-- 100 Trying ------|
+  |                 |                     |<-- 180 Ringing -----|
+  |<-- 180 Ringing -|                     |                     |
+  |                 |                     |                     |
+  |--- CANCEL ----->|                     |                     |
+  |<-- 200 OK ------|  (CANCEL応答)       |                     |
+  |<-- 487 ---------|  (INVITE終了)       |                     |
+  |--- ACK -------->|                     |                     |
+  |                 |--- cancel_transfer ->|                    |
+  |                 |                     |--- CANCEL --------->|
+  |                 |                     |<-- 200 OK ----------|
+  |                 |                     |<-- 487 -------------|
+  |                 |                     |--- ACK ------------>|
+  |                 |                     |                     |
+```
+
+### 変更上限
+
+- <=150行 / <=3ファイル
+
+### 検証方法
+
+```bash
+# 1. Linphone から発信開始
+# 2. 相手応答前に Linphone で切断
+# 3. 網側スマホが即座に切断されることを確認
+# 4. ログで以下を確認:
+#    - "CANCEL received" ログ
+#    - 200 OK (CANCEL) 送信ログ
+#    - 487 Request Terminated 送信ログ
+#    - B-leg CANCEL 送信ログ
+```
+
+### リスク/ロールバック観点
+
+| リスク | 対策 |
+|--------|------|
+| 既存の CANCEL 送信処理との競合 | b2bua.rs の cancel_rx との連携を確認 |
+| 状態遷移の複雑化 | シーケンス図でフロー確認、ログ追加 |
+| ロールバック | 変更箇所が限定的、git revert で容易に切り戻し可能 |
+
+### 参考
+
+- RFC 3261 Section 9.1 - Client Behavior (CANCEL)
+- RFC 3261 Section 9.2 - Server Behavior (CANCEL)
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -3714,6 +3921,7 @@ curl -X POST -F "file=@test.wav" http://localhost:9000/transcribe
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-24 | 3.12 | Issue #36 統合: Step-33（A-leg CANCEL 受信処理）追加、handle_request に CANCEL 分岐追加、487 応答・B-leg CANCEL 連携 |
 | 2026-01-24 | 3.11 | Issue #35 更新: Step-32 Q1/Q3 回答（切り替え可能方式、NeMo依存許容）、環境変数 ASR_ENGINE で切り替え |
 | 2026-01-24 | 3.10 | Issue #35 統合: Step-32（ReazonSpeech 検証）追加、NeMo ベース日本語 ASR、Kotoba-Whisper との比較検証 |
 | 2026-01-24 | 3.9 | Issue #34 更新: Step-31 Q1/Q2 回答（Flash Attention 2 有効化、キャッシュディレクトリ指定） |

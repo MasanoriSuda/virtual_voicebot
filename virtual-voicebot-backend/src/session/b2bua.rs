@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -20,7 +22,7 @@ use crate::sip::auth_cache::{self, DigestAuthChallenge, DigestAuthHeader};
 use crate::sip::b2bua_bridge::{self, B2buaRegistration, B2buaSipMessage};
 use crate::sip::builder::response_simple_from_request;
 use crate::sip::message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
-use crate::sip::{parse_uri, SipRequestBuilder};
+use crate::sip::{parse_cseq_header, parse_uri, SipRequestBuilder};
 use crate::transport::TransportPeer;
 
 const RTP_BUFFER_SIZE: usize = 2048;
@@ -161,11 +163,17 @@ async fn run_transfer(
     let timeout_sleep = sleep(timeout);
     tokio::pin!(timeout_sleep);
     let mut provisional_received = false;
+    let mut cancel_requested = false;
+    let mut cancel_sent = false;
+    let mut cancel_fut: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(async move {
+        let _ = cancel_rx.await;
+    });
 
     loop {
         tokio::select! {
-            _ = &mut cancel_rx => {
-                if provisional_received {
+            _ = &mut cancel_fut => {
+                cancel_requested = true;
+                if provisional_received && !cancel_sent {
                     let cancel = SipRequestBuilder::new(SipMethod::Cancel, target_uri.clone())
                         .header("Via", via.clone())
                         .header("Max-Forwards", "70")
@@ -174,9 +182,13 @@ async fn run_transfer(
                         .header("Call-ID", b_call_id.clone())
                         .header("CSeq", format!("{cseq} CANCEL"))
                         .build();
+                    log_cancel("transfer", target_addr, &cancel);
                     let _ = send_b2bua_payload(TransportPeer::Udp(target_addr), cancel.to_bytes());
+                    cancel_sent = true;
+                } else if !provisional_received {
+                    info!("[b2bua {}] cancel pending (no provisional)", a_call_id);
                 }
-                return Ok(None);
+                cancel_fut = Box::pin(std::future::pending());
             }
             _ = &mut timeout_sleep => {
                 return Err(anyhow!("transfer timeout after {}s", timeout.as_secs()));
@@ -192,8 +204,25 @@ async fn run_transfer(
                 if !response_matches_call_id(&resp, &b_call_id) {
                     continue;
                 }
+                if is_cancel_response(&resp) {
+                    continue;
+                }
                 if resp.status_code < 200 {
                     provisional_received = true;
+                    if cancel_requested && !cancel_sent {
+                        let cancel = SipRequestBuilder::new(SipMethod::Cancel, target_uri.clone())
+                            .header("Via", via.clone())
+                            .header("Max-Forwards", "70")
+                            .header("From", from_header.clone())
+                            .header("To", to_header.clone())
+                            .header("Call-ID", b_call_id.clone())
+                            .header("CSeq", format!("{cseq} CANCEL"))
+                            .build();
+                        log_cancel("transfer", target_addr, &cancel);
+                        let _ =
+                            send_b2bua_payload(TransportPeer::Udp(target_addr), cancel.to_bytes());
+                        cancel_sent = true;
+                    }
                     info!(
                         "[b2bua {}] provisional response {} from {:?}",
                         a_call_id, resp.status_code, peer
@@ -211,6 +240,9 @@ async fn run_transfer(
                         b_call_id.as_str(),
                         cseq,
                     );
+                    if cancel_requested {
+                        return Ok(None);
+                    }
                     return Err(anyhow!("transfer failed status {}", resp.status_code));
                 }
 
@@ -240,6 +272,20 @@ async fn run_transfer(
                     .header("CSeq", format!("{cseq} ACK"))
                     .build();
                 send_b2bua_payload(TransportPeer::Udp(sip_peer), ack.to_bytes())?;
+
+                if cancel_requested {
+                    let bye_cseq = cseq.saturating_add(1).max(2);
+                    let bye = SipRequestBuilder::new(SipMethod::Bye, remote_uri.clone())
+                        .header("Via", build_via(via_host.as_str(), sip_port))
+                        .header("Max-Forwards", "70")
+                        .header("From", from_header.clone())
+                        .header("To", to_header.clone())
+                        .header("Call-ID", b_call_id.clone())
+                        .header("CSeq", format!("{bye_cseq} BYE"))
+                        .build();
+                    let _ = send_b2bua_payload(TransportPeer::Udp(sip_peer), bye.to_bytes());
+                    return Ok(None);
+                }
 
                 let shutdown = Arc::new(AtomicBool::new(false));
                 let shutdown_notify = Arc::new(Notify::new());
@@ -378,11 +424,17 @@ async fn run_outbound(
     let mut rtp_listener_started = false;
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_notify = Arc::new(Notify::new());
+    let mut cancel_requested = false;
+    let mut cancel_sent = false;
+    let mut cancel_fut: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(async move {
+        let _ = cancel_rx.await;
+    });
 
     loop {
         tokio::select! {
-            _ = &mut cancel_rx => {
-                if provisional_received {
+            _ = &mut cancel_fut => {
+                cancel_requested = true;
+                if provisional_received && !cancel_sent {
                     let cancel = SipRequestBuilder::new(SipMethod::Cancel, request_uri.clone())
                         .header("Via", invite_via.clone())
                         .header("Max-Forwards", "70")
@@ -391,9 +443,13 @@ async fn run_outbound(
                         .header("Call-ID", call_id.clone())
                         .header("CSeq", format!("{cseq} CANCEL"))
                         .build();
+                    log_cancel("outbound", sip_peer, &cancel);
                     let _ = send_b2bua_payload(TransportPeer::Udp(sip_peer), cancel.to_bytes());
+                    cancel_sent = true;
+                } else if !provisional_received {
+                    info!("[b2bua {}] cancel pending (no provisional)", a_call_id);
                 }
-                return Ok(None);
+                cancel_fut = Box::pin(std::future::pending());
             }
             _ = &mut timeout_sleep => {
                 return Err(anyhow!("outbound timeout after {}s", timeout.as_secs()));
@@ -407,8 +463,24 @@ async fn run_outbound(
                 if !response_matches_call_id(&resp, &call_id) {
                     continue;
                 }
+                if is_cancel_response(&resp) {
+                    continue;
+                }
                 if resp.status_code < 200 {
                     provisional_received = true;
+                    if cancel_requested && !cancel_sent {
+                        let cancel = SipRequestBuilder::new(SipMethod::Cancel, request_uri.clone())
+                            .header("Via", invite_via.clone())
+                            .header("Max-Forwards", "70")
+                            .header("From", from_header.clone())
+                            .header("To", to_header.clone())
+                            .header("Call-ID", call_id.clone())
+                            .header("CSeq", format!("{cseq} CANCEL"))
+                            .build();
+                        log_cancel("outbound", sip_peer, &cancel);
+                        let _ = send_b2bua_payload(TransportPeer::Udp(sip_peer), cancel.to_bytes());
+                        cancel_sent = true;
+                    }
                     if resp.status_code == 180 {
                         let _ = tx_in.send(SessionIn::B2buaRinging);
                     } else if resp.status_code == 183
@@ -508,6 +580,9 @@ async fn run_outbound(
                             format_response_dump(&resp)
                         );
                     }
+                    if cancel_requested {
+                        return Ok(None);
+                    }
                     return Err(anyhow!(OutboundError { status: resp.status_code }));
                 }
 
@@ -535,6 +610,20 @@ async fn run_outbound(
                     .header("CSeq", format!("{} ACK", cseq))
                     .build();
                 send_b2bua_payload(TransportPeer::Udp(sip_peer), ack.to_bytes())?;
+
+                if cancel_requested {
+                    let bye_cseq = cseq.saturating_add(1).max(2);
+                    let bye = SipRequestBuilder::new(SipMethod::Bye, remote_uri.clone())
+                        .header("Via", build_via(via_host.as_str(), sip_port))
+                        .header("Max-Forwards", "70")
+                        .header("From", from_header.clone())
+                        .header("To", to_header.clone())
+                        .header("Call-ID", call_id.clone())
+                        .header("CSeq", format!("{bye_cseq} BYE"))
+                        .build();
+                    let _ = send_b2bua_payload(TransportPeer::Udp(sip_peer), bye.to_bytes());
+                    return Ok(None);
+                }
 
                 spawn_sip_listener(
                     a_call_id.clone(),
@@ -843,6 +932,16 @@ fn response_matches_call_id(resp: &crate::sip::message::SipResponse, call_id: &s
         .unwrap_or(false)
 }
 
+fn is_cancel_response(resp: &crate::sip::message::SipResponse) -> bool {
+    let Some(value) = header_value(&resp.headers, "CSeq") else {
+        return false;
+    };
+    let Ok(cseq) = parse_cseq_header(value) else {
+        return false;
+    };
+    cseq.method.eq_ignore_ascii_case("CANCEL")
+}
+
 fn request_matches_call_id(req: &SipRequest, call_id: &str) -> bool {
     req.header_value("Call-ID")
         .map(|value| value == call_id)
@@ -891,6 +990,20 @@ fn log_invite(label: &str, peer: SocketAddr, request: &SipRequest) {
     info!(
         "[b2bua {}] INVITE -> {} uri={} from={} to={} contact={} call_id={} auth={}",
         label, peer, request.uri, from, to, contact, call_id, auth_header
+    );
+}
+
+fn log_cancel(label: &str, peer: SocketAddr, request: &SipRequest) {
+    if !log::log_enabled!(log::Level::Info) {
+        return;
+    }
+    let from = request.header_value("From").unwrap_or("-");
+    let to = request.header_value("To").unwrap_or("-");
+    let call_id = request.header_value("Call-ID").unwrap_or("-");
+    let cseq = request.header_value("CSeq").unwrap_or("-");
+    info!(
+        "[b2bua {}] CANCEL -> {} uri={} from={} to={} call_id={} cseq={}",
+        label, peer, request.uri, from, to, call_id, cseq
     );
 }
 

@@ -68,6 +68,10 @@ pub enum SipEvent {
     Ack {
         call_id: CallId,
     },
+    /// INVITE 取り消し（CANCEL）
+    Cancel {
+        call_id: CallId,
+    },
     /// 既存ダイアログに対する BYE
     Bye {
         call_id: CallId,
@@ -609,6 +613,7 @@ impl SipCore {
         match req.method {
             SipMethod::Invite => self.handle_invite(req, headers, peer),
             SipMethod::Ack => self.handle_ack(headers.call_id),
+            SipMethod::Cancel => self.handle_cancel(req, headers, peer),
             SipMethod::Bye => self.handle_non_invite(req, headers, peer, 200, "OK", true),
             SipMethod::Options => self.handle_options(req, headers, peer),
             SipMethod::Register => self.handle_non_invite(req, headers, peer, 200, "OK", false),
@@ -833,6 +838,41 @@ impl SipCore {
             self.invites.remove(&call_id);
         }
         vec![SipEvent::Ack { call_id }]
+    }
+
+    fn handle_cancel(
+        &mut self,
+        req: SipRequest,
+        headers: CoreHeaderSnapshot,
+        peer: TransportPeer,
+    ) -> Vec<SipEvent> {
+        let call_id = headers.call_id.clone();
+        let mut notify_session = false;
+        let (code, reason) = match self.invites.get(&call_id) {
+            Some(ctx) => {
+                if ctx.tx.state == InviteTxState::Proceeding {
+                    notify_session = true;
+                    (200, "OK")
+                } else {
+                    (481, "Call/Transaction Does Not Exist")
+                }
+            }
+            None => (481, "Call/Transaction Does Not Exist"),
+        };
+
+        if let Some(resp) = response_simple_from_request(&req, code, reason) {
+            self.send_payload(peer, resp.to_bytes());
+        } else {
+            log::warn!("[sip cancel] invalid CANCEL (missing headers) call_id={}", call_id);
+            return vec![];
+        }
+
+        if notify_session {
+            log::info!("[sip cancel] accepted call_id={}", call_id);
+            vec![SipEvent::Cancel { call_id }]
+        } else {
+            vec![]
+        }
     }
 
     fn handle_non_invite(
@@ -1612,6 +1652,59 @@ mod tests {
             _ => panic!("expected response"),
         };
         assert_eq!(resp.status_code, 486);
+    }
+
+    #[test]
+    fn cancel_sends_200_and_event() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut core = SipCore::new(
+            SipConfig {
+                advertised_ip: "127.0.0.1".to_string(),
+                sip_port: 5060,
+                advertised_rtp_port: 4000,
+            },
+            tx,
+        );
+
+        let invite = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let invite_input = SipInput {
+            peer: dummy_peer(),
+            data: invite.to_bytes(),
+        };
+        let events = core.handle_input(&invite_input);
+        assert_eq!(events.len(), 1);
+
+        let cancel = SipRequestBuilder::new(SipMethod::Cancel, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 CANCEL")
+            .build();
+        let cancel_input = SipInput {
+            peer: dummy_peer(),
+            data: cancel.to_bytes(),
+        };
+        let events = core.handle_input(&cancel_input);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            SipEvent::Cancel { call_id } => assert_eq!(call_id, "call-1"),
+            other => panic!("expected Cancel event, got {:?}", other),
+        }
+
+        let sent = rx.try_recv().expect("cancel response");
+        let resp_text = String::from_utf8(sent.payload).expect("utf8 response");
+        let resp = match parse_sip_message(&resp_text).expect("parse response") {
+            SipMessage::Response(resp) => resp,
+            _ => panic!("expected response"),
+        };
+        assert_eq!(resp.status_code, 200);
     }
 
     #[test]

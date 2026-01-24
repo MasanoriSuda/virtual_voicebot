@@ -668,6 +668,36 @@ impl Session {
                                 warn!("[session {}] silence send failed: {:?}", self.call_id, e);
                             }
                         }
+                        (_, SessionIn::SipCancel) => {
+                            info!("[session {}] CANCEL received, terminating early", self.call_id);
+                            self.invite_rejected = true;
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(true).await;
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            self.rtp_tx.stop(&self.call_id);
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            let _ = self.session_out_tx.send((
+                                self.call_id.clone(),
+                                SessionOut::SipSendError {
+                                    code: 487,
+                                    reason: "Request Terminated".to_string(),
+                                },
+                            ));
+                            if let Err(e) = self.recorder.stop() {
+                                warn!(
+                                    "[session {}] failed to finalize recording: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            let _ = self.app_tx.send(AppEvent::CallEnded {
+                                call_id: self.call_id.clone(),
+                            });
+                        }
                         (_, SessionIn::SipBye) => {
                             self.cancel_transfer();
                             self.shutdown_b_leg(true).await;

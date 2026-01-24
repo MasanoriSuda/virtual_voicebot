@@ -85,6 +85,8 @@ pub enum SessionIn {
     SipAck,
     /// SIP側からのBYE
     SipBye,
+    /// SIP側からのCANCEL
+    SipCancel,
     /// SIPトランザクションタイムアウト通知
     SipTransactionTimeout {
         call_id: CallId,
@@ -208,6 +210,7 @@ pub(crate) enum SessState {
 pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
     match event {
         SessionIn::SipBye
+        | SessionIn::SipCancel
         | SessionIn::BLegBye
         | SessionIn::AppHangup
         | SessionIn::SessionTimerFired

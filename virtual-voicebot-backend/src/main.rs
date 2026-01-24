@@ -189,6 +189,12 @@ async fn main() -> anyhow::Result<()> {
                                 let _ = sess_tx.send(SessionIn::SipAck);
                             }
                         }
+                        SipEvent::Cancel { call_id } => {
+                            log::info!("[main] CANCEL for call_id={}", call_id);
+                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                                let _ = sess_tx.send(SessionIn::SipCancel);
+                            }
+                        }
                         SipEvent::Bye { call_id } => {
                             log::info!("[main] BYE for call_id={}", call_id);
                             if let Some(sess_tx) = session_registry.get(&call_id) {
