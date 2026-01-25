@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -92,6 +93,61 @@ static TLS_SETTINGS: OnceLock<Option<TlsSettings>> = OnceLock::new();
 
 pub fn tls_settings() -> Option<&'static TlsSettings> {
     TLS_SETTINGS.get_or_init(TlsSettings::from_env).as_ref()
+}
+
+#[derive(Clone, Debug)]
+pub struct VadConfig {
+    pub rms_threshold: u32,
+    pub start_silence_ms: u64,
+    pub end_silence_ms: u64,
+    pub min_speech_ms: u64,
+    pub max_speech_ms: u64,
+}
+
+impl VadConfig {
+    fn from_env() -> Self {
+        Self {
+            rms_threshold: env_u32("VAD_ENERGY_THRESHOLD", 500),
+            start_silence_ms: env_u64("VAD_START_SILENCE_MS", 800),
+            end_silence_ms: env_u64("VAD_END_SILENCE_MS", 800),
+            min_speech_ms: env_u64("VAD_MIN_SPEECH_MS", 300),
+            max_speech_ms: env_u64("VAD_MAX_SPEECH_MS", 30_000),
+        }
+    }
+}
+
+static VAD_CONFIG: OnceLock<VadConfig> = OnceLock::new();
+
+pub fn vad_config() -> &'static VadConfig {
+    VAD_CONFIG.get_or_init(VadConfig::from_env)
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionConfig {
+    pub default_expires: Option<Duration>,
+    pub min_se: u64,
+}
+
+impl SessionConfig {
+    fn from_env() -> Self {
+        let timeout = env_u64("SESSION_TIMEOUT_SEC", 1800);
+        let default_expires = if timeout == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(timeout))
+        };
+        let min_se = env_u64("SESSION_MIN_SE", 90);
+        Self {
+            default_expires,
+            min_se,
+        }
+    }
+}
+
+static SESSION_CONFIG: OnceLock<SessionConfig> = OnceLock::new();
+
+pub fn session_config() -> &'static SessionConfig {
+    SESSION_CONFIG.get_or_init(SessionConfig::from_env)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +250,50 @@ pub fn registrar_config() -> Option<&'static RegistrarConfig> {
 }
 
 #[derive(Clone, Debug)]
+pub struct OutboundConfig {
+    pub enabled: bool,
+    pub domain: String,
+    pub default_number: Option<String>,
+    pub dial_plan: HashMap<String, String>,
+}
+
+impl OutboundConfig {
+    fn from_env() -> Self {
+        let enabled = env_bool("OUTBOUND_ENABLED", false);
+        let default_number = env_non_empty("OUTBOUND_DEFAULT_NUMBER");
+        let dial_plan = load_dial_plan();
+        let domain = env_non_empty("OUTBOUND_DOMAIN")
+            .or_else(|| registrar_config().map(|cfg| cfg.domain.clone()))
+            .unwrap_or_default();
+        if enabled && domain.is_empty() {
+            log::warn!("[config] OUTBOUND_ENABLED is true but no outbound domain configured");
+        }
+        Self {
+            enabled,
+            domain,
+            default_number,
+            dial_plan,
+        }
+    }
+
+    pub fn resolve_number(&self, user: &str) -> Option<String> {
+        if let Some(number) = self.dial_plan.get(user) {
+            return Some(number.clone());
+        }
+        if is_phone_number(user) {
+            return Some(user.to_string());
+        }
+        self.default_number.clone()
+    }
+}
+
+static OUTBOUND_CONFIG: OnceLock<OutboundConfig> = OnceLock::new();
+
+pub fn outbound_config() -> &'static OutboundConfig {
+    OUTBOUND_CONFIG.get_or_init(OutboundConfig::from_env)
+}
+
+#[derive(Clone, Debug)]
 pub struct Timeouts {
     pub ai_http: Duration,
     pub ingest_http: Duration,
@@ -232,7 +332,7 @@ impl RtpConfig {
         // Defaults (MVP/NEXT): jitter reorder 5, RTCP interval 5s.
         // Env: RTP_JITTER_MAX_REORDER / RTCP_INTERVAL_MS.
         Self {
-            jitter_max_reorder: env_u16("RTP_JITTER_MAX_REORDER", 5),
+            jitter_max_reorder: env_u16("RTP_JITTER_MAX_REORDER", 30),
             rtcp_interval: env_duration_ms("RTCP_INTERVAL_MS", 5_000),
         }
     }
@@ -244,12 +344,47 @@ pub fn rtp_config() -> &'static RtpConfig {
     RTP_CONFIG.get_or_init(RtpConfig::from_env)
 }
 
+static IVR_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+pub fn ivr_timeout() -> Duration {
+    *IVR_TIMEOUT.get_or_init(|| Duration::from_secs(env_u64("IVR_TIMEOUT_SEC", 10)))
+}
+
+static TRANSFER_TARGET_URI: OnceLock<String> = OnceLock::new();
+
+pub fn transfer_target_uri() -> String {
+    TRANSFER_TARGET_URI
+        .get_or_init(|| {
+            std::env::var("TRANSFER_TARGET_SIP_URI")
+                .unwrap_or_else(|_| "sip:zoiper@192.168.1.4:8000".to_string())
+        })
+        .clone()
+}
+
+static TRANSFER_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+pub fn transfer_timeout() -> Duration {
+    *TRANSFER_TIMEOUT.get_or_init(|| Duration::from_secs(env_u64("TRANSFER_TIMEOUT_SEC", 30)))
+}
+
 fn env_duration_ms(key: &str, default_ms: u64) -> Duration {
     let ms = std::env::var(key)
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(default_ms);
     Duration::from_millis(ms)
+}
+
+fn env_bool(key: &str, default_value: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default_value)
 }
 
 fn env_u16(key: &str, default_value: u16) -> u16 {
@@ -266,6 +401,13 @@ fn env_u32(key: &str, default_value: u32) -> u32 {
         .unwrap_or(default_value)
 }
 
+fn env_u64(key: &str, default_value: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default_value)
+}
+
 fn env_non_empty(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
@@ -273,10 +415,55 @@ fn env_non_empty(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn load_dial_plan() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for (key, value) in std::env::vars() {
+        let Some(suffix) = key.strip_prefix("DIAL_") else {
+            continue;
+        };
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        map.insert(suffix.to_string(), trimmed.to_string());
+    }
+    map
+}
+
+fn is_phone_number(s: &str) -> bool {
+    s.starts_with('0') && s.chars().all(|c| c.is_ascii_digit())
+}
+
 fn resolve_socket_addr(host: &str, port: u16) -> Option<SocketAddr> {
     (host, port).to_socket_addrs().ok()?.next()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outbound_resolve_number_prefers_dial_plan() {
+        let mut dial_plan = HashMap::new();
+        dial_plan.insert("100".to_string(), "09012345678".to_string());
+        let cfg = OutboundConfig {
+            enabled: true,
+            domain: "example.com".to_string(),
+            default_number: Some("09000000000".to_string()),
+            dial_plan,
+        };
+        assert_eq!(cfg.resolve_number("100"), Some("09012345678".to_string()));
+        assert_eq!(cfg.resolve_number("09011112222"), Some("09011112222".to_string()));
+        assert_eq!(cfg.resolve_number("unknown"), Some("09000000000".to_string()));
+    }
+
+    #[test]
+    fn outbound_phone_number_check() {
+        assert!(is_phone_number("09012345678"));
+        assert!(!is_phone_number("9012345678"));
+        assert!(!is_phone_number("abc"));
+    }
+}
 #[derive(Clone, Debug)]
 pub enum LogMode {
     Stdout,
@@ -349,6 +536,7 @@ pub struct AiConfig {
     pub use_aws_transcribe: bool,
     pub aws_transcribe_bucket: Option<String>,
     pub aws_transcribe_prefix: String,
+    pub ser_url: Option<String>,
 }
 
 impl AiConfig {
@@ -361,6 +549,7 @@ impl AiConfig {
             aws_transcribe_bucket: std::env::var("AWS_TRANSCRIBE_BUCKET").ok(),
             aws_transcribe_prefix: std::env::var("AWS_TRANSCRIBE_PREFIX")
                 .unwrap_or_else(|_| "voicebot".to_string()),
+            ser_url: std::env::var("SER_URL").ok(),
         }
     }
 }
@@ -369,14 +558,4 @@ static AI_CONFIG: OnceLock<AiConfig> = OnceLock::new();
 
 pub fn ai_config() -> &'static AiConfig {
     AI_CONFIG.get_or_init(AiConfig::from_env)
-}
-
-fn env_bool(key: &str, default_value: bool) -> bool {
-    match std::env::var(key) {
-        Ok(value) => {
-            let lower = value.to_ascii_lowercase();
-            lower == "1" || lower == "true" || lower == "yes"
-        }
-        Err(_) => default_value,
-    }
 }

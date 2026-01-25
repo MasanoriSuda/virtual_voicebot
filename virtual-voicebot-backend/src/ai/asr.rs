@@ -5,6 +5,7 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 use std::path::Path;
 
 use crate::ports::ai::AsrChunk;
+use crate::rtp::codec::mulaw_to_linear16;
 
 /// ASR 呼び出しの薄いラッパ（挙動は ai::transcribe_and_log と同じ）。
 /// app からはこの関数を経由させる想定だが、現状の呼び出し順・回数は変えない。
@@ -23,7 +24,48 @@ pub async fn transcribe_chunks(call_id: &str, chunks: &[AsrChunk]) -> Result<Str
     }
     let wav_path = format!("/tmp/asr_input_{}.wav", call_id);
     write_mulaw_to_wav(&pcmu, &wav_path)?;
-    super::transcribe_and_log(&wav_path).await
+    let text = super::transcribe_and_log(&wav_path).await?;
+    if is_hallucination(&text) {
+        log::info!("[asr] hallucination filtered: {}", text);
+        return Ok(String::new());
+    }
+    Ok(text)
+}
+
+const HALLUCINATION_PATTERNS: &[&str] = &[
+    "ご視聴ありがとうございました",
+    "チャンネル登録",
+    "高評価",
+    "いいね",
+    "お願いします",
+    "ありがとうございました",
+];
+
+fn is_hallucination(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    HALLUCINATION_PATTERNS
+        .iter()
+        .any(|pattern| trimmed.contains(pattern))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hallucination_patterns_match() {
+        assert!(is_hallucination("ご視聴ありがとうございました"));
+        assert!(is_hallucination("チャンネル登録よろしくお願いします"));
+        assert!(is_hallucination("高評価お願いします"));
+    }
+
+    #[test]
+    fn non_hallucination_passes() {
+        assert!(!is_hallucination("こんにちは、元気ですか？"));
+    }
 }
 
 fn write_mulaw_to_wav(payloads: &[u8], path: impl AsRef<Path>) -> Result<()> {
@@ -39,21 +81,4 @@ fn write_mulaw_to_wav(payloads: &[u8], path: impl AsRef<Path>) -> Result<()> {
     }
     writer.finalize()?;
     Ok(())
-}
-
-fn mulaw_to_linear16(mu: u8) -> i16 {
-    const BIAS: i16 = 0x84;
-    let mu = !mu;
-    let sign = (mu & 0x80) != 0;
-    let segment = (mu & 0x70) >> 4;
-    let mantissa = mu & 0x0F;
-
-    let mut value = ((mantissa as i16) << 4) + 0x08;
-    value <<= segment as i16;
-    value -= BIAS;
-    if sign {
-        -value
-    } else {
-        value
-    }
 }

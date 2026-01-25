@@ -21,12 +21,13 @@ use crate::rtp::tx::RtpTxHandle;
 use crate::session::{
     spawn_session, MediaConfig, SessionIn, SessionMap, SessionOut, SessionRegistry,
 };
-use crate::sip::{SipConfig, SipCore, SipEvent};
+use crate::sip::{b2bua_bridge, SipConfig, SipCore, SipEvent};
 use crate::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendRequest};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     logging::init();
+    ai::llm::init_system_prompt();
 
     let cfg = config::Config::from_env()?;
     let sip_bind_ip = cfg.sip_bind_ip;
@@ -51,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
     // session → sip 指示
     let (session_out_tx, mut session_out_rx) =
         unbounded_channel::<(crate::session::types::CallId, SessionOut)>();
+    b2bua_bridge::init(sip_send_tx.clone(), sip_port);
 
     // --- ソケット準備 (SIP/RTPポートは環境変数で指定) ---
     let sip_sock = UdpSocket::bind((sip_bind_ip.as_str(), sip_port)).await?;
@@ -127,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
                             from,
                             to,
                             offer,
-                            session_expires,
+                            session_timer,
                         } => {
                             log::info!("[main] new INVITE, call_id={}", call_id);
 
@@ -166,13 +168,31 @@ async fn main() -> anyhow::Result<()> {
                                 from,
                                 to,
                                 offer,
-                                session_expires,
+                                session_timer,
                             });
+                        }
+                        SipEvent::ReInvite {
+                            call_id,
+                            offer,
+                            session_timer,
+                        } => {
+                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                                let _ = sess_tx.send(SessionIn::SipReInvite {
+                                    offer,
+                                    session_timer,
+                                });
+                            }
                         }
                         SipEvent::Ack { call_id } => {
                             log::info!("[main] ACK for call_id={}", call_id);
                             if let Some(sess_tx) = session_registry.get(&call_id) {
                                 let _ = sess_tx.send(SessionIn::SipAck);
+                            }
+                        }
+                        SipEvent::Cancel { call_id } => {
+                            log::info!("[main] CANCEL for call_id={}", call_id);
+                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                                let _ = sess_tx.send(SessionIn::SipCancel);
                             }
                         }
                         SipEvent::Bye { call_id } => {
@@ -181,9 +201,9 @@ async fn main() -> anyhow::Result<()> {
                                 let _ = sess_tx.send(SessionIn::SipBye);
                             }
                         }
-                        SipEvent::SessionRefresh { call_id, expires } => {
+                        SipEvent::SessionRefresh { call_id, timer } => {
                             if let Some(sess_tx) = session_registry.get(&call_id) {
-                                let _ = sess_tx.send(SessionIn::SipSessionExpires { expires });
+                                let _ = sess_tx.send(SessionIn::SipSessionExpires { timer });
                             }
                         }
                         SipEvent::TransactionTimeout { call_id } => {

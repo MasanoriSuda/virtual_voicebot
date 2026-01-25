@@ -2,6 +2,8 @@
 // types.rs
 use std::time::Duration;
 
+use crate::session::b2bua::BLeg;
+
 #[derive(Clone, Debug)]
 pub struct Sdp {
     pub ip: String,
@@ -41,6 +43,28 @@ impl MediaConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionRefresher {
+    Uac,
+    Uas,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SessionTimerInfo {
+    pub expires: Duration,
+    pub refresher: SessionRefresher,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IvrState {
+    #[default]
+    IvrMenuWaiting,
+    VoicebotIntroPlaying,
+    VoicebotMode,
+    Transferring,
+    B2buaMode,
+}
+
 /// sip/session 間で受け取るイベント（上位: sip・rtp・app からの入力）
 #[derive(Debug)]
 pub enum SessionIn {
@@ -50,12 +74,19 @@ pub enum SessionIn {
         from: String,
         to: String,
         offer: Sdp,
-        session_expires: Option<Duration>,
+        session_timer: Option<SessionTimerInfo>,
+    },
+    /// 既存ダイアログ内の re-INVITE
+    SipReInvite {
+        offer: Sdp,
+        session_timer: Option<SessionTimerInfo>,
     },
     /// SIP側からのACK
     SipAck,
     /// SIP側からのBYE
     SipBye,
+    /// SIP側からのCANCEL
+    SipCancel,
     /// SIPトランザクションタイムアウト通知
     SipTransactionTimeout {
         call_id: CallId,
@@ -65,6 +96,33 @@ pub enum SessionIn {
         ts: u32,
         payload: Vec<u8>,
     },
+    /// Bレグ確立（B2BUA）
+    B2buaEstablished {
+        b_leg: BLeg,
+    },
+    /// Bレグの呼び出し中（180 Ringing）
+    B2buaRinging,
+    /// Bレグの早期メディア（183 Session Progress）
+    B2buaEarlyMedia,
+    /// Bレグ転送失敗
+    B2buaFailed {
+        reason: String,
+        status: Option<u16>,
+    },
+    /// BレグからのRTP
+    BLegRtp {
+        payload: Vec<u8>,
+    },
+    /// BレグからのBYE
+    BLegBye,
+    /// DTMF tone detected (in-band)
+    Dtmf {
+        digit: char,
+    },
+    /// IVR menu timeout
+    IvrTimeout,
+    /// 転送中アナウンスの繰り返し
+    TransferAnnounce,
     /// app から返ってきたボット応答音声（WAVファイルパス）
     AppBotAudioFile {
         path: String,
@@ -73,11 +131,13 @@ pub enum SessionIn {
     AppHangup,
     /// Session Timer (keepalive 含む) の失効
     SessionTimerFired,
+    /// Session-Expires の更新時刻（refresher=uas 用）
+    SessionRefreshDue,
     /// keepalive tick
     MediaTimerTick,
     /// Session-Expires による更新（INVITE/UPDATE）
     SipSessionExpires {
-        expires: Duration,
+        timer: SessionTimerInfo,
     },
     Abort(anyhow::Error),
 }
@@ -89,10 +149,25 @@ pub enum SessionOut {
     SipSend100,
     /// SIP provisional (180)
     SipSend180,
+    /// SIP provisional (183 + SDP)
+    SipSend183 {
+        answer: Sdp,
+    },
     /// SIP final (200 + SDP)
     SipSend200 {
         answer: Sdp,
     },
+    /// SIP UPDATE によるセッションリフレッシュ
+    SipSendUpdate {
+        expires: Duration,
+    },
+    /// SIP エラー応答（INVITE の最終応答）
+    SipSendError {
+        code: u16,
+        reason: String,
+    },
+    /// SIP BYE送信（UAC側として終話）
+    SipSendBye,
     /// SIP BYEに対する200
     SipSendBye200,
     /// RTP送信開始指示
@@ -135,6 +210,8 @@ pub(crate) enum SessState {
 pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
     match event {
         SessionIn::SipBye
+        | SessionIn::SipCancel
+        | SessionIn::BLegBye
         | SessionIn::AppHangup
         | SessionIn::SessionTimerFired
         | SessionIn::Abort(_) => SessState::Terminated,

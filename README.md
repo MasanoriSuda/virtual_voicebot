@@ -171,6 +171,13 @@ export TLS_KEY_PATH="/path/to/key.pem"
 | `RECORDING_IO_TIMEOUT_MS` | 録音 I/O タイムアウト | `5000` |
 | `SIP_TCP_IDLE_TIMEOUT_MS` | SIP TCP アイドルタイムアウト | `30000` |
 
+### Session Timer（RFC 4028）
+
+| 変数名 | 説明 | デフォルト |
+|--------|------|-----------|
+| `SESSION_TIMEOUT_SEC` | デフォルトセッションタイムアウト（秒）。INVITE に Session-Expires がない場合に使用。`0` で無制限。 | `1800` |
+| `SESSION_MIN_SE` | 最小セッション時間（秒）。相手の Min-SE より小さい場合は相手の値を使用。 | `90` |
+
 ### RTP
 
 | 変数名 | 説明 | デフォルト |

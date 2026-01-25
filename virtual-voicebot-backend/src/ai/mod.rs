@@ -20,7 +20,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_transcribe as transcribe;
 
 use crate::config;
-use crate::ports::ai::{AiFuture, AiPort, AsrChunk};
+use crate::ports::ai::{AiFuture, AiPort, AsrChunk, ChatMessage, Role, SerInputPcm, SerOutcome, SerPort};
 
 #[derive(Serialize)]
 struct OllamaChatRequest {
@@ -42,6 +42,8 @@ struct GeminiPart {
 
 #[derive(Serialize, Deserialize)]
 struct GeminiContent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
     parts: Vec<GeminiPart>,
 }
 
@@ -72,6 +74,7 @@ struct WhisperResponse {
 
 pub mod asr;
 pub mod llm;
+pub mod ser;
 pub mod tts;
 
 fn http_client(timeout: Duration) -> Result<Client> {
@@ -128,8 +131,8 @@ pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
 
 /// LLM + TTS 実行（現行実装: Gemini→Ollama fallback→ずんだもんTTS）。挙動は変更なし。
 /// I/F はテキスト入力→WAVパス出力（将来はチャネル/PCM化予定、現状は一時ファイルのまま）。
-pub async fn handle_user_question_from_whisper(text: &str) -> Result<String> {
-    let answer = handle_user_question_from_whisper_llm_only(text).await?;
+pub async fn handle_user_question_from_whisper(messages: Vec<ChatMessage>) -> Result<String> {
+    let answer = handle_user_question_from_whisper_llm_only(messages).await?;
 
     // 一時WAVファイル経由のまま（責務は ai モジュール内に閉じ込める）
     let answer_wav = "/tmp/ollama_answer.wav";
@@ -139,18 +142,21 @@ pub async fn handle_user_question_from_whisper(text: &str) -> Result<String> {
 }
 
 /// LLM 部分のみを切り出した I/F（app→ai で分離できるようにする）
-pub async fn handle_user_question_from_whisper_llm_only(text: &str) -> Result<String> {
-    info!("User question (whisper): {}", text);
-    let llm_prompt = build_llm_prompt(text);
+pub async fn handle_user_question_from_whisper_llm_only(
+    messages: Vec<ChatMessage>,
+) -> Result<String> {
+    if let Some(last_user) = messages.iter().rev().find(|m| m.role == Role::User) {
+        info!("User question (whisper): {}", last_user.content);
+    }
 
-    let answer = match call_gemini(&llm_prompt).await {
+    let answer = match call_gemini(&messages).await {
         Ok(ans) => {
             info!("LLM answer (gemini): {}", ans);
             ans
         }
         Err(gemini_err) => {
             log::error!("call_gemini failed: {gemini_err:?}, falling back to ollama");
-            match call_ollama(&llm_prompt).await {
+            match call_ollama(&messages).await {
                 Ok(fallback) => {
                     info!("LLM answer (ollama fallback): {}", fallback);
                     fallback
@@ -168,22 +174,29 @@ pub async fn handle_user_question_from_whisper_llm_only(text: &str) -> Result<St
     Ok(answer)
 }
 
-fn build_llm_prompt(user_text: &str) -> String {
-    format!(
-        "以下の質問に120文字以内にまとめてください。質問: {}",
-        user_text
-    )
-}
-
-async fn call_ollama(question: &str) -> Result<String> {
+async fn call_ollama(messages: &[ChatMessage]) -> Result<String> {
     let client = http_client(config::timeouts().ai_http)?;
 
+    let mut ollama_messages = Vec::with_capacity(messages.len() + 1);
+    let system_prompt = llm::system_prompt();
+    ollama_messages.push(OllamaMessage {
+        role: "system".to_string(),
+        content: system_prompt,
+    });
+    for msg in messages {
+        let role = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        };
+        ollama_messages.push(OllamaMessage {
+            role: role.to_string(),
+            content: msg.content.clone(),
+        });
+    }
+
     let req = OllamaChatRequest {
-        model: "gemma3:4b".to_string(),
-        messages: vec![OllamaMessage {
-            role: "user".to_string(),
-            content: question.to_string(),
-        }],
+        model: "gemma3:27b".to_string(),
+        messages: ollama_messages,
         stream: false,
     };
 
@@ -231,12 +244,18 @@ impl AiPort for DefaultAiPort {
         Box::pin(async move { asr::transcribe_chunks(&call_id, &chunks).await })
     }
 
-    fn generate_answer(&self, text: String) -> AiFuture<Result<String>> {
-        Box::pin(async move { llm::generate_answer(&text).await })
+    fn generate_answer(&self, messages: Vec<ChatMessage>) -> AiFuture<Result<String>> {
+        Box::pin(async move { llm::generate_answer(messages).await })
     }
 
     fn synth_to_wav(&self, text: String, path: Option<String>) -> AiFuture<Result<String>> {
         Box::pin(async move { tts::synth_to_wav(&text, path.as_deref()).await })
+    }
+}
+
+impl SerPort for DefaultAiPort {
+    fn analyze(&self, input: SerInputPcm) -> AiFuture<SerOutcome> {
+        Box::pin(async move { ser::analyze(input).await })
     }
 }
 
@@ -277,7 +296,7 @@ pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
     Ok(())
 }
 
-async fn call_gemini(question: &str) -> Result<String> {
+async fn call_gemini(messages: &[ChatMessage]) -> Result<String> {
     let client = http_client(config::timeouts().ai_http)?;
 
     let ai_cfg = config::ai_config();
@@ -292,12 +311,29 @@ async fn call_gemini(question: &str) -> Result<String> {
         model, api_key
     );
 
-    let req_body = GeminiRequest {
-        contents: vec![GeminiContent {
-            parts: vec![GeminiPart {
-                text: question.to_string(),
-            }],
+    let mut contents = Vec::with_capacity(messages.len() + 1);
+    let system_prompt = llm::system_prompt();
+    contents.push(GeminiContent {
+        role: Some("user".to_string()),
+        parts: vec![GeminiPart {
+            text: system_prompt,
         }],
+    });
+    for msg in messages {
+        let role = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "model",
+        };
+        contents.push(GeminiContent {
+            role: Some(role.to_string()),
+            parts: vec![GeminiPart {
+                text: msg.content.clone(),
+            }],
+        });
+    }
+
+    let req_body = GeminiRequest {
+        contents,
     };
 
     let resp = client.post(&url).json(&req_body).send().await?;

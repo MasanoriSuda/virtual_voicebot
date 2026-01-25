@@ -10,6 +10,7 @@ use tokio::time::interval;
 
 use crate::config::rtp_config;
 use crate::rtp::codec::{codec_from_pt, decode_to_mulaw};
+use crate::rtp::dtmf::DtmfDetector;
 use crate::rtp::parser::parse_rtp_packet;
 use crate::rtp::rtcp::{
     build_rr, is_rtcp_packet, parse_rtcp_packets, RtcpEvent, RtcpEventTx, RtcpPacket,
@@ -31,6 +32,7 @@ pub struct RtpReceiver {
     session_map: SessionMap,
     rtp_port_map: Arc<Mutex<HashMap<u16, String>>>,
     jitter: Arc<Mutex<HashMap<String, JitterBuffer>>>,
+    dtmf: Arc<Mutex<HashMap<String, DtmfDetector>>>,
     jitter_max_reorder: u16,
     rtcp_tx: Option<RtcpEventTx>,
     rtcp_reporter: RtcpReporter,
@@ -48,6 +50,7 @@ impl RtpReceiver {
             session_map,
             rtp_port_map,
             jitter: Arc::new(Mutex::new(HashMap::new())),
+            dtmf: Arc::new(Mutex::new(HashMap::new())),
             jitter_max_reorder: config.jitter_max_reorder,
             rtcp_tx,
             rtcp_reporter,
@@ -150,6 +153,20 @@ impl RtpReceiver {
                                 frame.seq
                             );
                             let payload = decode_to_mulaw(codec, &frame.payload);
+                            let digit = {
+                                let mut map = self.dtmf.lock().unwrap();
+                                let detector = map
+                                    .entry(call_id.clone())
+                                    .or_insert_with(DtmfDetector::new);
+                                detector.ingest_mulaw(&payload)
+                            };
+                            if let Some(digit) = digit {
+                                info!(
+                                    "[rtp recv] dtmf detected call_id={} digit={}",
+                                    call_id, digit
+                                );
+                                let _ = sess_tx.send(SessionIn::Dtmf { digit });
+                            }
                             let _ = sess_tx.send(SessionIn::MediaRtpIn {
                                 ts: frame.ts,
                                 payload,

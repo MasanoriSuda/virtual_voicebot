@@ -1,4 +1,7 @@
 pub mod builder;
+pub mod auth;
+pub mod auth_cache;
+pub mod b2bua_bridge;
 pub mod register;
 pub mod message;
 pub mod parse;
@@ -23,7 +26,7 @@ pub use crate::sip::parse::{
 #[allow(unused_imports)]
 pub use protocols::*;
 
-use crate::session::types::{CallId, Sdp, SessionOut};
+use crate::session::types::{CallId, Sdp, SessionOut, SessionRefresher, SessionTimerInfo};
 use crate::sip::builder::{
     response_final_with_sdp, response_options_from_request, response_provisional_from_request,
     response_simple_from_request,
@@ -53,10 +56,20 @@ pub enum SipEvent {
         from: String,
         to: String,
         offer: Sdp,
-        session_expires: Option<Duration>,
+        session_timer: Option<SessionTimerInfo>,
+    },
+    /// 既存ダイアログ内の re-INVITE
+    ReInvite {
+        call_id: CallId,
+        offer: Sdp,
+        session_timer: Option<SessionTimerInfo>,
     },
     /// 既存ダイアログに対する ACK
     Ack {
+        call_id: CallId,
+    },
+    /// INVITE 取り消し（CANCEL）
+    Cancel {
         call_id: CallId,
     },
     /// 既存ダイアログに対する BYE
@@ -70,7 +83,7 @@ pub enum SipEvent {
     /// Session-Expires を受けたときのセッション更新通知
     SessionRefresh {
         call_id: CallId,
-        expires: Duration,
+        timer: SessionTimerInfo,
     },
     Unknown,
 }
@@ -91,6 +104,7 @@ pub struct SipCore {
     non_invites: HashMap<CallId, NonInviteServerTransaction>,
     register: Option<Arc<Mutex<RegisterClient>>>,
     register_notify: Option<Arc<Notify>>,
+    active_call_id: Option<CallId>,
 }
 
 struct InviteContext {
@@ -102,6 +116,8 @@ struct InviteContext {
     session_timer: Option<SessionTimerConfig>,
     final_ok: Option<FinalOkRetransmit>,
     final_ok_payload: Option<Vec<u8>>,
+    local_cseq: u32,
+    expires_at: Option<Instant>,
 }
 
 struct ReliableProvisional {
@@ -112,25 +128,10 @@ struct FinalOkRetransmit {
     stop: Arc<AtomicBool>,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Refresher {
-    Uac,
-    Uas,
-}
-
-impl Refresher {
-    fn as_str(self) -> &'static str {
-        match self {
-            Refresher::Uac => "uac",
-            Refresher::Uas => "uas",
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct SessionTimerConfig {
     expires: Duration,
-    refresher: Refresher,
+    refresher: SessionRefresher,
     min_se: u64,
 }
 
@@ -141,11 +142,42 @@ struct RAckHeader {
     method: String,
 }
 
-fn parse_offer_sdp(body: &[u8]) -> Option<Sdp> {
+const STATIC_PT_MAP: &[(u8, &str)] = &[
+    (0, "PCMU/8000"),
+    (3, "GSM/8000"),
+    (4, "G723/8000"),
+    (8, "PCMA/8000"),
+    (9, "G722/8000"),
+    (18, "G729/8000"),
+];
+
+fn static_pt_to_codec(pt: u8) -> Option<&'static str> {
+    STATIC_PT_MAP
+        .iter()
+        .find(|(entry_pt, _)| *entry_pt == pt)
+        .map(|(_, codec)| *codec)
+}
+
+fn parse_rtpmap_line(line: &str) -> Option<(u8, String)> {
+    let value = line.trim().strip_prefix("a=rtpmap:")?;
+    let mut parts = value.split_whitespace();
+    let pt = parts.next()?.parse::<u8>().ok()?;
+    let encoding = parts.next()?;
+    let mut enc_parts = encoding.split('/');
+    let name = enc_parts.next()?.trim();
+    let rate = enc_parts.next()?.trim();
+    if name.is_empty() || rate.is_empty() {
+        return None;
+    }
+    Some((pt, format!("{}/{}", name, rate)))
+}
+
+pub(crate) fn parse_offer_sdp(body: &[u8]) -> Option<Sdp> {
     let s = std::str::from_utf8(body).ok()?;
     let mut ip = None;
     let mut port = None;
     let mut pt = None;
+    let mut rtpmap: HashMap<u8, String> = HashMap::new();
     for line in s.lines() {
         let line = line.trim();
         if line.starts_with("c=IN IP4 ") {
@@ -157,13 +189,25 @@ fn parse_offer_sdp(body: &[u8]) -> Option<Sdp> {
                 port = cols[1].parse::<u16>().ok();
                 pt = cols[3].parse::<u8>().ok();
             }
+        } else if line.starts_with("a=rtpmap:") {
+            if let Some((pt, codec)) = parse_rtpmap_line(line) {
+                rtpmap.insert(pt, codec);
+            }
         }
     }
+    let ip = ip?;
+    let port = port?;
+    let pt = pt.unwrap_or(0);
+    let codec = rtpmap
+        .get(&pt)
+        .cloned()
+        .or_else(|| static_pt_to_codec(pt).map(|codec| codec.to_string()))
+        .unwrap_or_else(|| "unknown".to_string());
     Some(Sdp {
-        ip: ip?,
-        port: port?,
-        payload_type: pt.unwrap_or(0),
-        codec: "PCMU/8000".to_string(),
+        ip,
+        port,
+        payload_type: pt,
+        codec,
     })
 }
 
@@ -202,9 +246,16 @@ fn supports_100rel(req: &SipRequest) -> bool {
         || header_has_token(req.header_value("Require"), "100rel")
 }
 
-const LOCAL_MIN_SECS: u64 = 90;
+impl SessionRefresher {
+    fn as_str(self) -> &'static str {
+        match self {
+            SessionRefresher::Uac => "uac",
+            SessionRefresher::Uas => "uas",
+        }
+    }
+}
 
-fn parse_session_expires(value: &str) -> Option<(u64, Option<Refresher>)> {
+fn parse_session_expires(value: &str) -> Option<(u64, Option<SessionRefresher>)> {
     let mut parts = value.split(';');
     let expires = parts.next()?.trim().parse::<u64>().ok()?;
     let mut refresher = None;
@@ -212,8 +263,8 @@ fn parse_session_expires(value: &str) -> Option<(u64, Option<Refresher>)> {
         let part = part.trim();
         if let Some(val) = part.strip_prefix("refresher=") {
             refresher = match val.trim().to_ascii_lowercase().as_str() {
-                "uac" => Some(Refresher::Uac),
-                "uas" => Some(Refresher::Uas),
+                "uac" => Some(SessionRefresher::Uac),
+                "uas" => Some(SessionRefresher::Uas),
                 _ => None,
             };
         }
@@ -247,6 +298,7 @@ fn next_rseq_with_rng<R: Rng + ?Sized>(ctx: &mut InviteContext, rng: &mut R) -> 
     Some(rseq)
 }
 
+#[derive(Debug)]
 enum SessionTimerError {
     Invalid,
     TooSmall { min_se: u64 },
@@ -254,20 +306,42 @@ enum SessionTimerError {
 
 fn session_timer_from_request(
     req: &SipRequest,
+    cfg: &config::SessionConfig,
+    allow_default: bool,
 ) -> Result<Option<SessionTimerConfig>, SessionTimerError> {
-    let Some(raw) = req.header_value("Session-Expires") else {
-        return Ok(None);
-    };
-    let (expires, refresher_opt) = parse_session_expires(raw).ok_or(SessionTimerError::Invalid)?;
+    let raw = req.header_value("Session-Expires");
     let min_se_header = match req.header_value("Min-SE") {
         Some(value) => parse_min_se(value).ok_or(SessionTimerError::Invalid)?,
         None => 0,
     };
-    let min_se = std::cmp::max(LOCAL_MIN_SECS, min_se_header);
-    if expires < min_se {
+    let min_se = std::cmp::max(cfg.min_se, min_se_header);
+    let (expires, refresher, from_request) = match raw {
+        Some(value) => {
+            let (expires, refresher_opt) =
+                parse_session_expires(value).ok_or(SessionTimerError::Invalid)?;
+            let refresher = refresher_opt.unwrap_or(SessionRefresher::Uac);
+            (expires, refresher, true)
+        }
+        None => {
+            if !allow_default {
+                return Ok(None);
+            }
+            let Some(default_expires) = cfg.default_expires else {
+                return Ok(None);
+            };
+            let expires = default_expires.as_secs();
+            (expires, SessionRefresher::Uas, false)
+        }
+    };
+
+    if from_request && expires < min_se {
         return Err(SessionTimerError::TooSmall { min_se });
     }
-    let refresher = refresher_opt.unwrap_or(Refresher::Uac);
+    let expires = if from_request {
+        expires
+    } else {
+        std::cmp::max(expires, min_se)
+    };
     Ok(Some(SessionTimerConfig {
         expires: Duration::from_secs(expires),
         refresher,
@@ -294,6 +368,118 @@ fn apply_session_timer_headers(resp: &mut SipResponse, cfg: &SessionTimerConfig)
     if !header_has_token(supported, "timer") {
         resp.headers.push(SipHeader::new("Supported", "timer"));
     }
+}
+
+fn build_update_request(
+    ctx: &mut InviteContext,
+    cfg: &SipConfig,
+    expires: Duration,
+) -> Option<Vec<u8>> {
+    let req = &ctx.req;
+    let to = req.header_value("From")?.to_string();
+    let mut from = req.header_value("To")?.to_string();
+    if !from.to_ascii_lowercase().contains("tag=") {
+        from = format!("{from};tag=rustbot");
+    }
+    let call_id = req.header_value("Call-ID")?.to_string();
+    let uri = req
+        .header_value("Contact")
+        .map(extract_contact_uri)
+        .unwrap_or_else(|| req.uri.as_str())
+        .to_string();
+    let transport = match ctx.tx.peer {
+        TransportPeer::Udp(_) => "UDP",
+        TransportPeer::Tcp(_) => "TCP",
+    };
+    let via = format!(
+        "SIP/2.0/{} {}:{};branch={}",
+        transport,
+        cfg.advertised_ip,
+        cfg.sip_port,
+        generate_branch()
+    );
+    let cseq = ctx.local_cseq.saturating_add(1).max(1);
+    ctx.local_cseq = cseq;
+
+    let contact_scheme = contact_scheme_from_uri(&req.uri);
+    let builder = SipRequestBuilder::new(SipMethod::Update, uri)
+        .header("Via", via)
+        .header("Max-Forwards", "70")
+        .header("From", from)
+        .header("To", to)
+        .header("Call-ID", call_id)
+        .header("CSeq", format!("{cseq} UPDATE"))
+        .header(
+            "Contact",
+            format!("{contact_scheme}:rustbot@{}:{}", cfg.advertised_ip, cfg.sip_port),
+        )
+        .header("Session-Expires", expires.as_secs().to_string())
+        .header("Supported", "timer");
+    Some(builder.build().to_bytes())
+}
+
+fn build_bye_request(ctx: &mut InviteContext, cfg: &SipConfig) -> Option<Vec<u8>> {
+    let req = &ctx.req;
+    let to = req.header_value("From")?.to_string();
+    let mut from = req.header_value("To")?.to_string();
+    if !from.to_ascii_lowercase().contains("tag=") {
+        from = format!("{from};tag=rustbot");
+    }
+    let call_id = req.header_value("Call-ID")?.to_string();
+    let uri = req
+        .header_value("Contact")
+        .map(extract_contact_uri)
+        .unwrap_or_else(|| req.uri.as_str())
+        .to_string();
+    let transport = match ctx.tx.peer {
+        TransportPeer::Udp(_) => "UDP",
+        TransportPeer::Tcp(_) => "TCP",
+    };
+    let via = format!(
+        "SIP/2.0/{} {}:{};branch={}",
+        transport,
+        cfg.advertised_ip,
+        cfg.sip_port,
+        generate_branch()
+    );
+    let cseq = ctx.local_cseq.saturating_add(1).max(1);
+    ctx.local_cseq = cseq;
+
+    let builder = SipRequestBuilder::new(SipMethod::Bye, uri)
+        .header("Via", via)
+        .header("Max-Forwards", "70")
+        .header("From", from)
+        .header("To", to)
+        .header("Call-ID", call_id)
+        .header("CSeq", format!("{cseq} BYE"));
+    Some(builder.build().to_bytes())
+}
+
+fn extract_contact_uri(value: &str) -> &str {
+    let trimmed = value.trim();
+    if let Some(start) = trimmed.find('<') {
+        if let Some(end) = trimmed[start + 1..].find('>') {
+            return &trimmed[start + 1..start + 1 + end];
+        }
+    }
+    trimmed
+        .split(';')
+        .next()
+        .unwrap_or(trimmed)
+        .trim()
+}
+
+fn contact_scheme_from_uri(uri: &str) -> &'static str {
+    if uri.trim_start().to_ascii_lowercase().starts_with("sips:") {
+        "sips"
+    } else {
+        "sip"
+    }
+}
+
+fn generate_branch() -> String {
+    let mut rng = rand::thread_rng();
+    format!("z9hG4bK-{}", rng.gen::<u64>())
 }
 
 #[derive(Debug)]
@@ -388,6 +574,7 @@ impl SipCore {
             non_invites: std::collections::HashMap::new(),
             register,
             register_notify,
+            active_call_id: None,
         };
         core.maybe_send_register();
         core
@@ -407,6 +594,10 @@ impl SipCore {
             Ok(m) => m,
             Err(_) => return vec![SipEvent::Unknown],
         };
+
+        if b2bua_bridge::dispatch_message(input.peer, &msg) {
+            return vec![];
+        }
 
         let mut ev = match msg {
             SipMessage::Request(req) => self.handle_request(req, input.peer),
@@ -465,6 +656,7 @@ impl SipCore {
         match req.method {
             SipMethod::Invite => self.handle_invite(req, headers, peer),
             SipMethod::Ack => self.handle_ack(headers.call_id),
+            SipMethod::Cancel => self.handle_cancel(req, headers, peer),
             SipMethod::Bye => self.handle_non_invite(req, headers, peer, 200, "OK", true),
             SipMethod::Options => self.handle_options(req, headers, peer),
             SipMethod::Register => self.handle_non_invite(req, headers, peer, 200, "OK", false),
@@ -508,22 +700,49 @@ impl SipCore {
         headers: CoreHeaderSnapshot,
         peer: TransportPeer,
     ) -> Vec<SipEvent> {
-        // 再送判定: 既存トランザクションがあれば最新レスポンスを再送し、イベントは出さない
+        // 再送判定 or re-INVITE 判定
         if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
-            let (action, final_ok, tx_peer) = (
-                ctx.tx.on_retransmit(),
-                ctx.final_ok_payload.clone(),
-                ctx.tx.peer,
-            );
-            if let Some(action) = action {
-                self.send_tx_action(action, peer);
-            } else if let Some(payload) = final_ok {
-                self.send_payload(tx_peer, payload);
+            let req_cseq = req
+                .header_value("CSeq")
+                .and_then(|value| parse_cseq_header(value).ok())
+                .map(|cseq| cseq.num);
+            let prev_cseq = ctx
+                .req
+                .header_value("CSeq")
+                .and_then(|value| parse_cseq_header(value).ok())
+                .map(|cseq| cseq.num);
+            if req_cseq.is_some() && prev_cseq.is_some() && req_cseq == prev_cseq {
+                let (action, final_ok, tx_peer) = (
+                    ctx.tx.on_retransmit(),
+                    ctx.final_ok_payload.clone(),
+                    ctx.tx.peer,
+                );
+                if let Some(action) = action {
+                    self.send_tx_action(action, peer);
+                } else if let Some(payload) = final_ok {
+                    self.send_payload(tx_peer, payload);
+                }
+                return vec![];
             }
-            return vec![];
+            return self.handle_reinvite(req, headers, peer);
         }
 
-        let session_timer = match session_timer_from_request(&req) {
+        if let Some(active) = &self.active_call_id {
+            if active != &headers.call_id {
+                log::info!(
+                    "[sip] busy (active call_id={}), rejecting {}",
+                    active,
+                    headers.call_id
+                );
+                if let Some(resp) = response_simple_from_request(&req, 486, "Busy Here") {
+                    self.send_payload(peer, resp.to_bytes());
+                }
+                return vec![];
+            }
+        }
+
+        let session_timer =
+            match session_timer_from_request(&req, config::session_config(), true) {
             Ok(timer) => timer,
             Err(SessionTimerError::Invalid) => {
                 if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
@@ -554,7 +773,10 @@ impl SipCore {
             session_timer: session_timer.clone(),
             final_ok: None,
             final_ok_payload: None,
+            local_cseq: 0,
+            expires_at: None,
         };
+        self.active_call_id = Some(headers.call_id.clone());
         self.invites.insert(headers.call_id.clone(), ctx);
 
         let offer = parse_offer_sdp(&req.body).unwrap_or_else(|| Sdp::pcmu("0.0.0.0", 0));
@@ -577,7 +799,61 @@ impl SipCore {
             from: headers.from,
             to: headers.to,
             offer,
-            session_expires: session_timer.map(|cfg| cfg.expires),
+            session_timer: session_timer.map(|cfg| SessionTimerInfo {
+                expires: cfg.expires,
+                refresher: cfg.refresher,
+            }),
+        }]
+    }
+
+    fn handle_reinvite(
+        &mut self,
+        req: SipRequest,
+        headers: CoreHeaderSnapshot,
+        peer: TransportPeer,
+    ) -> Vec<SipEvent> {
+        let session_timer =
+            match session_timer_from_request(&req, config::session_config(), false) {
+                Ok(timer) => timer,
+                Err(SessionTimerError::Invalid) => {
+                    if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
+                        self.send_payload(peer, resp.to_bytes());
+                    }
+                    return vec![];
+                }
+                Err(SessionTimerError::TooSmall { min_se }) => {
+                    if let Some(mut resp) =
+                        response_simple_from_request(&req, 422, "Session Interval Too Small")
+                    {
+                        resp.headers.push(SipHeader::new("Min-SE", min_se.to_string()));
+                        self.send_payload(peer, resp.to_bytes());
+                    }
+                    return vec![];
+                }
+            };
+
+        if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
+            ctx.req = req.clone();
+            ctx.tx = InviteServerTransaction::new(peer);
+            ctx.tx.invite_req = Some(req.clone());
+            ctx.reliable = None;
+            ctx.expected_rack = None;
+            ctx.last_rseq = None;
+            ctx.final_ok = None;
+            ctx.final_ok_payload = None;
+            if let Some(cfg) = &session_timer {
+                ctx.session_timer = Some(cfg.clone());
+            }
+        }
+
+        let offer = parse_offer_sdp(&req.body).unwrap_or_else(|| Sdp::pcmu("0.0.0.0", 0));
+        vec![SipEvent::ReInvite {
+            call_id: headers.call_id,
+            offer,
+            session_timer: session_timer.map(|cfg| SessionTimerInfo {
+                expires: cfg.expires,
+                refresher: cfg.refresher,
+            }),
         }]
     }
 
@@ -601,10 +877,45 @@ impl SipCore {
                 self.send_tx_action(action, peer);
             }
         }
-        if terminate {
+        if terminate && !stop_final_ok {
             self.invites.remove(&call_id);
         }
         vec![SipEvent::Ack { call_id }]
+    }
+
+    fn handle_cancel(
+        &mut self,
+        req: SipRequest,
+        headers: CoreHeaderSnapshot,
+        peer: TransportPeer,
+    ) -> Vec<SipEvent> {
+        let call_id = headers.call_id.clone();
+        let mut notify_session = false;
+        let (code, reason) = match self.invites.get(&call_id) {
+            Some(ctx) => {
+                if ctx.tx.state == InviteTxState::Proceeding {
+                    notify_session = true;
+                    (200, "OK")
+                } else {
+                    (481, "Call/Transaction Does Not Exist")
+                }
+            }
+            None => (481, "Call/Transaction Does Not Exist"),
+        };
+
+        if let Some(resp) = response_simple_from_request(&req, code, reason) {
+            self.send_payload(peer, resp.to_bytes());
+        } else {
+            log::warn!("[sip cancel] invalid CANCEL (missing headers) call_id={}", call_id);
+            return vec![];
+        }
+
+        if notify_session {
+            log::info!("[sip cancel] accepted call_id={}", call_id);
+            vec![SipEvent::Cancel { call_id }]
+        } else {
+            vec![]
+        }
     }
 
     fn handle_non_invite(
@@ -745,7 +1056,8 @@ impl SipCore {
         headers: CoreHeaderSnapshot,
         peer: TransportPeer,
     ) -> Vec<SipEvent> {
-        let session_timer = match session_timer_from_request(&req) {
+        let session_timer =
+            match session_timer_from_request(&req, config::session_config(), false) {
             Ok(timer) => timer,
             Err(SessionTimerError::Invalid) => {
                 if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
@@ -785,9 +1097,15 @@ impl SipCore {
         }
 
         if let Some(cfg) = session_timer {
+            if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
+                ctx.session_timer = Some(cfg.clone());
+            }
             vec![SipEvent::SessionRefresh {
                 call_id: headers.call_id,
-                expires: cfg.expires,
+                timer: SessionTimerInfo {
+                    expires: cfg.expires,
+                    refresher: cfg.refresher,
+                },
             }]
         } else {
             vec![]
@@ -985,6 +1303,62 @@ impl SipCore {
                     self.send_payload(peer, bytes);
                 }
             }
+            SessionOut::SipSend183 { answer } => {
+                let provision = if let Some(ctx) = self.invites.get_mut(call_id) {
+                    if let Some(mut resp) = response_final_with_sdp(
+                        &ctx.req,
+                        183,
+                        "Session Progress",
+                        &self.cfg.advertised_ip,
+                        self.cfg.sip_port,
+                        &answer,
+                    ) {
+                        let reliable = supports_100rel(&ctx.req);
+                        let mut rseq = None;
+                        let mut reliable_send = reliable;
+                        if reliable {
+                            rseq = next_rseq(ctx);
+                            if let Some(value) = rseq {
+                                resp.headers.push(SipHeader::new("Require", "100rel"));
+                                resp.headers.push(SipHeader::new("RSeq", value.to_string()));
+                            } else {
+                                log::warn!(
+                                    "[sip 100rel] RSeq max reached; sending non-100rel provisional call_id={}",
+                                    call_id
+                                );
+                                reliable_send = false;
+                            }
+                        }
+                        if let Ok(sdp) = std::str::from_utf8(&resp.body) {
+                            let sdp_inline = sdp.replace('\r', "").replace('\n', "\\n");
+                            log::info!("[sip 183 sdp] call_id={} sdp={}", call_id, sdp_inline);
+                        } else {
+                            log::info!(
+                                "[sip 183 sdp] call_id={} sdp_len={}",
+                                call_id,
+                                resp.body.len()
+                            );
+                        }
+                        let bytes = resp.to_bytes();
+                        let peer = ctx.tx.peer;
+                        ctx.tx.remember_provisional(bytes.clone());
+                        Some((peer, bytes, reliable_send, rseq))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some((peer, bytes, reliable, rseq)) = provision {
+                    if reliable {
+                        if let Some(rseq) = rseq {
+                            self.start_reliable_provisional(call_id, peer, bytes.clone(), rseq);
+                        }
+                    }
+                    self.send_payload(peer, bytes);
+                }
+            }
             SessionOut::SipSend200 { answer } => {
                 if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(mut resp) = response_final_with_sdp(
@@ -1021,39 +1395,75 @@ impl SipCore {
                     }
                 }
             }
+            SessionOut::SipSendUpdate { expires } => {
+                let (peer, payload) = if let Some(ctx) = self.invites.get_mut(call_id) {
+                    let peer = ctx.tx.peer;
+                    let payload = build_update_request(ctx, &self.cfg, expires);
+                    (Some(peer), payload)
+                } else {
+                    (None, None)
+                };
+                if let (Some(peer), Some(payload)) = (peer, payload) {
+                    self.send_payload(peer, payload);
+                } else {
+                    log::warn!("[sip update] failed to build UPDATE call_id={}", call_id);
+                }
+            }
+            SessionOut::SipSendError { code, reason } => {
+                if self.active_call_id.as_ref() == Some(call_id) {
+                    self.active_call_id = None;
+                }
+                let mut stop_reliable = false;
+                let mut send_payload = None;
+                if let Some(ctx) = self.invites.get_mut(call_id) {
+                    if let Some(resp) = response_simple_from_request(&ctx.req, code, &reason) {
+                        let bytes = resp.to_bytes();
+                        ctx.tx.on_final_sent(bytes.clone(), code);
+                        send_payload = Some((ctx.tx.peer, bytes));
+                        stop_reliable = true;
+                    }
+                    ctx.expires_at = Some(Instant::now() + Duration::from_secs(32));
+                }
+                if let Some((peer, payload)) = send_payload {
+                    self.send_payload(peer, payload);
+                }
+                if stop_reliable {
+                    self.stop_reliable_provisional(call_id);
+                }
+            }
+            SessionOut::SipSendBye => {
+                if self.active_call_id.as_ref() == Some(call_id) {
+                    self.active_call_id = None;
+                }
+                let (peer, payload) = if let Some(ctx) = self.invites.get_mut(call_id) {
+                    let peer = ctx.tx.peer;
+                    let payload = build_bye_request(ctx, &self.cfg);
+                    (Some(peer), payload)
+                } else {
+                    (None, None)
+                };
+                if let (Some(peer), Some(payload)) = (peer, payload) {
+                    self.send_payload(peer, payload);
+                } else {
+                    log::warn!("[sip bye] failed to build BYE call_id={}", call_id);
+                }
+                self.invites.remove(call_id);
+            }
             SessionOut::SipSendBye200 => {
+                if self.active_call_id.as_ref() == Some(call_id) {
+                    self.active_call_id = None;
+                }
                 if let Some(tx) = self.non_invites.get_mut(call_id) {
                     if let Some(req) = tx.last_request.clone() {
                         if let Some(resp) = response_simple_from_request(&req, 200, "OK") {
                             let bytes = resp.to_bytes();
                             tx.on_final_sent(bytes.clone());
                             let peer = tx.peer;
-                            let final_resp = tx.last_final.clone();
-                            let expires = tx.expires_at;
                             self.send_payload(peer, bytes.clone());
-                            // Timer J 相当の再送（送信キュー経由）
-                            if let Some(final_resp) = final_resp {
-                                let transport_tx = self.transport_tx.clone();
-                                let src_port = self.cfg.sip_port;
-                                tokio::spawn(async move {
-                                    let mut interval = std::time::Duration::from_millis(500);
-                                    while Instant::now() < expires {
-                                        let _ = transport_tx.send(SipTransportRequest {
-                                            peer,
-                                            src_port,
-                                            payload: final_resp.clone(),
-                                        });
-                                        sleep(interval).await;
-                                        interval = std::cmp::min(
-                                            interval * 2,
-                                            std::time::Duration::from_secs(4),
-                                        );
-                                    }
-                                });
-                            }
                         }
                     }
                 }
+                self.invites.remove(call_id);
             }
             _ => { /* 他の SessionOut は現状未配線 */ }
         }
@@ -1101,6 +1511,18 @@ impl SipCore {
             }
             alive
         });
+        self.invites.retain(|call_id, ctx| {
+            let Some(expires_at) = ctx.expires_at else {
+                return true;
+            };
+            let alive = expires_at > now;
+            if !alive {
+                events.push(SipEvent::TransactionTimeout {
+                    call_id: call_id.clone(),
+                });
+            }
+            alive
+        });
         events
     }
 }
@@ -1127,6 +1549,8 @@ mod tests {
             session_timer: None,
             final_ok: None,
             final_ok_payload: None,
+            local_cseq: 0,
+            expires_at: None,
         }
     }
 
@@ -1220,5 +1644,180 @@ mod tests {
             .map(|h| h.value.as_str());
         assert!(header_has_token(supported, "100rel"));
         assert!(header_has_token(supported, "timer"));
+    }
+
+    #[test]
+    fn invite_when_busy_returns_486() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut core = SipCore::new(
+            SipConfig {
+                advertised_ip: "127.0.0.1".to_string(),
+                sip_port: 5060,
+                advertised_rtp_port: 4000,
+            },
+            tx,
+        );
+
+        let req1 = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let input1 = SipInput {
+            peer: dummy_peer(),
+            data: req1.to_bytes(),
+        };
+
+        let events = core.handle_input(&input1);
+        assert_eq!(events.len(), 1);
+
+        let req2 = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:carol@example.com>;tag=carol")
+            .header("To", "<sip:dave@example.com>")
+            .header("Call-ID", "call-2")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let input2 = SipInput {
+            peer: dummy_peer(),
+            data: req2.to_bytes(),
+        };
+
+        let events = core.handle_input(&input2);
+        assert!(events.is_empty());
+
+        let sent = rx.try_recv().expect("busy response");
+        let resp_text = String::from_utf8(sent.payload).expect("utf8 response");
+        let resp = match parse_sip_message(&resp_text).expect("parse response") {
+            SipMessage::Response(resp) => resp,
+            _ => panic!("expected response"),
+        };
+        assert_eq!(resp.status_code, 486);
+    }
+
+    #[test]
+    fn cancel_sends_200_and_event() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut core = SipCore::new(
+            SipConfig {
+                advertised_ip: "127.0.0.1".to_string(),
+                sip_port: 5060,
+                advertised_rtp_port: 4000,
+            },
+            tx,
+        );
+
+        let invite = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let invite_input = SipInput {
+            peer: dummy_peer(),
+            data: invite.to_bytes(),
+        };
+        let events = core.handle_input(&invite_input);
+        assert_eq!(events.len(), 1);
+
+        let cancel = SipRequestBuilder::new(SipMethod::Cancel, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 CANCEL")
+            .build();
+        let cancel_input = SipInput {
+            peer: dummy_peer(),
+            data: cancel.to_bytes(),
+        };
+        let events = core.handle_input(&cancel_input);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            SipEvent::Cancel { call_id } => assert_eq!(call_id, "call-1"),
+            other => panic!("expected Cancel event, got {:?}", other),
+        }
+
+        let sent = rx.try_recv().expect("cancel response");
+        let resp_text = String::from_utf8(sent.payload).expect("utf8 response");
+        let resp = match parse_sip_message(&resp_text).expect("parse response") {
+            SipMessage::Response(resp) => resp,
+            _ => panic!("expected response"),
+        };
+        assert_eq!(resp.status_code, 200);
+    }
+
+    #[test]
+    fn session_timer_defaults_when_missing() {
+        let req = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let cfg = config::SessionConfig {
+            default_expires: Some(Duration::from_secs(1800)),
+            min_se: 90,
+        };
+        let timer = session_timer_from_request(&req, &cfg, true)
+            .expect("ok")
+            .expect("timer");
+        assert_eq!(timer.expires, Duration::from_secs(1800));
+        assert_eq!(timer.refresher, SessionRefresher::Uas);
+    }
+
+    #[test]
+    fn session_timer_rejects_too_small() {
+        let req = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .header("Session-Expires", "60")
+            .build();
+        let cfg = config::SessionConfig {
+            default_expires: Some(Duration::from_secs(1800)),
+            min_se: 90,
+        };
+        match session_timer_from_request(&req, &cfg, true) {
+            Err(SessionTimerError::TooSmall { min_se }) => assert_eq!(min_se, 90),
+            other => panic!("expected TooSmall, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_rtpmap_prefers_rtpmap_entry() {
+        let sdp = "v=0\r\n\
+c=IN IP4 192.0.2.10\r\n\
+m=audio 4000 RTP/AVP 96 0\r\n\
+a=rtpmap:96 PCMU/8000/1\r\n";
+        let parsed = parse_offer_sdp(sdp.as_bytes()).expect("parse sdp");
+        assert_eq!(parsed.ip, "192.0.2.10");
+        assert_eq!(parsed.port, 4000);
+        assert_eq!(parsed.payload_type, 96);
+        assert_eq!(parsed.codec, "PCMU/8000");
+    }
+
+    #[test]
+    fn test_parse_rtpmap_falls_back_to_static_pt() {
+        let sdp = "v=0\r\n\
+c=IN IP4 192.0.2.11\r\n\
+m=audio 5000 RTP/AVP 8\r\n";
+        let parsed = parse_offer_sdp(sdp.as_bytes()).expect("parse sdp");
+        assert_eq!(parsed.codec, "PCMA/8000");
+    }
+
+    #[test]
+    fn test_parse_rtpmap_dynamic_pt_without_mapping_is_unknown() {
+        let sdp = "v=0\r\n\
+c=IN IP4 192.0.2.12\r\n\
+m=audio 6000 RTP/AVP 97\r\n";
+        let parsed = parse_offer_sdp(sdp.as_bytes()).expect("parse sdp");
+        assert_eq!(parsed.codec, "unknown");
     }
 }

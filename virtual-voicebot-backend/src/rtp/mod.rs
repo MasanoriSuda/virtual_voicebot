@@ -1,5 +1,6 @@
 pub mod builder;
 pub mod codec;
+pub mod dtmf;
 pub mod packet;
 pub mod parser;
 pub mod payload;
