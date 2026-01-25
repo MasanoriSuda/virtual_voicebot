@@ -22,7 +22,7 @@ use crate::sip::auth_cache::{self, DigestAuthChallenge, DigestAuthHeader};
 use crate::sip::b2bua_bridge::{self, B2buaRegistration, B2buaSipMessage};
 use crate::sip::builder::response_simple_from_request;
 use crate::sip::message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
-use crate::sip::{parse_cseq_header, parse_uri, SipRequestBuilder};
+use crate::sip::{parse_cseq_header, parse_offer_sdp, parse_uri, SipRequestBuilder};
 use crate::transport::TransportPeer;
 
 const RTP_BUFFER_SIZE: usize = 2048;
@@ -260,7 +260,7 @@ async fn run_transfer(
                 let sip_peer = resolve_target_addr(&remote_uri).unwrap_or(target_addr);
 
                 let remote_sdp =
-                    parse_sdp(&resp.body).ok_or_else(|| anyhow!("missing SDP in 200 OK"))?;
+                    parse_offer_sdp(&resp.body).ok_or_else(|| anyhow!("missing SDP in 200 OK"))?;
                 let remote_rtp_addr = resolve_rtp_addr(&remote_sdp)?;
 
                 let ack = SipRequestBuilder::new(SipMethod::Ack, remote_uri.clone())
@@ -639,7 +639,7 @@ async fn run_outbound(
                     .unwrap_or(request_uri.as_str())
                     .to_string();
                 let remote_sdp =
-                    parse_sdp(&resp.body).ok_or_else(|| anyhow!("missing SDP in 200 OK"))?;
+                    parse_offer_sdp(&resp.body).ok_or_else(|| anyhow!("missing SDP in 200 OK"))?;
                 let remote_rtp_addr = resolve_rtp_addr(&remote_sdp)?;
 
                 let ack = SipRequestBuilder::new(SipMethod::Ack, remote_uri.clone())
@@ -828,31 +828,6 @@ fn resolve_rtp_addr(sdp: &Sdp) -> Result<SocketAddr> {
     addrs
         .next()
         .ok_or_else(|| anyhow!("unable to resolve {}", sdp.ip))
-}
-
-fn parse_sdp(body: &[u8]) -> Option<Sdp> {
-    let s = std::str::from_utf8(body).ok()?;
-    let mut ip = None;
-    let mut port = None;
-    let mut pt = None;
-    for line in s.lines() {
-        let line = line.trim();
-        if line.starts_with("c=IN IP4 ") {
-            ip = Some(line.trim_start_matches("c=IN IP4 ").trim().to_string());
-        } else if line.starts_with("m=audio ") {
-            let cols: Vec<&str> = line.split_whitespace().collect();
-            if cols.len() >= 4 {
-                port = cols[1].parse::<u16>().ok();
-                pt = cols[3].parse::<u8>().ok();
-            }
-        }
-    }
-    Some(Sdp {
-        ip: ip?,
-        port: port?,
-        payload_type: pt.unwrap_or(0),
-        codec: "PCMU/8000".to_string(),
-    })
 }
 
 fn build_sdp(ip: &str, port: u16) -> String {

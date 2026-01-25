@@ -10,7 +10,7 @@
 | **Owner** | TBD |
 | **Last Updated** | 2026-01-24 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36), [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37), [Issue #38](https://github.com/MasanoriSuda/virtual_voicebot/issues/38) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36), [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37), [Issue #38](https://github.com/MasanoriSuda/virtual_voicebot/issues/38), [Issue #39](https://github.com/MasanoriSuda/virtual_voicebot/issues/39) |
 
 ---
 
@@ -46,7 +46,7 @@
 | [Step-18](#step-18-asr-低レイテンシ化-issue-19) | ASR 低レイテンシ化 (Issue #19) | - | 着手中 |
 | [Step-19](#step-19-session-expires-対応-issue-20) | Session-Expires 対応 (Issue #20) | - | 完了 |
 | [Step-20](#step-20-llm-会話履歴ロール分離-issue-21) | LLM 会話履歴ロール分離 (Issue #21) | - | 未着手 |
-| [Step-21](#step-21-時間帯別イントロ-issue-22) | 時間帯別イントロ (Issue #22) | - | 未着手 |
+| [Step-21](#step-21-時間帯別イントロ-issue-22) | 時間帯別イントロ (Issue #22) | - | 完了 |
 | [Step-22](#step-22-ハルシネーション時謝罪音声-issue-23) | ハルシネーション時謝罪音声 (Issue #23) | → Step-20 | 未着手 |
 | [Step-23](#step-23-ivr-メニュー機能-issue-25) | IVR メニュー機能 (Issue #25) | → Step-02 | 完了 |
 | [Step-24](#step-24-bye-即時応答音声再生キャンセル-issue-26) | BYE 即時応答・音声再生キャンセル (Issue #26) | - | 完了 |
@@ -55,13 +55,13 @@
 | [Step-27](#step-27-録音音質劣化修正-issue-30) | 録音・音質劣化修正 (Issue #30) | - | 未着手 |
 | [Step-28](#step-28-音声感情分析ser-issue-31) | 音声感情分析 SER (Issue #31) | - | 未着手 |
 | [Step-29](#step-29-カスタムプロンプトペルソナ設定-issue-32) | カスタムプロンプト/ペルソナ設定 (Issue #32) | - | 未着手 |
-| [Step-30](#step-30-dtmf-1-ボイスボットイントロ-issue-33) | DTMF「1」ボイスボットイントロ (Issue #33) | → Step-23 | 未着手 |
-| [Step-31](#step-31-kotoba-whisper-移行-issue-34) | Kotoba-Whisper 移行 (Issue #34) | - | 未着手 |
-| [Step-32](#step-32-reazonspeech-検証-issue-35) | ReazonSpeech 検証 (Issue #35) | - | 未着手 |
-| [Step-33](#step-33-a-leg-cancel-受信処理-issue-36) | A-leg CANCEL 受信処理 (Issue #36) | - | 未着手 |
-| [Step-34](#step-34-b2bua-keepalive無音干渉修正-issue-37) | B2BUA Keepalive無音干渉修正 (Issue #37) | - | 未着手 |
+| [Step-30](#step-30-dtmf-1-ボイスボットイントロ-issue-33) | DTMF「1」ボイスボットイントロ (Issue #33) | → Step-23 | 完了 |
+| [Step-31](#step-31-kotoba-whisper-移行-issue-34) | Kotoba-Whisper 移行 (Issue #34) | - | 完了 |
+| [Step-32](#step-32-reazonspeech-検証-issue-35) | ReazonSpeech 検証 (Issue #35) | - | 完了 |
+| [Step-33](#step-33-a-leg-cancel-受信処理-issue-36) | A-leg CANCEL 受信処理 (Issue #36) | - | 完了 |
+| [Step-34](#step-34-b2bua-keepalive無音干渉修正-issue-37) | B2BUA Keepalive無音干渉修正 (Issue #37) | - | 完了 |
 | [Step-35](#step-35-発信時rtpリスナー早期起動-issue-38) | 発信時RTPリスナー早期起動 (Issue #38) | - | 未着手 |
-| [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 未着手 |
+| [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 完了 (→ Step-33) |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
 | [Step-04](#step-04-dtmf-トーン検出-e2e-検証) | DTMF トーン検出 E2E 検証 | → Step-02 | 未着手 |
@@ -72,7 +72,7 @@
 |------|------|------|------|
 | [Step-05](#step-05-rseq-ランダム化) | RSeq ランダム化 | - | 完了 |
 | [Step-06](#step-06-options-応答) | OPTIONS 応答 | - | 完了 |
-| [Step-07](#step-07-artpmap-パース) | a=rtpmap パース | - | 未着手 |
+| [Step-07](#step-07-artpmap-パース) | a=rtpmap パース (Issue #39) | - | 完了 |
 | [Step-08](#step-08-rtcp-sdes-cname) | RTCP SDES (CNAME) | - | 未着手 |
 | [Step-09](#step-09-486-busy-here) | 486 Busy Here (Issue #18) | - | 完了 |
 | [Step-12](#step-12-timer-ghij-実装) | Timer G/H/I/J 実装 | - | 未着手 |
@@ -577,35 +577,137 @@ cargo test sip::
 
 ## Step-07: a=rtpmap パース
 
-**目的**: SDP の a=rtpmap 行をパースしてコーデック情報を取得
+**関連**: [Issue #39](https://github.com/MasanoriSuda/virtual_voicebot/issues/39)
 
-**RFC参照**: RFC 8866, RFC 3264
+**目的**: SDP の a=rtpmap 行をパースしてコーデック情報を動的に取得
+
+**RFC参照**: RFC 8866 (SDP), RFC 3264 (Offer/Answer), RFC 3551 (RTP AVP)
+
+### 概要
+
+#### 現状
+- `parse_offer_sdp()` (`sip/mod.rs:145-169`) は `c=` と `m=` 行のみパース
+- codec は常に `"PCMU/8000"` にハードコード (`mod.rs:167`)
+- `b2bua.rs:833` にも同様の `parse_sdp()` 関数が重複（DRY違反）
+- 相手が別コーデック（例: PCMA, G729, 動的PT）を送信しても正しく解釈できない
+
+```
+現在のパース対象:
+c=IN IP4 192.168.1.100    ← パース済み
+m=audio 10000 RTP/AVP 0   ← port, payload_type のみ
+a=rtpmap:0 PCMU/8000      ← 未パース（無視されている）
+```
+
+#### 変更後
+- `a=rtpmap:<payload_type> <codec>/<clock_rate>[/<channels>]` 形式をパース
+- Sdp 構造体の `codec` フィールドに実際の値を格納
+- 重複コード (`b2bua.rs` の `parse_sdp`) を `sip/mod.rs` に統合
+
+```
+パース後の Sdp:
+{
+  ip: "192.168.1.100",
+  port: 10000,
+  payload_type: 0,
+  codec: "PCMU/8000"  ← a=rtpmap からパース
+}
+```
+
+### 境界条件
+
+| 条件 | 動作 |
+|------|------|
+| `a=rtpmap` が存在しない | RFC 3551 の静的マッピングを使用（PT 0 → PCMU/8000, PT 8 → PCMA/8000 等） |
+| `a=rtpmap` が複数存在 | `m=` 行の最初の PT に一致するものを採用 |
+| 動的 PT (96-127) で `a=rtpmap` なし | エラー（codec = "unknown"） |
+| 不正なフォーマット | 該当行をスキップ、他の行を継続パース |
+| channels 省略時 | デフォルト 1 として処理（音声の標準） |
 
 ### DoD (Definition of Done)
 
-- [ ] `a=rtpmap:0 PCMU/8000` 形式をパース
-- [ ] Sdp 構造体に rtpmap フィールド追加
-- [ ] Unit test 追加
-- [ ] 既存 SDP パースとの互換性維持
+- [ ] `a=rtpmap:<PT> <codec>/<clock>[/<ch>]` 形式をパース
+- [ ] 静的 PT (0-95) のデフォルトマッピングテーブル追加
+- [ ] Sdp 構造体の `codec` フィールドにパース結果を格納
+- [ ] `b2bua.rs` の `parse_sdp()` を削除し、`sip/mod.rs` の関数を re-export/使用
+- [ ] Unit test 追加（正常系、境界条件）
+- [ ] 既存の SIP シナリオで回帰なし確認
 
 ### 対象パス
 
 | ファイル | 変更内容 |
 |---------|---------|
-| `src/session/types.rs` | Sdp 構造体拡張 |
-| `src/sip/mod.rs` または `src/sip/parse.rs` | rtpmap パーサ追加 |
+| `src/sip/mod.rs` | `parse_offer_sdp()` に `a=rtpmap` パースロジック追加 |
+| `src/sip/mod.rs` | 静的 PT → codec マッピング定数追加 |
+| `src/session/b2bua.rs` | `parse_sdp()` 削除、`sip::parse_offer_sdp` を使用 |
+| `src/session/types.rs` | （変更なし - Sdp 構造体は既に codec フィールドを持つ） |
+
+### 実装指針
+
+```rust
+// 静的 PT マッピング（RFC 3551 Table 4-5 より抜粋）
+const STATIC_PT_MAP: &[(u8, &str)] = &[
+    (0, "PCMU/8000"),
+    (3, "GSM/8000"),
+    (4, "G723/8000"),
+    (8, "PCMA/8000"),
+    (9, "G722/8000"),
+    (18, "G729/8000"),
+];
+
+fn parse_offer_sdp(body: &[u8]) -> Option<Sdp> {
+    // ... 既存の c=, m= パース ...
+
+    // a=rtpmap パース
+    let mut rtpmap: HashMap<u8, String> = HashMap::new();
+    for line in s.lines() {
+        if line.starts_with("a=rtpmap:") {
+            // "a=rtpmap:0 PCMU/8000" → pt=0, codec="PCMU/8000"
+            if let Some((pt, codec)) = parse_rtpmap_line(line) {
+                rtpmap.insert(pt, codec);
+            }
+        }
+    }
+
+    // m= の最初の PT に対応する codec を取得
+    let codec = rtpmap.get(&pt)
+        .cloned()
+        .or_else(|| static_pt_to_codec(pt))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Some(Sdp { ip, port, payload_type: pt, codec })
+}
+```
 
 ### 変更上限
 
 - **行数**: <=100行
-- **ファイル数**: <=2
+- **ファイル数**: <=3
 
 ### 検証方法
 
 ```bash
-cargo test session::
-cargo test sip::
+# Unit test
+cargo test sip::tests::test_parse_rtpmap
+
+# E2E (SIPp でコーデック指定)
+sipp -sn uac -m 1 -p 5080 192.168.1.1:5060 -sd scenario_pcma.xml
+# → ログで codec="PCMA/8000" を確認
 ```
+
+### リスク/ロールバック
+
+| リスク | 対策 |
+|--------|------|
+| パース失敗でセッション確立不可 | フォールバック: パース失敗時は従来通り `PCMU/8000` をデフォルト使用 |
+| b2bua.rs との統合で回帰 | 統合前に b2bua.rs の parse_sdp と同一挙動を unit test で保証 |
+
+### Open Questions
+
+1. **Q1**: 複数メディアライン（`m=audio`, `m=video`）がある場合、audio のみを対象とするか？
+   - 推奨: audio のみ（現在の実装スコープ）
+2. **Q2**: rtpmap に channels（第3パラメータ）がある場合、Sdp 構造体に追加するか？
+   - 例: `a=rtpmap:0 PCMU/8000/1`
+   - 推奨: 今回は無視（将来の Step-10 等で拡張）
 
 ---
 

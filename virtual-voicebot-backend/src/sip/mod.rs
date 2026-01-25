@@ -142,11 +142,42 @@ struct RAckHeader {
     method: String,
 }
 
-fn parse_offer_sdp(body: &[u8]) -> Option<Sdp> {
+const STATIC_PT_MAP: &[(u8, &str)] = &[
+    (0, "PCMU/8000"),
+    (3, "GSM/8000"),
+    (4, "G723/8000"),
+    (8, "PCMA/8000"),
+    (9, "G722/8000"),
+    (18, "G729/8000"),
+];
+
+fn static_pt_to_codec(pt: u8) -> Option<&'static str> {
+    STATIC_PT_MAP
+        .iter()
+        .find(|(entry_pt, _)| *entry_pt == pt)
+        .map(|(_, codec)| *codec)
+}
+
+fn parse_rtpmap_line(line: &str) -> Option<(u8, String)> {
+    let value = line.trim().strip_prefix("a=rtpmap:")?;
+    let mut parts = value.split_whitespace();
+    let pt = parts.next()?.parse::<u8>().ok()?;
+    let encoding = parts.next()?;
+    let mut enc_parts = encoding.split('/');
+    let name = enc_parts.next()?.trim();
+    let rate = enc_parts.next()?.trim();
+    if name.is_empty() || rate.is_empty() {
+        return None;
+    }
+    Some((pt, format!("{}/{}", name, rate)))
+}
+
+pub(crate) fn parse_offer_sdp(body: &[u8]) -> Option<Sdp> {
     let s = std::str::from_utf8(body).ok()?;
     let mut ip = None;
     let mut port = None;
     let mut pt = None;
+    let mut rtpmap: HashMap<u8, String> = HashMap::new();
     for line in s.lines() {
         let line = line.trim();
         if line.starts_with("c=IN IP4 ") {
@@ -158,13 +189,25 @@ fn parse_offer_sdp(body: &[u8]) -> Option<Sdp> {
                 port = cols[1].parse::<u16>().ok();
                 pt = cols[3].parse::<u8>().ok();
             }
+        } else if line.starts_with("a=rtpmap:") {
+            if let Some((pt, codec)) = parse_rtpmap_line(line) {
+                rtpmap.insert(pt, codec);
+            }
         }
     }
+    let ip = ip?;
+    let port = port?;
+    let pt = pt.unwrap_or(0);
+    let codec = rtpmap
+        .get(&pt)
+        .cloned()
+        .or_else(|| static_pt_to_codec(pt).map(|codec| codec.to_string()))
+        .unwrap_or_else(|| "unknown".to_string());
     Some(Sdp {
-        ip: ip?,
-        port: port?,
-        payload_type: pt.unwrap_or(0),
-        codec: "PCMU/8000".to_string(),
+        ip,
+        port,
+        payload_type: pt,
+        codec,
     })
 }
 
@@ -1745,5 +1788,36 @@ mod tests {
             Err(SessionTimerError::TooSmall { min_se }) => assert_eq!(min_se, 90),
             other => panic!("expected TooSmall, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_parse_rtpmap_prefers_rtpmap_entry() {
+        let sdp = "v=0\r\n\
+c=IN IP4 192.0.2.10\r\n\
+m=audio 4000 RTP/AVP 96 0\r\n\
+a=rtpmap:96 PCMU/8000/1\r\n";
+        let parsed = parse_offer_sdp(sdp.as_bytes()).expect("parse sdp");
+        assert_eq!(parsed.ip, "192.0.2.10");
+        assert_eq!(parsed.port, 4000);
+        assert_eq!(parsed.payload_type, 96);
+        assert_eq!(parsed.codec, "PCMU/8000");
+    }
+
+    #[test]
+    fn test_parse_rtpmap_falls_back_to_static_pt() {
+        let sdp = "v=0\r\n\
+c=IN IP4 192.0.2.11\r\n\
+m=audio 5000 RTP/AVP 8\r\n";
+        let parsed = parse_offer_sdp(sdp.as_bytes()).expect("parse sdp");
+        assert_eq!(parsed.codec, "PCMA/8000");
+    }
+
+    #[test]
+    fn test_parse_rtpmap_dynamic_pt_without_mapping_is_unknown() {
+        let sdp = "v=0\r\n\
+c=IN IP4 192.0.2.12\r\n\
+m=audio 6000 RTP/AVP 97\r\n";
+        let parsed = parse_offer_sdp(sdp.as_bytes()).expect("parse sdp");
+        assert_eq!(parsed.codec, "unknown");
     }
 }
