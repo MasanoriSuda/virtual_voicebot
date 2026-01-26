@@ -4444,6 +4444,199 @@ export PHONE_LOOKUP_ENABLED=true
 
 ---
 
+## Step-37: ステレオ録音（L=RX, R=TX）— Issue #49
+
+### 状態: 未着手
+
+### 背景・課題
+
+現状の `mixed.wav` は **モノラルで RX/TX を順番に追記** しているため、10秒の通話が約22秒のファイルになる（両方向分 + keepalive 等）。
+
+**現状の問題点**:
+```
+push_rx_mulaw() → push_mulaw() → writer.write_sample()
+push_tx_mulaw() → push_mulaw() → writer.write_sample()
+↓
+[RX1][RX2][TX1][TX2][RX3][TX3]... ← 届いた順に連結
+```
+
+### ゴール
+
+- `mixed.wav` を **ステレオ (channels=2)** で出力
+- **L ch = 相手側 (RX)**, **R ch = 自分側 (TX)**
+- 通話時間 ≒ ファイル再生時間
+
+### 実装アイデア
+
+#### 方式: タイムスロット同期リングバッファ
+
+```
+┌─────────────────────────────────────────────────────┐
+│                     Recorder                        │
+│                                                     │
+│  ┌──────────────┐      ┌──────────────┐            │
+│  │  RX Buffer   │      │  TX Buffer   │            │
+│  │  (Ring)      │      │  (Ring)      │            │
+│  └──────┬───────┘      └──────┬───────┘            │
+│         │                     │                     │
+│         └──────────┬──────────┘                     │
+│                    ↓                                │
+│         ┌──────────────────┐                        │
+│         │   Mixer/Writer   │                        │
+│         │  (20ms tick)     │                        │
+│         └──────────────────┘                        │
+│                    ↓                                │
+│         [L, R, L, R, ...] interleaved WAV          │
+└─────────────────────────────────────────────────────┘
+```
+
+#### 詳細設計
+
+1. **タイムスロット単位**: 20ms = 160 samples @ 8kHz
+2. **リングバッファ構造**:
+   ```rust
+   struct StereoRecorder {
+       rx_buffer: VecDeque<[i16; 160]>,  // L ch (受信)
+       tx_buffer: VecDeque<[i16; 160]>,  // R ch (送信)
+       write_cursor: u64,                 // 書き込み済みスロット数
+       last_tick: Instant,
+   }
+   ```
+
+3. **書き込みロジック** (20ms ティックごと):
+   ```rust
+   fn flush_slot(&mut self) {
+       let rx_frame = self.rx_buffer.pop_front().unwrap_or(SILENCE_FRAME);
+       let tx_frame = self.tx_buffer.pop_front().unwrap_or(SILENCE_FRAME);
+
+       // インターリーブ書き込み
+       for i in 0..160 {
+           writer.write_sample(rx_frame[i]);  // L
+           writer.write_sample(tx_frame[i]);  // R
+       }
+   }
+   ```
+
+4. **無音埋め**: 片方のバッファが空なら `0x7F7F...` (μ-law) または `0` (PCM) で埋める
+
+5. **タイミング同期**:
+   - `tokio::time::interval(Duration::from_millis(20))` で定期 flush
+   - または RTP パケット到着トリガーで同期
+
+#### 代替案
+
+| 方式 | メリット | デメリット |
+|------|---------|-----------|
+| **A. リングバッファ + tick** | シンプル、遅延一定 | tick 管理が必要 |
+| **B. RTP timestamp 同期** | 正確な時刻同期 | 実装複雑、ジッタ処理必要 |
+| **C. 後処理ミックス** | リアルタイム負荷なし | 別途ツール必要、即時再生不可 |
+
+**推奨**: 方式 A（tick ベース）— 既存の interval 再生と同様の設計
+
+### 境界条件
+
+#### 入力
+
+| 条件 | 値 |
+|------|-----|
+| RTP フレーム | 160 bytes (20ms @ 8kHz μ-law) |
+| サンプルレート | 8000 Hz |
+
+#### 出力
+
+| 項目 | 値 |
+|------|-----|
+| WAV channels | 2 (stereo) |
+| L ch | RX (相手側) |
+| R ch | TX (自分側) |
+| bits_per_sample | 16 |
+
+### DoD (Definition of Done)
+
+- [ ] `Recorder` を `StereoRecorder` に改修（または新規追加）
+- [ ] `channels: 2` の WAV 出力
+- [ ] RX/TX バッファ分離、20ms interval tick で flush
+- [ ] 片方無音時は silence 埋め
+- [ ] 10秒通話 ≒ 10秒ファイル（±1秒程度の誤差許容）
+- [ ] B2BUA: `a_leg.wav` + `b_leg.wav` を個別出力
+- [ ] B2BUA: 終話時に `merged.wav` を非同期生成（`tokio::spawn`）
+- [ ] 既存テスト通過
+- [ ] meta.json の channels を更新
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/media/mod.rs` | `StereoRecorder` 実装、バッファ分離、interval tick flush |
+| `src/media/merge.rs` | 新規: `merge_stereo_files()` 後段合成関数 |
+| `src/session/session.rs` | interval flush 追加、B2BUA 終話時に merge spawn |
+| `src/session/b2bua.rs` | A-leg/B-leg 個別 Recorder 管理 |
+
+### 質問事項（Codex 向け）— 回答済み
+
+1. **Q1**: flush を `tokio::time::interval` で行うか、RTP 到着タイミングで行うか？
+   - **回答: interval で固定**（既存の再生 tick と統一）
+2. **Q2**: 既存の `push_rx_mulaw` / `push_tx_mulaw` API は維持するか、シグネチャ変更するか？
+   - **回答: 維持**（できれば timestamp 付き拡張: `push_rx_mulaw_with_ts(payload, rtp_timestamp)`）
+3. **Q3**: B2BUA モードでも同様にステレオ録音するか？（A-leg RX/TX + B-leg RX/TX で 4ch になる可能性）
+   - **回答: 4ch にしない。レッグごとに 2ch × 2本、合成は後段（Rust 内）**
+
+### B2BUA 録音方式
+
+```
+B2BUA 通話
+    ↓
+┌─────────────────────────────────────────────────────┐
+│  A-leg Recorder          B-leg Recorder            │
+│  ┌─────────────┐         ┌─────────────┐           │
+│  │ a_leg.wav   │         │ b_leg.wav   │           │
+│  │ L=RX, R=TX  │         │ L=RX, R=TX  │           │
+│  │ (2ch stereo)│         │ (2ch stereo)│           │
+│  └─────────────┘         └─────────────┘           │
+└─────────────────────────────────────────────────────┘
+    ↓ 終話時
+┌─────────────────────────────────────────────────────┐
+│  tokio::spawn(async {                              │
+│      merge_stereo_files(                           │
+│          "a_leg.wav",                              │
+│          "b_leg.wav",                              │
+│          "merged.wav"                              │
+│      )                                             │
+│  })                                                │
+└─────────────────────────────────────────────────────┘
+    ↓
+BYE 応答は即時（合成完了を待たない）
+```
+
+#### 後段合成の詳細
+
+- **合成方式**: Rust 内で `hound` crate を使用（ffmpeg 不要）
+- **タイミング**: 終話後に `tokio::spawn` で非同期実行
+- **出力**: `merged.wav`（4ch: A-leg L/R + B-leg L/R、または 2ch ダウンミックス）
+- **フォールバック**: 合成失敗時は個別ファイルのみ残す
+
+### 設計判断
+
+| 項目 | 決定 | 理由 |
+|------|------|------|
+| バッファ単位 | 20ms (160 samples) | RTP フレームサイズと一致 |
+| 無音値 | 0 (PCM i16) | μ-law 0xFF 相当 |
+| チャンネル割当 | L=RX, R=TX | 一般的なコールセンター録音慣例 |
+| flush 方式 | interval 固定 | 既存再生 tick と統一、実装シンプル |
+| API | 維持 + timestamp 拡張 | 後方互換、将来の精度向上に備える |
+| B2BUA 録音 | 2ch × 2本 + 後段合成 | 4ch は再生環境依存、分離の方が柔軟 |
+| 後段合成 | Rust 内 (hound) | 外部依存なし、非同期で遅延回避 |
+
+### リスク/ロールバック観点
+
+| リスク | 影響度 | 軽減策 |
+|--------|--------|--------|
+| タイミングずれ | 中 | バッファ深さで吸収（100ms 程度） |
+| CPU 負荷増 | 低 | 既存 tick と統合、追加処理は軽微 |
+| ロールバック | 低 | `channels: 1` に戻すだけ |
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -4460,6 +4653,8 @@ export PHONE_LOOKUP_ENABLED=true
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-27 | 3.19 | Issue #49 更新: Step-37 Q1-Q3 回答確定、B2BUA は 2ch×2本 + Rust 内後段合成方式 |
+| 2026-01-27 | 3.18 | Issue #49 統合: Step-37（ステレオ録音 L=RX, R=TX）追加、タイムスロット同期リングバッファ方式 |
 | 2026-01-26 | 3.17 | Issue #43 更新: Step-36 完了（PoC: 照合結果ログ出力のみ、IVR 分岐反映は次ステップ） |
 | 2026-01-26 | 3.16 | Issue #43 統合: Step-36（Tsurugi DB 電話番号照合）追加、着信時に電話番号を照合し IVR 分岐判断 |
 | 2026-01-24 | 3.15 | Issue #38 統合: Step-35（発信時RTPリスナー早期起動）追加、RTPソケット確保と同時にspawn_rtp_listener起動 |

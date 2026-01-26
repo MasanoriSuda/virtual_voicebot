@@ -15,6 +15,7 @@ use crate::sip::{parse_name_addr, parse_uri};
 
 use crate::app::AppEvent;
 use crate::http::ingest::IngestPort;
+use crate::media::merge::merge_stereo_files;
 use crate::media::Recorder;
 use crate::recording;
 use crate::recording::storage::StoragePort;
@@ -138,6 +139,7 @@ pub struct Session {
     media_cfg: MediaConfig,
     rtp_tx: RtpTxHandle,
     recorder: Recorder,
+    b_leg_recorder: Option<Recorder>,
     started_at: Option<Instant>,
     started_wall: Option<std::time::SystemTime>,
     rtp_last_sent: Option<Instant>,
@@ -197,6 +199,7 @@ impl Session {
             media_cfg,
             rtp_tx,
             recorder: Recorder::new(call_id_clone),
+            b_leg_recorder: None,
             started_at: None,
             started_wall: None,
             rtp_last_sent: None,
@@ -328,6 +331,14 @@ impl Session {
                                     self.call_id, e
                                 );
                             }
+                            if let Some(recorder) = self.b_leg_recorder.as_mut() {
+                                if let Err(e) = recorder.start() {
+                                    warn!(
+                                        "[session {}] failed to start b-leg recorder: {:?}",
+                                        self.call_id, e
+                                    );
+                                }
+                            }
                             if !self.ensure_a_leg_rtp_started() {
                                 advance_state = false;
                                 continue;
@@ -374,6 +385,9 @@ impl Session {
                                 if let Some(b_leg) = &self.b_leg {
                                     self.rtp_tx
                                         .send_payload(&b_leg.rtp_key, payload.clone());
+                                }
+                                if let Some(recorder) = self.b_leg_recorder.as_mut() {
+                                    recorder.push_tx_mulaw(&payload);
                                 }
                             } else if self.ivr_state == IvrState::VoicebotMode {
                                 if let Some(buffer) = self.capture.ingest(&payload) {
@@ -518,6 +532,23 @@ impl Session {
                             self.stop_ivr_timeout();
                             self.ivr_state = IvrState::B2buaMode;
                             self.b_leg = Some(b_leg);
+                            if self.b_leg_recorder.is_none() {
+                                self.b_leg_recorder = Some(Recorder::with_file(
+                                    self.call_id.clone(),
+                                    "b_leg.wav",
+                                    false,
+                                ));
+                            }
+                            if let Some(recorder) = self.b_leg_recorder.as_mut() {
+                                if self.recorder.is_started() {
+                                    if let Err(e) = recorder.start() {
+                                        warn!(
+                                            "[session {}] failed to start b-leg recorder: {:?}",
+                                            self.call_id, e
+                                        );
+                                    }
+                                }
+                            }
                             if let Some(b_leg) = &self.b_leg {
                                 self.rtp_tx.start(
                                     b_leg.rtp_key.clone(),
@@ -576,6 +607,9 @@ impl Session {
                             if self.ivr_state == IvrState::B2buaMode {
                                 self.align_rtp_clock();
                                 self.recorder.push_tx_mulaw(&payload);
+                                if let Some(recorder) = self.b_leg_recorder.as_mut() {
+                                    recorder.push_rx_mulaw(&payload);
+                                }
                                 self.rtp_tx
                                     .send_payload(&self.call_id, payload);
                                 self.rtp_last_sent = Some(Instant::now());
@@ -593,12 +627,7 @@ impl Session {
                             self.stop_session_timer();
                             self.stop_ivr_timeout();
                             self.send_bye_to_a_leg();
-                            if let Err(e) = self.recorder.stop() {
-                                warn!(
-                                    "[session {}] failed to finalize recording: {:?}",
-                                    self.call_id, e
-                                );
-                            }
+                            self.stop_recorders();
                             self.send_ingest("ended").await;
                             self.rtp_tx.stop(&self.call_id);
                             let _ = self
@@ -666,6 +695,10 @@ impl Session {
                                 .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
                         }
                         (SessState::Established, SessionIn::MediaTimerTick) => {
+                            self.recorder.flush_tick();
+                            if let Some(recorder) = self.b_leg_recorder.as_mut() {
+                                recorder.flush_tick();
+                            }
                             if let Err(e) = self.send_silence_frame().await {
                                 warn!("[session {}] silence send failed: {:?}", self.call_id, e);
                             }
@@ -690,12 +723,7 @@ impl Session {
                                     reason: "Request Terminated".to_string(),
                                 },
                             ));
-                            if let Err(e) = self.recorder.stop() {
-                                warn!(
-                                    "[session {}] failed to finalize recording: {:?}",
-                                    self.call_id, e
-                                );
-                            }
+                            self.stop_recorders();
                             let _ = self.app_tx.send(AppEvent::CallEnded {
                                 call_id: self.call_id.clone(),
                             });
@@ -714,12 +742,7 @@ impl Session {
                             let _ = self
                                 .session_out_tx
                                 .send((self.call_id.clone(), SessionOut::SipSendBye200));
-                            if let Err(e) = self.recorder.stop() {
-                                warn!(
-                                    "[session {}] failed to finalize recording: {:?}",
-                                    self.call_id, e
-                                );
-                            }
+                            self.stop_recorders();
                             self.send_ingest("ended").await;
                             let _ = self.app_tx.send(AppEvent::CallEnded {
                                 call_id: self.call_id.clone(),
@@ -744,12 +767,7 @@ impl Session {
                             self.stop_keepalive_timer();
                             self.stop_session_timer();
                             self.stop_ivr_timeout();
-                            if let Err(e) = self.recorder.stop() {
-                                warn!(
-                                    "[session {}] failed to finalize recording: {:?}",
-                                    self.call_id, e
-                                );
-                            }
+                            self.stop_recorders();
                             self.send_ingest("ended").await;
                             self.rtp_tx.stop(&self.call_id);
                             let _ = self
@@ -803,12 +821,7 @@ impl Session {
                             self.stop_keepalive_timer();
                             self.stop_session_timer();
                             self.stop_ivr_timeout();
-                            if let Err(e) = self.recorder.stop() {
-                                warn!(
-                                    "[session {}] failed to finalize recording: {:?}",
-                                    self.call_id, e
-                                );
-                            }
+                            self.stop_recorders();
                             self.send_ingest("ended").await;
                             let _ = self
                                 .session_out_tx
@@ -828,12 +841,7 @@ impl Session {
                             self.stop_keepalive_timer();
                             self.stop_session_timer();
                             self.stop_ivr_timeout();
-                            if let Err(e) = self.recorder.stop() {
-                                warn!(
-                                    "[session {}] failed to finalize recording: {:?}",
-                                    self.call_id, e
-                                );
-                            }
+                            self.stop_recorders();
                             self.send_ingest("failed").await;
                             self.rtp_tx.stop(&self.call_id);
                             let _ = self
@@ -851,12 +859,7 @@ impl Session {
                 }
             }
         }
-        if let Err(e) = self.recorder.stop() {
-            warn!(
-                "[session {}] failed to finalize recording on shutdown: {:?}",
-                self.call_id, e
-            );
-        }
+        self.stop_recorders();
     }
 
     fn build_answer_pcmu8k(&self) -> Sdp {
@@ -1104,6 +1107,62 @@ impl Session {
         self.finish_playback(false);
     }
 
+    fn stop_recorders(&mut self) {
+        let a_path = self.recorder.file_path();
+        let dir_path = self.recorder.dir_path().to_path_buf();
+        if let Err(e) = self.recorder.stop() {
+            warn!(
+                "[session {}] failed to finalize recording: {:?}",
+                self.call_id, e
+            );
+        }
+
+        let Some(mut b_recorder) = self.b_leg_recorder.take() else {
+            return;
+        };
+        let b_path = b_recorder.file_path();
+        if let Err(e) = b_recorder.stop() {
+            warn!(
+                "[session {}] failed to finalize b-leg recording: {:?}",
+                self.call_id, e
+            );
+        }
+
+        let call_id = self.call_id.clone();
+        tokio::spawn(async move {
+            let merge_call_id = call_id.clone();
+            let merge_task = tokio::task::spawn_blocking(move || {
+                if !a_path.exists() || !b_path.exists() {
+                    log::warn!(
+                        "[session {}] merge skipped (missing recording file)",
+                        merge_call_id
+                    );
+                    return Ok(());
+                }
+                let a_leg_path = dir_path.join("a_leg.wav");
+                if let Err(e) = std::fs::copy(&a_path, &a_leg_path) {
+                    log::warn!(
+                        "[session {}] failed to copy a-leg wav: {:?}",
+                        merge_call_id,
+                        e
+                    );
+                }
+                let merged_path = dir_path.join("merged.wav");
+                merge_stereo_files(&a_path, &b_path, &merged_path)
+            });
+
+            match merge_task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    log::warn!("[session {}] failed to merge recordings: {:?}", call_id, e)
+                }
+                Err(e) => {
+                    log::warn!("[session {}] merge task failed: {:?}", call_id, e)
+                }
+            }
+        });
+    }
+
     async fn send_silence_frame(&mut self) -> Result<(), Error> {
         if self.peer_sdp.is_none() {
             return Ok(());
@@ -1152,8 +1211,8 @@ impl Session {
             "recording": recording_url.as_ref().map(|url| json!({
                 "recordingUrl": url,
                 "durationSec": duration_sec,
-                "sampleRate": 8000,
-                "channels": 1
+                "sampleRate": self.recorder.sample_rate(),
+                "channels": self.recorder.channels()
             })),
         });
 
@@ -1246,6 +1305,7 @@ mod tests {
             media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
             rtp_tx: RtpTxHandle::new(),
             recorder: Recorder::new("test-call"),
+            b_leg_recorder: None,
             started_at: None,
             started_wall: None,
             rtp_last_sent: None,
