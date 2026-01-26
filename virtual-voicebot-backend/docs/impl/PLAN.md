@@ -8,9 +8,9 @@
 |------|-----|
 | **Status** | Active |
 | **Owner** | TBD |
-| **Last Updated** | 2026-01-24 |
+| **Last Updated** | 2026-01-26 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36), [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37), [Issue #38](https://github.com/MasanoriSuda/virtual_voicebot/issues/38), [Issue #39](https://github.com/MasanoriSuda/virtual_voicebot/issues/39) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36), [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37), [Issue #38](https://github.com/MasanoriSuda/virtual_voicebot/issues/38), [Issue #39](https://github.com/MasanoriSuda/virtual_voicebot/issues/39), [Issue #43](https://github.com/MasanoriSuda/virtual_voicebot/issues/43) |
 
 ---
 
@@ -61,6 +61,7 @@
 | [Step-33](#step-33-a-leg-cancel-受信処理-issue-36) | A-leg CANCEL 受信処理 (Issue #36) | - | 完了 |
 | [Step-34](#step-34-b2bua-keepalive無音干渉修正-issue-37) | B2BUA Keepalive無音干渉修正 (Issue #37) | - | 完了 |
 | [Step-35](#step-35-発信時rtpリスナー早期起動-issue-38) | 発信時RTPリスナー早期起動 (Issue #38) | - | 未着手 |
+| [Step-36](#step-36-tsurugi-db-電話番号照合-issue-43) | Tsurugi DB 電話番号照合 (Issue #43) | - | 完了 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 完了 (→ Step-33) |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -4321,6 +4322,128 @@ if !rtp_listener_started {
 
 ---
 
+## Step-36: Tsurugi DB 電話番号照合 (Issue #43)
+
+**Refs:** [Issue #43](https://github.com/MasanoriSuda/virtual_voicebot/issues/43)
+
+### 概要
+
+着信時に発信元電話番号を Tsurugi データベースで照合し、登録有無に基づいて IVR 分岐の判断を行う PoC を実装する。
+
+### 背景
+
+- 電話番号ごとに IVR 有効/無効を切り替えたい
+- 事前登録された番号のみ特別な処理を行いたい
+- Tsurugi（NTT 開発の分散 OLTP DB）を技術検証として導入
+
+### ユースケース
+
+```
+[着信 INVITE]
+    ↓
+[session] Fromヘッダから電話番号を抽出
+    ↓
+[session → app] CallStarted { call_id, caller: "09026889453" }
+    ↓
+[app] Tsurugi DB で電話番号を照合
+    ↓
+  ┌─ 登録あり → ivr_enabled フラグに従う
+  └─ 登録なし → デフォルト動作（IVR有効）
+    ↓
+[app] 対話処理へ
+```
+
+### 境界条件
+
+#### 入力
+
+| 条件 | 値 |
+|------|-----|
+| 電話番号 | SIP From ヘッダから抽出 |
+| DB エンドポイント | `tcp://localhost:12345`（環境変数で設定） |
+
+#### 出力
+
+| パターン | 動作 |
+|---------|------|
+| 登録あり | `ivr_enabled` フラグに従う |
+| 登録なし | デフォルト（IVR 有効） |
+| DB 接続失敗 | フォールバック（IVR 有効） |
+
+### DoD (Definition of Done)
+
+- [x] `Cargo.toml` に `tsubakuro-rust-core` 依存を追加
+- [x] `src/db/` モジュールを新規作成（Port/Adapter パターン）
+- [x] `AppEvent::CallStarted` に `caller` フィールドを追加
+- [x] 着信時に電話番号照合を実行、結果をログ出力
+- [x] DB 接続失敗時にフォールバック動作
+- [x] 既存テスト（`cargo test`）が通ること
+
+### 実装結果メモ
+
+- **PoC 完了**: 照合結果はログ出力のみ、**IVR 分岐への反映は未実装**
+- **依存**: `tsubakuro-rust-core = "0.7.0"`、ビルドに `protoc` 必須、MSRV 1.84.1
+- **セキュリティ**: SQL リテラルは `'` を `''` にエスケープ（電話番号マスキングは不要：ナンバーディスプレイで確認可能なため）
+- **動作**: `PHONE_LOOKUP_ENABLED=true` かつ `TSURUGI_ENDPOINT` 有効時のみ lookup 実行
+- **次ステップ**: `ivr_enabled=false` を IVR 分岐に反映する場合は別 Step で対応
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `Cargo.toml` | `tsubakuro-rust-core` 依存追加 |
+| `src/db/mod.rs` | 新規: モジュール定義 |
+| `src/db/port.rs` | 新規: `PhoneLookupPort` trait |
+| `src/db/tsurugi.rs` | 新規: `TsurugiAdapter` 実装 |
+| `src/app/mod.rs` | `CallStarted` 拡張、照合ロジック追加 |
+| `src/session/b2bua.rs` | `caller` 抽出、`CallStarted` 送信時に含める |
+| `src/config.rs` | `TSURUGI_ENDPOINT`, `PHONE_LOOKUP_ENABLED` 追加 |
+| `src/lib.rs` | `db` モジュール公開 |
+
+### テストシナリオ
+
+| # | 電話番号 | DB登録 | 期待結果 |
+|---|---------|--------|---------|
+| 1 | 09026889453 | なし | `NOT found` ログ出力、ivr_enabled=true |
+| 2 | 09012345678 | あり(ivr=1) | `found, ivr_enabled=true` ログ出力 |
+| 3 | - | DB停止 | `lookup failed` ログ出力、フォールバック |
+
+### 前提条件
+
+```bash
+# Tsurugi 起動
+docker run -d -p 12345:12345 --name tsurugi ghcr.io/project-tsurugi/tsurugidb:1.7.0
+
+# テーブル作成
+docker exec -it tsurugi tgsql -c ipc:tsurugi
+> CREATE TABLE phone_entries (phone_number VARCHAR(20) PRIMARY KEY, ivr_enabled INT);
+> INSERT INTO phone_entries VALUES ('09012345678', 1);
+> \quit
+
+# 環境変数
+export TSURUGI_ENDPOINT=tcp://localhost:12345
+export PHONE_LOOKUP_ENABLED=true
+```
+
+### 設計判断
+
+| 項目 | 決定 | 理由 |
+|------|------|------|
+| 依存方向 | `app → db` | design.md 準拠、session から db は呼ばない |
+| Port/Adapter | 採用 | 将来の PostgreSQL 等への差し替えを考慮 |
+| フォールバック | IVR 有効 | DB 障害時もサービス継続 |
+| タイムアウト | PoC では省略 | 本実装時に追加予定 |
+
+### リスク/ロールバック観点
+
+| リスク | 影響度 | 軽減策 |
+|--------|--------|--------|
+| tsubakuro-rust-core の成熟度 | 中 | PoC で早期検証、問題時は PostgreSQL にフォールバック |
+| DB 接続遅延 | 低 | フォールバック動作で継続 |
+| ロールバック | 低 | 新規モジュール追加のみ、既存コードへの影響軽微 |
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -4337,6 +4460,8 @@ if !rtp_listener_started {
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-26 | 3.17 | Issue #43 更新: Step-36 完了（PoC: 照合結果ログ出力のみ、IVR 分岐反映は次ステップ） |
+| 2026-01-26 | 3.16 | Issue #43 統合: Step-36（Tsurugi DB 電話番号照合）追加、着信時に電話番号を照合し IVR 分岐判断 |
 | 2026-01-24 | 3.15 | Issue #38 統合: Step-35（発信時RTPリスナー早期起動）追加、RTPソケット確保と同時にspawn_rtp_listener起動 |
 | 2026-01-24 | 3.14 | Issue #37 更新: Step-34 実装方法確定（方法1: B2BUAモード判定を採用） |
 | 2026-01-24 | 3.13 | Issue #37 統合: Step-34（B2BUA Keepalive無音干渉修正）追加、send_silence_frame に B2BUA モード判定追加 |

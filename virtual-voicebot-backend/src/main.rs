@@ -1,6 +1,7 @@
 mod ai;
 mod app;
 mod config;
+mod db;
 mod http;
 mod logging;
 mod media;
@@ -17,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc::unbounded_channel;
 
+use crate::db::{NoopPhoneLookup, PhoneLookupPort, TsurugiAdapter};
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::{
     spawn_session, MediaConfig, SessionIn, SessionMap, SessionOut, SessionRegistry,
@@ -97,6 +99,15 @@ async fn main() -> anyhow::Result<()> {
 
     // --- SIP処理ループ: packet層からのSIP入力をセッションへ結線 ---
     let ai_port = Arc::new(ai::DefaultAiPort::new());
+    let phone_lookup: Arc<dyn PhoneLookupPort> = if config::phone_lookup_enabled() {
+        if let Some(endpoint) = config::tsurugi_endpoint() {
+            Arc::new(TsurugiAdapter::new(endpoint))
+        } else {
+            Arc::new(NoopPhoneLookup::new())
+        }
+    } else {
+        Arc::new(NoopPhoneLookup::new())
+    };
     let ingest_port = Arc::new(http::ingest::HttpIngestPort::new(
         config::timeouts().ingest_http,
     ));
@@ -141,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
                                 call_id.clone(),
                                 session_out_tx.clone(),
                                 ai_port.clone(),
+                                phone_lookup.clone(),
                             );
                             let sess_tx = spawn_session(
                                 call_id.clone(),

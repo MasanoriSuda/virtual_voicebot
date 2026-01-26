@@ -23,6 +23,7 @@ rand = "0.8"
 rustls = "0.21"
 rustls-pemfile = "1"
 tokio-rustls = "0.24"
+tsubakuro-rust-core = "0.7.0"
 
 [dev-dependencies]
 tempfile = "3"

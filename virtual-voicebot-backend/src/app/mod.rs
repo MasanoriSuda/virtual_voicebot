@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
+use crate::config;
+use crate::db::port::PhoneLookupPort;
 use crate::ports::ai::{AiSerPort, AsrChunk, ChatMessage, Role, SerInputPcm};
 use crate::session::SessionOut;
 
@@ -39,7 +41,10 @@ const SPEC_FILTER_KEYWORDS: [&str; 21] = [
 
 #[derive(Debug)]
 pub enum AppEvent {
-    CallStarted { call_id: String },
+    CallStarted {
+        call_id: String,
+        caller: Option<String>,
+    },
     AudioBuffered {
         call_id: String,
         pcm_mulaw: Vec<u8>,
@@ -54,9 +59,10 @@ pub fn spawn_app_worker(
     call_id: String,
     session_out_tx: UnboundedSender<(String, SessionOut)>,
     ai_port: Arc<dyn AiSerPort>,
+    phone_lookup: Arc<dyn PhoneLookupPort>,
 ) -> UnboundedSender<AppEvent> {
     let (tx, rx) = unbounded_channel();
-    let worker = AppWorker::new(call_id, session_out_tx, rx, ai_port);
+    let worker = AppWorker::new(call_id, session_out_tx, rx, ai_port, phone_lookup);
     tokio::spawn(async move { worker.run().await });
     tx
 }
@@ -68,6 +74,7 @@ struct AppWorker {
     active: bool,
     history: Vec<ChatMessage>,
     ai_port: Arc<dyn AiSerPort>,
+    phone_lookup: Arc<dyn PhoneLookupPort>,
 }
 
 impl AppWorker {
@@ -76,6 +83,7 @@ impl AppWorker {
         session_out_tx: UnboundedSender<(String, SessionOut)>,
         rx: UnboundedReceiver<AppEvent>,
         ai_port: Arc<dyn AiSerPort>,
+        phone_lookup: Arc<dyn PhoneLookupPort>,
     ) -> Self {
         Self {
             call_id,
@@ -84,13 +92,14 @@ impl AppWorker {
             active: false,
             history: Vec::new(),
             ai_port,
+            phone_lookup,
         }
     }
 
     async fn run(mut self) {
         while let Some(ev) = self.rx.recv().await {
             match ev {
-                AppEvent::CallStarted { call_id } => {
+                AppEvent::CallStarted { call_id, caller } => {
                     if call_id != self.call_id {
                         log::warn!(
                             "[app {}] CallStarted received for mismatched call_id={}",
@@ -99,6 +108,15 @@ impl AppWorker {
                         );
                     }
                     self.active = true;
+                    let caller_display = caller
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty());
+                    if let Some(value) = caller_display {
+                        log::info!("[app {}] caller extracted={}", self.call_id, value);
+                    } else {
+                        log::info!("[app {}] caller missing", self.call_id);
+                    }
+                    self.handle_phone_lookup(caller).await;
                 }
                 AppEvent::AudioBuffered {
                     call_id,
@@ -257,6 +275,42 @@ impl AppWorker {
             }
         }
         Ok(())
+    }
+
+    async fn handle_phone_lookup(&mut self, caller: Option<String>) {
+        if !config::phone_lookup_enabled() {
+            log::info!("[app {}] phone lookup disabled", self.call_id);
+            return;
+        }
+        let Some(caller) = caller.filter(|v| !v.trim().is_empty()) else {
+            log::info!("[app {}] caller missing, skip lookup", self.call_id);
+            return;
+        };
+        match self.phone_lookup.lookup_phone(caller.clone()).await {
+            Ok(Some(result)) => {
+                log::info!(
+                    "[app {}] phone lookup found caller={} ivr_enabled={}",
+                    self.call_id,
+                    caller,
+                    result.ivr_enabled
+                );
+            }
+            Ok(None) => {
+                log::info!(
+                    "[app {}] phone lookup not found caller={} (default ivr enabled)",
+                    self.call_id,
+                    caller
+                );
+            }
+            Err(err) => {
+                log::warn!(
+                    "[app {}] phone lookup failed caller={}: {}",
+                    self.call_id,
+                    caller,
+                    err
+                );
+            }
+        }
     }
 
     // build_prompt はロール分離に伴い廃止

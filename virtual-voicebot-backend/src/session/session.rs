@@ -337,8 +337,10 @@ impl Session {
 
                             self.align_rtp_clock();
 
+                            let caller = extract_user_from_to(self.from_uri.as_str());
                             let _ = self.app_tx.send(AppEvent::CallStarted {
                                 call_id: self.call_id.clone(),
+                                caller,
                             });
 
                             if !self.outbound_mode {

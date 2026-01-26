@@ -294,6 +294,40 @@ pub fn outbound_config() -> &'static OutboundConfig {
 }
 
 #[derive(Clone, Debug)]
+pub struct PhoneLookupConfig {
+    pub enabled: bool,
+    pub tsurugi_endpoint: Option<String>,
+}
+
+impl PhoneLookupConfig {
+    fn from_env() -> Self {
+        let enabled = env_bool("PHONE_LOOKUP_ENABLED", false);
+        let tsurugi_endpoint = env_non_empty("TSURUGI_ENDPOINT");
+        if enabled && tsurugi_endpoint.is_none() {
+            log::warn!("[config] PHONE_LOOKUP_ENABLED is true but TSURUGI_ENDPOINT is missing");
+        }
+        Self {
+            enabled,
+            tsurugi_endpoint,
+        }
+    }
+}
+
+static PHONE_LOOKUP_CONFIG: OnceLock<PhoneLookupConfig> = OnceLock::new();
+
+pub fn phone_lookup_config() -> &'static PhoneLookupConfig {
+    PHONE_LOOKUP_CONFIG.get_or_init(PhoneLookupConfig::from_env)
+}
+
+pub fn phone_lookup_enabled() -> bool {
+    phone_lookup_config().enabled
+}
+
+pub fn tsurugi_endpoint() -> Option<String> {
+    phone_lookup_config().tsurugi_endpoint.clone()
+}
+
+#[derive(Clone, Debug)]
 pub struct Timeouts {
     pub ai_http: Duration,
     pub ingest_http: Duration,
