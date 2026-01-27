@@ -9,15 +9,16 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-use crate::app::router::{parse_intent_json, RouteAction, Router};
+use crate::app::router::{
+    parse_intent_json, router_config, system_info_response, RouteAction, Router,
+};
 use crate::config;
 use crate::db::port::PhoneLookupPort;
-use crate::ports::ai::{AiSerPort, AsrChunk, ChatMessage, Role, SerInputPcm};
+use crate::ports::ai::{AiSerPort, AsrChunk, ChatMessage, Role, SerInputPcm, WeatherQuery};
 use crate::session::SessionOut;
 
 const SORRY_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sorry.wav");
-const SPEC_FILTER_RESPONSE: &str = "それは無理です、管理者に報告します。";
 const SPEC_FILTER_KEYWORDS: [&str; 21] = [
     "仕様",
     "内部",
@@ -228,7 +229,7 @@ impl AppWorker {
                 call_id,
                 trimmed
             );
-            let answer_text = SPEC_FILTER_RESPONSE.to_string();
+            let answer_text = system_info_response();
             match self.ai_port.synth_to_wav(answer_text, None).await {
                 Ok(bot_wav) => {
                     let _ = self.session_out_tx.send((
@@ -259,6 +260,7 @@ impl AppWorker {
 
         let (answer_text, user_query) = match self.router.route(intent_result) {
             RouteAction::FixedResponse(text) => (text, trimmed.to_string()),
+            RouteAction::SystemInfo => (system_info_response(), trimmed.to_string()),
             RouteAction::GeneralChat { query } => {
                 let mut messages = Vec::with_capacity(self.history.len() + 1);
                 messages.extend(self.history.iter().cloned());
@@ -272,6 +274,21 @@ impl AppWorker {
                     Err(e) => {
                         log::warn!("[app {call_id}] LLM failed: {e:?}");
                         "すみません、うまく答えを用意できませんでした。".to_string()
+                    }
+                };
+                (answer_text, query)
+            }
+            RouteAction::Weather {
+                query,
+                location,
+                date,
+            } => {
+                let req = WeatherQuery { location, date };
+                let answer_text = match self.ai_port.handle_weather(req).await {
+                    Ok(text) => text,
+                    Err(err) => {
+                        log::warn!("[app {call_id}] weather failed: {err:?}");
+                        router_config().weather_error_response.clone()
                     }
                 };
                 (answer_text, query)

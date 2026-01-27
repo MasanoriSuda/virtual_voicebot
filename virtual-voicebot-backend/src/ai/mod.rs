@@ -20,7 +20,9 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_transcribe as transcribe;
 
 use crate::config;
-use crate::ports::ai::{AiFuture, AiPort, AsrChunk, ChatMessage, Role, SerInputPcm, SerOutcome, SerPort};
+use crate::ports::ai::{
+    AiFuture, AiPort, AsrChunk, ChatMessage, Role, SerInputPcm, SerOutcome, SerPort, WeatherQuery,
+};
 
 #[derive(Serialize)]
 struct OllamaChatRequest {
@@ -77,6 +79,7 @@ pub mod intent;
 pub mod llm;
 pub mod ser;
 pub mod tts;
+pub mod weather;
 
 fn http_client(timeout: Duration) -> Result<Client> {
     Ok(Client::builder().timeout(timeout).build()?)
@@ -260,6 +263,10 @@ impl AiPort for DefaultAiPort {
 
     fn generate_answer(&self, messages: Vec<ChatMessage>) -> AiFuture<Result<String>> {
         Box::pin(async move { llm::generate_answer(messages).await })
+    }
+
+    fn handle_weather(&self, query: WeatherQuery) -> AiFuture<Result<String>> {
+        Box::pin(async move { weather::handle_weather(query).await })
     }
 
     fn synth_to_wav(&self, text: String, path: Option<String>) -> AiFuture<Result<String>> {

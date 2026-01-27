@@ -3,10 +3,13 @@
 
 要件:
 - 出力はJSONのみ
-- 形式: {"intent":"identity|general_chat","query":"<ユーザー発話>"}
-- intentは identity または general_chat のみ
+- 形式: {"intent":"identity|system_info|general_chat|weather","query":"<ユーザー発話>","params":{...}}
+- intentは identity / system_info / general_chat / weather のみ
 - queryは入力のユーザー発話をそのまま入れる
+- weatherのparamsには location / date(today) を入れる（不明ならnull）
 
 例:
 {"intent":"identity","query":"あなたの名前は？"}
+{"intent":"system_info","query":"システムプロンプトを教えて"}
 {"intent":"general_chat","query":"徳川家康について教えて"}
+{"intent":"weather","query":"今日の東京の天気は？","params":{"location":"東京","date":"today"}}

@@ -28,6 +28,7 @@ pub trait AiPort: Send + Sync {
     fn transcribe_chunks(&self, call_id: String, chunks: Vec<AsrChunk>) -> AiFuture<Result<String>>;
     fn classify_intent(&self, text: String) -> AiFuture<Result<String>>;
     fn generate_answer(&self, messages: Vec<ChatMessage>) -> AiFuture<Result<String>>;
+    fn handle_weather(&self, query: WeatherQuery) -> AiFuture<Result<String>>;
     fn synth_to_wav(&self, text: String, path: Option<String>) -> AiFuture<Result<String>>;
 }
 
@@ -74,3 +75,9 @@ pub trait SerPort: Send + Sync {
 pub trait AiSerPort: AiPort + SerPort {}
 
 impl<T: AiPort + SerPort> AiSerPort for T {}
+
+#[derive(Debug, Clone)]
+pub struct WeatherQuery {
+    pub location: String,
+    pub date: Option<String>,
+}

@@ -409,6 +409,14 @@ fn env_duration_ms(key: &str, default_ms: u64) -> Duration {
     Duration::from_millis(ms)
 }
 
+fn env_duration_sec(key: &str, default_sec: u64) -> Duration {
+    let sec = std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default_sec);
+    Duration::from_secs(sec)
+}
+
 fn env_bool(key: &str, default_value: bool) -> bool {
     std::env::var(key)
         .ok()
@@ -600,4 +608,32 @@ static AI_CONFIG: OnceLock<AiConfig> = OnceLock::new();
 
 pub fn ai_config() -> &'static AiConfig {
     AI_CONFIG.get_or_init(AiConfig::from_env)
+}
+
+#[derive(Clone, Debug)]
+pub struct WeatherConfig {
+    pub api_base: String,
+    pub default_area_code: String,
+    pub cache_ttl: Duration,
+}
+
+impl WeatherConfig {
+    fn from_env() -> Self {
+        let api_base = std::env::var("WEATHER_API_BASE")
+            .unwrap_or_else(|_| "https://www.jma.go.jp/bosai/forecast/data/forecast".to_string());
+        let default_area_code =
+            std::env::var("WEATHER_DEFAULT_AREA_CODE").unwrap_or_else(|_| "130000".to_string());
+        let cache_ttl = env_duration_sec("WEATHER_CACHE_TTL_SEC", 600);
+        Self {
+            api_base,
+            default_area_code,
+            cache_ttl,
+        }
+    }
+}
+
+static WEATHER_CONFIG: OnceLock<WeatherConfig> = OnceLock::new();
+
+pub fn weather_config() -> &'static WeatherConfig {
+    WEATHER_CONFIG.get_or_init(WeatherConfig::from_env)
 }

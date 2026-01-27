@@ -1,1 +1,5 @@
 identity_response: "私はずんだもんです"
+weather_default_location: "東京"
+weather_error_response: "天気情報を取得できませんでした。"
+system_info:
+  default: "それは無理なのだ、管理者に連絡するのだ"

@@ -6,6 +6,8 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
     Identity,
+    SystemInfo,
+    Weather,
     GeneralChat,
 }
 
@@ -14,23 +16,54 @@ pub struct IntentResult {
     pub intent: Intent,
     pub query: String,
     pub raw_intent: String,
+    pub location: Option<String>,
+    pub date: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum RouteAction {
     FixedResponse(String),
     GeneralChat { query: String },
+    Weather {
+        query: String,
+        location: String,
+        date: Option<String>,
+    },
+    SystemInfo,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct RouterConfig {
     pub identity_response: String,
+    pub weather_default_location: String,
+    pub weather_error_response: String,
+    pub system_info: Option<SystemInfoConfig>,
+    pub system_info_response: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SystemInfoConfig {
+    pub default: String,
 }
 
 impl Default for RouterConfig {
     fn default() -> Self {
         Self {
             identity_response: "私はずんだもんです".to_string(),
+            weather_default_location: "東京".to_string(),
+            weather_error_response: "天気情報を取得できませんでした。".to_string(),
+            system_info: Some(SystemInfoConfig::default()),
+            system_info_response: None,
+        }
+    }
+}
+
+impl Default for SystemInfoConfig {
+    fn default() -> Self {
+        Self {
+            default: "それは無理なのだ、管理者に連絡するのだ".to_string(),
         }
     }
 }
@@ -39,6 +72,16 @@ static ROUTER_CONFIG: OnceLock<RouterConfig> = OnceLock::new();
 
 pub fn router_config() -> &'static RouterConfig {
     ROUTER_CONFIG.get_or_init(load_router_config)
+}
+
+pub fn system_info_response() -> String {
+    if let Some(cfg) = &router_config().system_info {
+        return cfg.default.clone();
+    }
+    router_config()
+        .system_info_response
+        .clone()
+        .unwrap_or_else(|| SystemInfoConfig::default().default)
 }
 
 fn load_router_config() -> RouterConfig {
@@ -79,14 +122,27 @@ pub fn parse_intent_json(raw: &str, fallback_query: &str) -> IntentResult {
         intent: String,
         #[serde(default)]
         query: Option<String>,
+        #[serde(default)]
+        params: Option<IntentParams>,
+    }
+
+    #[derive(Deserialize)]
+    struct IntentParams {
+        #[serde(default)]
+        location: Option<String>,
+        #[serde(default)]
+        date: Option<String>,
     }
 
     let trimmed = raw.trim();
-    let parsed = serde_json::from_str::<IntentPayload>(trimmed);
+    let sanitized = sanitize_json_block(trimmed);
+    let parsed = serde_json::from_str::<IntentPayload>(sanitized.as_str());
     match parsed {
         Ok(payload) => {
             let intent = match payload.intent.to_ascii_lowercase().as_str() {
                 "identity" => Intent::Identity,
+                "system_info" => Intent::SystemInfo,
+                "weather" => Intent::Weather,
                 "general_chat" => Intent::GeneralChat,
                 _ => Intent::GeneralChat,
             };
@@ -94,18 +150,46 @@ pub fn parse_intent_json(raw: &str, fallback_query: &str) -> IntentResult {
                 .query
                 .filter(|q| !q.trim().is_empty())
                 .unwrap_or_else(|| fallback_query.to_string());
+            let location = payload
+                .params
+                .as_ref()
+                .and_then(|p| p.location.clone())
+                .filter(|v| !v.trim().is_empty());
+            let date = payload
+                .params
+                .as_ref()
+                .and_then(|p| p.date.clone())
+                .filter(|v| !v.trim().is_empty());
             IntentResult {
                 intent,
                 query,
                 raw_intent: payload.intent,
+                location,
+                date,
             }
         }
         Err(_) => IntentResult {
             intent: Intent::GeneralChat,
             query: fallback_query.to_string(),
             raw_intent: "general_chat".to_string(),
+            location: None,
+            date: None,
         },
     }
+}
+
+fn sanitize_json_block(input: &str) -> String {
+    let mut s = input.trim().to_string();
+    if let Some(stripped) = s.strip_prefix("```") {
+        s = stripped.trim().to_string();
+        if let Some(rest) = s.strip_prefix("json") {
+            s = rest.trim().to_string();
+        }
+        if let Some(end) = s.rfind("```") {
+            s = s[..end].trim().to_string();
+        }
+    }
+    s
 }
 
 pub struct Router {
@@ -125,6 +209,15 @@ impl Router {
             Intent::GeneralChat => RouteAction::GeneralChat {
                 query: result.query,
             },
+            Intent::Weather => RouteAction::Weather {
+                query: result.query,
+                location: result
+                    .location
+                    .unwrap_or_else(|| self.cfg.weather_default_location.clone()),
+                date: result.date,
+            },
+            Intent::SystemInfo => RouteAction::SystemInfo,
         }
     }
+
 }
