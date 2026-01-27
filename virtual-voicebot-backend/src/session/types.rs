@@ -129,6 +129,10 @@ pub enum SessionIn {
     },
     /// app からの終了指示
     AppHangup,
+    /// app からの転送指示
+    AppTransferRequest {
+        person: String,
+    },
     /// Session Timer (keepalive 含む) の失効
     SessionTimerFired,
     /// Session-Expires の更新時刻（refresher=uas 用）
@@ -190,6 +194,10 @@ pub enum SessionOut {
     },
     /// app からの切断指示
     AppRequestHangup,
+    /// app からの転送指示
+    AppRequestTransfer {
+        person: String,
+    },
     Metrics {
         name: &'static str,
         value: i64,

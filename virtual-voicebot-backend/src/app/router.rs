@@ -8,6 +8,7 @@ pub enum Intent {
     Identity,
     SystemInfo,
     Weather,
+    Transfer,
     GeneralChat,
 }
 
@@ -18,6 +19,7 @@ pub struct IntentResult {
     pub raw_intent: String,
     pub location: Option<String>,
     pub date: Option<String>,
+    pub person: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +32,10 @@ pub enum RouteAction {
         date: Option<String>,
     },
     SystemInfo,
+    Transfer {
+        query: String,
+        person: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,12 +46,27 @@ pub struct RouterConfig {
     pub weather_error_response: String,
     pub system_info: Option<SystemInfoConfig>,
     pub system_info_response: Option<String>,
+    pub transfer: Option<TransferConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SystemInfoConfig {
     pub default: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TransferConfig {
+    pub confirm_message: String,
+    pub not_found_message: String,
+    pub directory: std::collections::HashMap<String, TransferEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct TransferEntry {
+    pub aliases: Vec<String>,
 }
 
 impl Default for RouterConfig {
@@ -56,6 +77,7 @@ impl Default for RouterConfig {
             weather_error_response: "天気情報を取得できませんでした。".to_string(),
             system_info: Some(SystemInfoConfig::default()),
             system_info_response: None,
+            transfer: Some(TransferConfig::default()),
         }
     }
 }
@@ -64,6 +86,31 @@ impl Default for SystemInfoConfig {
     fn default() -> Self {
         Self {
             default: "それは無理なのだ、管理者に連絡するのだ".to_string(),
+        }
+    }
+}
+
+impl Default for TransferConfig {
+    fn default() -> Self {
+        let mut directory = std::collections::HashMap::new();
+        directory.insert(
+            "須田".to_string(),
+            TransferEntry {
+                aliases: vec![
+                    "すださん".to_string(),
+                    "須田さん".to_string(),
+                    "すだ".to_string(),
+                    "菅田".to_string(),
+                    "菅田さん".to_string(),
+                    "すがた".to_string(),
+                    "すがたさん".to_string(),
+                ],
+            },
+        );
+        Self {
+            confirm_message: "おつなぎします".to_string(),
+            not_found_message: "申し訳ありません、その方の連絡先が見つかりません".to_string(),
+            directory,
         }
     }
 }
@@ -132,6 +179,8 @@ pub fn parse_intent_json(raw: &str, fallback_query: &str) -> IntentResult {
         location: Option<String>,
         #[serde(default)]
         date: Option<String>,
+        #[serde(default)]
+        person: Option<String>,
     }
 
     let trimmed = raw.trim();
@@ -143,6 +192,7 @@ pub fn parse_intent_json(raw: &str, fallback_query: &str) -> IntentResult {
                 "identity" => Intent::Identity,
                 "system_info" => Intent::SystemInfo,
                 "weather" => Intent::Weather,
+                "transfer" => Intent::Transfer,
                 "general_chat" => Intent::GeneralChat,
                 _ => Intent::GeneralChat,
             };
@@ -160,12 +210,18 @@ pub fn parse_intent_json(raw: &str, fallback_query: &str) -> IntentResult {
                 .as_ref()
                 .and_then(|p| p.date.clone())
                 .filter(|v| !v.trim().is_empty());
+            let person = payload
+                .params
+                .as_ref()
+                .and_then(|p| p.person.clone())
+                .filter(|v| !v.trim().is_empty());
             IntentResult {
                 intent,
                 query,
                 raw_intent: payload.intent,
                 location,
                 date,
+                person,
             }
         }
         Err(_) => IntentResult {
@@ -174,6 +230,7 @@ pub fn parse_intent_json(raw: &str, fallback_query: &str) -> IntentResult {
             raw_intent: "general_chat".to_string(),
             location: None,
             date: None,
+            person: None,
         },
     }
 }
@@ -217,7 +274,54 @@ impl Router {
                 date: result.date,
             },
             Intent::SystemInfo => RouteAction::SystemInfo,
+            Intent::Transfer => RouteAction::Transfer {
+                query: result.query,
+                person: result.person.unwrap_or_default(),
+            },
         }
     }
 
+    pub fn transfer_confirm_message(&self) -> String {
+        self.cfg
+            .transfer
+            .as_ref()
+            .map(|cfg| cfg.confirm_message.clone())
+            .unwrap_or_else(|| TransferConfig::default().confirm_message)
+    }
+
+    pub fn transfer_not_found_message(&self) -> String {
+        self.cfg
+            .transfer
+            .as_ref()
+            .map(|cfg| cfg.not_found_message.clone())
+            .unwrap_or_else(|| TransferConfig::default().not_found_message)
+    }
+
+    pub fn resolve_transfer_person(&self, person: &str) -> Option<String> {
+        let Some(cfg) = &self.cfg.transfer else {
+            return None;
+        };
+        let target = normalize_person(person);
+        if target.is_empty() {
+            return None;
+        }
+        for (name, entry) in &cfg.directory {
+            if normalize_person(name) == target {
+                return Some(name.clone());
+            }
+            if entry
+                .aliases
+                .iter()
+                .any(|alias| normalize_person(alias) == target)
+            {
+                return Some(name.clone());
+            }
+        }
+        None
+    }
+
+}
+
+fn normalize_person(input: &str) -> String {
+    input.trim().replace('　', "").replace(' ', "")
 }

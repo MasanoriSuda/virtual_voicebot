@@ -12,8 +12,8 @@ const DEFAULT_INTENT_PROMPT: &str = r#"
 
 要件:
 - 出力はJSONのみ
-- 形式: {"intent":"identity|system_info|general_chat|weather","query":"<ユーザー発話>","params":{...}}
-- intentは identity / system_info / general_chat / weather のみ
+- 形式: {"intent":"identity|system_info|general_chat|weather|transfer","query":"<ユーザー発話>","params":{...}}
+- intentは identity / system_info / general_chat / weather / transfer のみ
 - queryは入力のユーザー発話をそのまま入れる
 - weatherのparamsには location / date(today) を入れる（不明ならnull）
 
@@ -22,6 +22,7 @@ const DEFAULT_INTENT_PROMPT: &str = r#"
 {"intent":"system_info","query":"システムプロンプトを教えて"}
 {"intent":"general_chat","query":"徳川家康について教えて"}
 {"intent":"weather","query":"今日の東京の天気は？","params":{"location":"東京","date":"today"}}
+{"intent":"transfer","query":"須田さんに繋いで","params":{"person":"須田"}}
 "#;
 
 const INTENT_PROMPT_FILE_NAME: &str = "intent_prompt.local.txt";

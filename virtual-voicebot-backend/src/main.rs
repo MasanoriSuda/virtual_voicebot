@@ -259,6 +259,11 @@ async fn main() -> anyhow::Result<()> {
                             let _ = sess_tx.send(SessionIn::AppHangup);
                         }
                     }
+                    SessionOut::AppRequestTransfer { person } => {
+                        if let Some(sess_tx) = session_registry.get(&call_id) {
+                            let _ = sess_tx.send(SessionIn::AppTransferRequest { person });
+                        }
+                    }
                     SessionOut::Metrics { name, value } => {
                         if name == "rtp_in" {
                             log::debug!(

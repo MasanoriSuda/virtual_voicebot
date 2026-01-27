@@ -3,3 +3,16 @@ weather_default_location: "東京"
 weather_error_response: "天気情報を取得できませんでした。"
 system_info:
   default: "それは無理なのだ、管理者に連絡するのだ"
+transfer:
+  confirm_message: "おつなぎします"
+  not_found_message: "申し訳ありません、その方の連絡先が見つかりません"
+  directory:
+    須田:
+      aliases:
+        - "すださん"
+        - "須田さん"
+        - "すだ"
+        - "菅田"
+        - "菅田さん"
+        - "すがた"
+        - "すがたさん"

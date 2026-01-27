@@ -780,6 +780,26 @@ impl Session {
                                 call_id: self.call_id.clone(),
                             });
                         }
+                        (_, SessionIn::AppTransferRequest { person }) => {
+                            if self.transfer_cancel.is_some() || self.b_leg.is_some() {
+                                warn!(
+                                    "[session {}] transfer already active (person={})",
+                                    self.call_id, person
+                                );
+                                continue;
+                            }
+                            info!(
+                                "[session {}] transfer requested by app (person={})",
+                                self.call_id, person
+                            );
+                            self.cancel_playback();
+                            self.stop_ivr_timeout();
+                            self.ivr_state = IvrState::Transferring;
+                            self.transfer_cancel = Some(b2bua::spawn_transfer(
+                                self.call_id.clone(),
+                                self.tx_in.clone(),
+                            ));
+                        }
                         (_, SessionIn::SipSessionExpires { timer }) => {
                             self.update_session_expires(timer);
                         }

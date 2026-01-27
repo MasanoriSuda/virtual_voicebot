@@ -4994,3 +4994,129 @@ system_info:
 - 実装はCodex担当へ引き継いでください
 - 本PLAN（#56）はConfirmed状態です
 - `identity`（#53）と同じ固定応答パターンのため、実装コストは低い
+
+---
+
+# Step-XX: 通話転送 intent 追加 (Issue #57)
+
+| 項目 | 値 |
+|------|-----|
+| **Issue** | [#57](https://github.com/MasanoriSuda/virtual_voicebot/issues/57) |
+| **依存** | → Issue #53（Router基盤が前提） |
+| **Status** | Confirmed |
+| **Last Updated** | 2026-01-28 |
+
+---
+
+## 概要
+
+ユーザーが「須田さんに繋いで」等と発話した際、既存のDTMF 3相当の転送処理（B2BUA `spawn_transfer()`）を呼び出す。
+#53 で導入するRouter基盤に `transfer` intentを追加する。
+
+新しいSIP実装は不要。既存のB2BUA転送機構をRouter経由でトリガーする。
+
+---
+
+## 現行の転送機構（既存実装）
+
+現在、DTMF 3を検知すると以下の処理が実行される：
+
+```
+DTMF 3 検知 → spawn_transfer()
+  → TTS「転送します」→ RTP
+  → 環境変数で指定した転送先にINVITE送信（B2BUA）
+  → 200 OK + ACK → RTPブリッジ（A-leg ↔ B-leg）
+```
+
+関連ファイル：
+- `src/session/b2bua.rs` — `spawn_transfer()`, `run_transfer()`
+- `src/sip/b2bua_bridge.rs` — B2BUAブリッジ
+- `src/config.rs` — 転送先URI（環境変数）
+
+---
+
+## #57 で追加する処理フロー
+
+```
+ASR →「須田さんに繋いでください」
+  → LLM(intent分類) → {"intent": "transfer", "params": {"person": "須田"}}
+  → Router → transfer handler
+    → 名前マッピングテーブルから転送先を解決
+    → 既存の spawn_transfer() を呼び出し（DTMF 3 と同じコードパス）
+    → TTS →「おつなぎします」→ RTP
+    → B2BUA転送実行
+```
+
+```
+ASR →「田中さんお願いします」
+  → LLM(intent分類) → {"intent": "transfer", "params": {"person": "田中"}}
+  → Router → transfer handler
+    → 名前マッピングテーブルに該当なし
+    → TTS →「申し訳ありません、その方の連絡先が見つかりません」→ RTP
+```
+
+---
+
+## 転送先マッピング
+
+設定ファイル（YAML）で管理（#53 の決定事項に準拠）：
+
+```yaml
+transfer:
+  confirm_message: "おつなぎします"
+  not_found_message: "申し訳ありません、その方の連絡先が見つかりません"
+  directory:
+    須田:
+      aliases: ["すださん", "須田さん", "すだ", "菅田さん", "菅田", "すがたさん", "すがた"]
+      # 転送先は環境変数 TRANSFER_TARGET で指定済みのポートを使用
+```
+
+暫定対応として「須田さん」のみ対応。転送先ポートは既存の環境変数で指定する。
+
+---
+
+## Intent分類の拡張
+
+#53 のintent分類プロンプトに `transfer` を追加：
+
+```json
+{"intent": "transfer", "query": "須田さんに繋いで", "params": {"person": "須田"}}
+{"intent": "transfer", "query": "すださんお願いします", "params": {"person": "須田"}}
+```
+
+---
+
+## 受入条件（Acceptance Criteria）
+
+1. 「須田さんに繋いで」「すださんお願い」等の発話で、既存のDTMF 3相当の転送処理が実行されること
+2. 転送前にTTSで案内を返すこと
+3. マッピングテーブルに存在しない名前の場合、エラーメッセージを返すこと
+4. 転送先の名前表記揺れ（「すださん」「須田さん」「すだ」）に対応すること
+5. 転送先は既存の環境変数で指定したポートに転送されること
+
+---
+
+## 決定事項（Resolved Questions）
+
+| # | 質問 | 決定 |
+|---|------|------|
+| 1 | 転送失敗時の挙動は？ | 既存DTMF 3転送と同じ（`TRANSFER_FAIL_WAV_PATH` 再生） |
+| 2 | 将来の複数人対応は？ | 人物ごとに内線宛先を変える構想あり。要件を聞いて内線の宛先を振り分けたい。将来チケットで対応 |
+
+---
+
+## リスク
+
+| リスク | 影響 | 緩和策 |
+|--------|------|--------|
+| LLMが人名を正確にパースできない | 転送先の名前解決に失敗 | aliasesで表記揺れを吸収 |
+| 転送先不在 | ユーザーが放置される | 既存の転送失敗時WAV再生（`TRANSFER_FAIL_WAV_PATH`）で案内 |
+
+---
+
+## 備考
+
+- 実装はCodex担当へ引き継いでください
+- 本PLAN（#57）はConfirmed状態です
+- 新しいSIP実装は不要。既存の `spawn_transfer()` を再利用する
+- 暫定対応として「須田さん」のみ。人物追加はYAMLへの追記で可能

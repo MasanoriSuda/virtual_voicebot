@@ -293,6 +293,45 @@ impl AppWorker {
                 };
                 (answer_text, query)
             }
+            RouteAction::Transfer { query: _, person } => {
+                let target = self.router.resolve_transfer_person(person.as_str());
+                if let Some(resolved) = target {
+                    let confirm_message = self.router.transfer_confirm_message();
+                    match self
+                        .ai_port
+                        .synth_to_wav(confirm_message.clone(), None)
+                        .await
+                    {
+                        Ok(bot_wav) => {
+                            let _ = self.session_out_tx.send((
+                                self.call_id.clone(),
+                                SessionOut::AppSendBotAudioFile { path: bot_wav },
+                            ));
+                        }
+                        Err(e) => {
+                            log::warn!("[app {call_id}] transfer TTS failed: {e:?}");
+                        }
+                    }
+                    let _ = self.session_out_tx.send((
+                        self.call_id.clone(),
+                        SessionOut::AppRequestTransfer { person: resolved },
+                    ));
+                } else {
+                    let not_found = self.router.transfer_not_found_message();
+                    match self.ai_port.synth_to_wav(not_found.clone(), None).await {
+                        Ok(bot_wav) => {
+                            let _ = self.session_out_tx.send((
+                                self.call_id.clone(),
+                                SessionOut::AppSendBotAudioFile { path: bot_wav },
+                            ));
+                        }
+                        Err(e) => {
+                            log::warn!("[app {call_id}] transfer not-found TTS failed: {e:?}");
+                        }
+                    }
+                }
+                return Ok(());
+            }
         };
 
         // 履歴に追加
