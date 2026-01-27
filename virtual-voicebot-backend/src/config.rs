@@ -567,6 +567,8 @@ pub fn logging_config() -> &'static LoggingConfig {
 pub struct AiConfig {
     pub gemini_api_key: Option<String>,
     pub gemini_model: String,
+    pub ollama_model: String,
+    pub ollama_intent_model: String,
     pub use_aws_transcribe: bool,
     pub aws_transcribe_bucket: Option<String>,
     pub aws_transcribe_prefix: String,
@@ -575,10 +577,16 @@ pub struct AiConfig {
 
 impl AiConfig {
     fn from_env() -> Self {
+        let ollama_model =
+            std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma3:4b".to_string());
+        let ollama_intent_model = std::env::var("OLLAMA_INTENT_MODEL")
+            .unwrap_or_else(|_| ollama_model.clone());
         Self {
             gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
             gemini_model: std::env::var("GEMINI_MODEL")
                 .unwrap_or_else(|_| "gemini-2.5-flash-lite".to_string()),
+            ollama_model,
+            ollama_intent_model,
             use_aws_transcribe: env_bool("USE_AWS_TRANSCRIBE", false),
             aws_transcribe_bucket: std::env::var("AWS_TRANSCRIBE_BUCKET").ok(),
             aws_transcribe_prefix: std::env::var("AWS_TRANSCRIBE_PREFIX")

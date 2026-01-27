@@ -3,10 +3,13 @@
 //! ai ポートを呼び出してボット音声(WAV)のパスを session に返す。
 //! transport/sip/rtp には依存せず、SessionOut 経由のイベントのみを返す。
 
+mod router;
+
 use std::sync::Arc;
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
+use crate::app::router::{parse_intent_json, RouteAction, Router};
 use crate::config;
 use crate::db::port::PhoneLookupPort;
 use crate::ports::ai::{AiSerPort, AsrChunk, ChatMessage, Role, SerInputPcm};
@@ -75,6 +78,7 @@ struct AppWorker {
     history: Vec<ChatMessage>,
     ai_port: Arc<dyn AiSerPort>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
+    router: Router,
 }
 
 impl AppWorker {
@@ -93,6 +97,7 @@ impl AppWorker {
             history: Vec::new(),
             ai_port,
             phone_lookup,
+            router: Router::new(),
         }
     }
 
@@ -238,25 +243,45 @@ impl AppWorker {
             return Ok(());
         }
 
-        let mut messages = Vec::with_capacity(self.history.len() + 1);
-        messages.extend(self.history.iter().cloned());
-        messages.push(ChatMessage {
-            role: Role::User,
-            content: trimmed.to_string(),
-        });
+        let intent_json = match self.ai_port.classify_intent(trimmed.to_string()).await {
+            Ok(raw) => raw,
+            Err(err) => {
+                log::warn!("[app {call_id}] intent classify failed: {err:?}");
+                "{\"intent\":\"general_chat\",\"query\":\"\"}".to_string()
+            }
+        };
+        let intent_result = parse_intent_json(&intent_json, trimmed);
+        log::info!(
+            "[app {call_id}] intent classified={} raw={}",
+            intent_result.raw_intent,
+            intent_json
+        );
 
-        let answer_text = match self.ai_port.generate_answer(messages).await {
-            Ok(ans) => ans,
-            Err(e) => {
-                log::warn!("[app {call_id}] LLM failed: {e:?}");
-                "すみません、うまく答えを用意できませんでした。".to_string()
+        let (answer_text, user_query) = match self.router.route(intent_result) {
+            RouteAction::FixedResponse(text) => (text, trimmed.to_string()),
+            RouteAction::GeneralChat { query } => {
+                let mut messages = Vec::with_capacity(self.history.len() + 1);
+                messages.extend(self.history.iter().cloned());
+                messages.push(ChatMessage {
+                    role: Role::User,
+                    content: query.clone(),
+                });
+
+                let answer_text = match self.ai_port.generate_answer(messages).await {
+                    Ok(ans) => ans,
+                    Err(e) => {
+                        log::warn!("[app {call_id}] LLM failed: {e:?}");
+                        "すみません、うまく答えを用意できませんでした。".to_string()
+                    }
+                };
+                (answer_text, query)
             }
         };
 
         // 履歴に追加
         self.history.push(ChatMessage {
             role: Role::User,
-            content: trimmed.to_string(),
+            content: user_query,
         });
         self.history.push(ChatMessage {
             role: Role::Assistant,

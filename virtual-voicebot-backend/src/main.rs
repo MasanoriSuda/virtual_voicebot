@@ -30,6 +30,7 @@ use crate::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendReque
 async fn main() -> anyhow::Result<()> {
     logging::init();
     ai::llm::init_system_prompt();
+    ai::intent::init_intent_prompt();
 
     let cfg = config::Config::from_env()?;
     let sip_bind_ip = cfg.sip_bind_ip;

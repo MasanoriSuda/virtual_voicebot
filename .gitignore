@@ -41,3 +41,4 @@ virtual-voicebot-backend/script/.venv/
 
 # Local prompt
 prompt.local.txt
+intent_prompt.local.txt

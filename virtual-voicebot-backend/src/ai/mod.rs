@@ -73,6 +73,7 @@ struct WhisperResponse {
 }
 
 pub mod asr;
+pub mod intent;
 pub mod llm;
 pub mod ser;
 pub mod tts;
@@ -175,13 +176,22 @@ pub async fn handle_user_question_from_whisper_llm_only(
 }
 
 async fn call_ollama(messages: &[ChatMessage]) -> Result<String> {
+    let model = config::ai_config().ollama_model.clone();
+    let system_prompt = llm::system_prompt();
+    call_ollama_with_prompt(messages, &system_prompt, &model).await
+}
+
+pub(crate) async fn call_ollama_with_prompt(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    model: &str,
+) -> Result<String> {
     let client = http_client(config::timeouts().ai_http)?;
 
     let mut ollama_messages = Vec::with_capacity(messages.len() + 1);
-    let system_prompt = llm::system_prompt();
     ollama_messages.push(OllamaMessage {
         role: "system".to_string(),
-        content: system_prompt,
+        content: system_prompt.to_string(),
     });
     for msg in messages {
         let role = match msg.role {
@@ -195,7 +205,7 @@ async fn call_ollama(messages: &[ChatMessage]) -> Result<String> {
     }
 
     let req = OllamaChatRequest {
-        model: "gemma3:27b".to_string(),
+        model: model.to_string(),
         messages: ollama_messages,
         stream: false,
     };
@@ -242,6 +252,10 @@ impl DefaultAiPort {
 impl AiPort for DefaultAiPort {
     fn transcribe_chunks(&self, call_id: String, chunks: Vec<AsrChunk>) -> AiFuture<Result<String>> {
         Box::pin(async move { asr::transcribe_chunks(&call_id, &chunks).await })
+    }
+
+    fn classify_intent(&self, text: String) -> AiFuture<Result<String>> {
+        Box::pin(async move { intent::classify_intent(text).await })
     }
 
     fn generate_answer(&self, messages: Vec<ChatMessage>) -> AiFuture<Result<String>> {

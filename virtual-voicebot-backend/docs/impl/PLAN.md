@@ -4693,3 +4693,123 @@ BYE 応答は即時（合成完了を待たない）
 | 2025-12-27 | 1.2 | UAS 優先に再構成、Deferred Steps 追加、Step 番号を依存順に並び替え |
 | 2025-12-25 | 1.1 | RFC 2833 を P2 に変更、DTMF トーン検出 (Goertzel) を P0 で追加 |
 | 2025-12-25 | 1.0 | 初版作成 |
+
+---
+
+# Step-XX: Intent分類 + Router 基盤導入 (Issue #53)
+
+| 項目 | 値 |
+|------|-----|
+| **Issue** | [#53](https://github.com/MasanoriSuda/virtual_voicebot/issues/53) |
+| **関連Issue** | [#32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32) |
+| **Status** | Confirmed |
+| **Last Updated** | 2026-01-27 |
+
+---
+
+## 背景・課題
+
+現状の構成: `ASR → LLM → TTS`
+
+| 問題 | 原因 |
+|------|------|
+| 「あなたの名前は？」にモデル名(gemma)を答える | LLM(gemma:27b)がSystem Promptを遵守しない |
+| 天気を聞くと25℃等の不正確な情報を返す | LLMが学習時のデータで回答し、リアルタイム情報を取得できない |
+
+System Promptの調整では改善しなかった（gemma:27b で確認済み）。
+
+---
+
+## 方針
+
+**B案: Intent分類 + Routerパターン** を採用する。
+
+```
+ASR → LLM(intent分類/JSON出力) → Router(rule-base) → 処理分岐 → TTS
+```
+
+- LLMにはintent分類のみ担当させ、応答生成とintentに応じた処理を分離する
+- `identity` はルールベース固定応答とし、LLMに応答させない（名前問題の根本回避）
+- Router基盤を作り、後続チケット(#54〜)でintentを追加できる拡張性を持たせる
+
+---
+
+## #53 のスコープ
+
+### 対象intent（2つのみ）
+
+| intent | 処理方式 | 応答例 |
+|--------|----------|--------|
+| `identity` | 固定応答（LLM不使用） | 「私はずんだもんです」 |
+| `general_chat` | LLMで応答生成 | 従来通り |
+
+### 処理フロー
+
+```
+[identity の場合]
+ASR →「あなたの名前は？」
+  → LLM(intent分類) → {"intent": "identity"}
+  → Router → 固定テキスト「私はずんだもんです」
+  → TTS
+
+[general_chat の場合]
+ASR →「徳川家康について教えて」
+  → LLM(intent分類) → {"intent": "general_chat", "query": "徳川家康について教えて"}
+  → Router → LLM(応答生成)
+  → TTS
+```
+
+### Intent分類LLMの出力形式
+
+```json
+{"intent": "identity", "query": "あなたの名前は？"}
+{"intent": "general_chat", "query": "徳川家康について教えて"}
+```
+
+---
+
+## スコープ外（後続チケット #54〜 で対応）
+
+| intent | 処理方式 | 備考 |
+|--------|----------|------|
+| `time` | システム関数（固定） | LLM不要。実装容易 |
+| `weather` | 外部API → LLM要約 | #53の天気問題を解決 |
+| `rag` | RAG検索 → LLM要約 | TBD |
+| `command` | システム制御 | 「終了して」等 |
+| `unknown` | フォールバック応答 | 分類不能時 |
+
+---
+
+## 受入条件（Acceptance Criteria）
+
+1. 「あなたの名前は？」「お名前は？」等の質問に対し、「ずんだもん」と応答すること（gemmaのモデル名を返さないこと）
+2. 「徳川家康について教えて」等の一般質問は従来通りLLMが応答すること
+3. intent分類がJSON形式で返ること
+4. 新しいintentを追加する際、Router部分の拡張のみで対応できる構造であること
+
+---
+
+## 決定事項（Resolved Questions）
+
+| # | 質問 | 決定 |
+|---|------|------|
+| 1 | identity の固定応答テキストはどこで管理するか？ | 設定ファイル（YAML）で管理。コード変更不要で編集可能にする |
+| 2 | intent分類と応答生成で同じモデルを使うか？ | 両方 gemma:4b で開始。品質が悪ければ gemma:27b に切り替える |
+| 3 | intent分類のプロンプトテンプレートの管理場所 | 外部テンプレートファイルで管理。プロンプト調整時にコード変更不要にする |
+
+---
+
+## リスク
+
+| リスク | 影響 | 緩和策 |
+|--------|------|--------|
+| intent分類の精度が低い | 名前を聞いても general_chat に分類される | プロンプト調整 + テストケース追加 |
+| LLM 2回呼び出しによるレイテンシ増加 | 応答が遅くなる | 許容済み（RTX 3090環境） |
+| gemmaがJSON形式を正しく出力しない | Router がパースに失敗 | フォールバックで general_chat 扱い |
+
+---
+
+## 備考
+
+- 実装はCodex担当へ引き継いでください
+- 本PLANはConfirmed状態です
