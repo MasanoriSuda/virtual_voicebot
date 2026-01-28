@@ -156,6 +156,8 @@ pub struct Session {
     b_leg: Option<b2bua::BLeg>,
     transfer_cancel: Option<oneshot::Sender<()>>,
     transfer_announce_stop: Option<oneshot::Sender<()>>,
+    ring_delay_cancel: Option<oneshot::Sender<()>>,
+    pending_answer: Option<Sdp>,
     outbound_mode: bool,
     outbound_answered: bool,
     outbound_sent_180: bool,
@@ -215,6 +217,8 @@ impl Session {
             b_leg: None,
             transfer_cancel: None,
             transfer_announce_stop: None,
+            ring_delay_cancel: None,
+            pending_answer: None,
             outbound_mode: false,
             outbound_answered: false,
             outbound_sent_180: false,
@@ -257,6 +261,7 @@ impl Session {
                             self.outbound_sent_180 = false;
                             self.outbound_sent_183 = false;
                             self.invite_rejected = false;
+                            self.stop_ring_delay();
                             if config::outbound_config().enabled {
                                 let outbound_cfg = config::outbound_config();
                                 let registrar = config::registrar_config();
@@ -305,11 +310,28 @@ impl Session {
                                     let _ = self
                                         .session_out_tx
                                         .send((self.call_id.clone(), SessionOut::SipSend180));
-                                    let _ = self.session_out_tx.send((
-                                        self.call_id.clone(),
-                                        SessionOut::SipSend200 { answer },
-                                    ));
+                                    let ring_duration = config::ring_duration();
+                                    if ring_duration.is_zero() {
+                                        let _ = self.session_out_tx.send((
+                                            self.call_id.clone(),
+                                            SessionOut::SipSend200 { answer },
+                                        ));
+                                    } else {
+                                        self.pending_answer = Some(answer);
+                                        self.start_ring_delay(ring_duration);
+                                    }
                                 }
+                            }
+                        }
+                        (_, SessionIn::RingDurationElapsed) => {
+                            if self.outbound_mode || self.invite_rejected {
+                                continue;
+                            }
+                            if let Some(answer) = self.pending_answer.take() {
+                                let _ = self.session_out_tx.send((
+                                    self.call_id.clone(),
+                                    SessionOut::SipSend200 { answer },
+                                ));
                             }
                         }
                         (SessState::Early, SessionIn::SipAck) => {
@@ -706,6 +728,7 @@ impl Session {
                         (_, SessionIn::SipCancel) => {
                             info!("[session {}] CANCEL received, terminating early", self.call_id);
                             self.invite_rejected = true;
+                            self.stop_ring_delay();
                             self.cancel_transfer();
                             self.shutdown_b_leg(true).await;
                             self.cancel_playback();
@@ -729,6 +752,7 @@ impl Session {
                             });
                         }
                         (_, SessionIn::SipBye) => {
+                            self.stop_ring_delay();
                             self.cancel_transfer();
                             self.shutdown_b_leg(true).await;
                             self.cancel_playback();
@@ -761,6 +785,7 @@ impl Session {
                         }
                         (_, SessionIn::AppHangup) => {
                             warn!("[session {}] app requested hangup", self.call_id);
+                            self.stop_ring_delay();
                             self.cancel_transfer();
                             self.shutdown_b_leg(true).await;
                             self.cancel_playback();
@@ -835,6 +860,7 @@ impl Session {
                         }
                         (_, SessionIn::SessionTimerFired) => {
                             warn!("[session {}] session timer fired", self.call_id);
+                            self.stop_ring_delay();
                             self.cancel_transfer();
                             self.shutdown_b_leg(true).await;
                             self.cancel_playback();
@@ -855,6 +881,7 @@ impl Session {
                         }
                         (_, SessionIn::Abort(e)) => {
                             warn!("call {} abort: {e:?}", self.call_id);
+                            self.stop_ring_delay();
                             self.cancel_transfer();
                             self.shutdown_b_leg(true).await;
                             self.cancel_playback();
@@ -1127,6 +1154,30 @@ impl Session {
         self.finish_playback(false);
     }
 
+    fn start_ring_delay(&mut self, duration: Duration) {
+        if self.ring_delay_cancel.is_some() {
+            return;
+        }
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        self.ring_delay_cancel = Some(stop_tx);
+        let tx = self.tx_in.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::time::sleep(duration) => {
+                    let _ = tx.send(SessionIn::RingDurationElapsed);
+                }
+                _ = &mut stop_rx => {}
+            }
+        });
+    }
+
+    fn stop_ring_delay(&mut self) {
+        if let Some(stop) = self.ring_delay_cancel.take() {
+            let _ = stop.send(());
+        }
+        self.pending_answer = None;
+    }
+
     fn stop_recorders(&mut self) {
         let a_path = self.recorder.file_path();
         let dir_path = self.recorder.dir_path().to_path_buf();
@@ -1341,6 +1392,8 @@ mod tests {
             b_leg: None,
             transfer_cancel: None,
             transfer_announce_stop: None,
+            ring_delay_cancel: None,
+            pending_answer: None,
             outbound_mode: false,
             outbound_answered: false,
             outbound_sent_180: false,

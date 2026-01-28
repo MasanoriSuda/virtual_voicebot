@@ -10,7 +10,7 @@
 | **Owner** | TBD |
 | **Last Updated** | 2026-01-26 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36), [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37), [Issue #38](https://github.com/MasanoriSuda/virtual_voicebot/issues/38), [Issue #39](https://github.com/MasanoriSuda/virtual_voicebot/issues/39), [Issue #43](https://github.com/MasanoriSuda/virtual_voicebot/issues/43) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36), [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37), [Issue #38](https://github.com/MasanoriSuda/virtual_voicebot/issues/38), [Issue #39](https://github.com/MasanoriSuda/virtual_voicebot/issues/39), [Issue #43](https://github.com/MasanoriSuda/virtual_voicebot/issues/43), [Issue #58](https://github.com/MasanoriSuda/virtual_voicebot/issues/58) |
 
 ---
 
@@ -62,6 +62,7 @@
 | [Step-34](#step-34-b2bua-keepalive無音干渉修正-issue-37) | B2BUA Keepalive無音干渉修正 (Issue #37) | - | 完了 |
 | [Step-35](#step-35-発信時rtpリスナー早期起動-issue-38) | 発信時RTPリスナー早期起動 (Issue #38) | - | 未着手 |
 | [Step-36](#step-36-tsurugi-db-電話番号照合-issue-43) | Tsurugi DB 電話番号照合 (Issue #43) | - | 完了 |
+| [Step-38](#step-38-着信応答遅延ring-duration-issue-58) | 着信応答遅延 Ring Duration (Issue #58) | - | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 完了 (→ Step-33) |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -4637,6 +4638,144 @@ BYE 応答は即時（合成完了を待たない）
 
 ---
 
+## Step-38: 着信応答遅延（Ring Duration）— Issue #58
+
+### 状態: 未着手
+
+### 背景・課題
+
+現状は INVITE 受信後、`100 Trying` → `180 Ringing` → `200 OK` を **一切の遅延なく連続送信** しており、電話が鳴る間もなく即オフフックする。人間が応答しているような自然な振る舞いにするため、180 Ringing 送信後に設定可能な待機時間を挿入する。
+
+**現状のコード** (`src/session/session.rs` INVITE 処理部):
+```
+SessionOut::SipSend100  ← 即時
+SessionOut::SipSend180  ← 即時
+SessionOut::SipSend200  ← 即時（遅延なし）
+```
+
+### ゴール
+
+- 180 Ringing と 200 OK の間に設定可能な遅延を挿入する
+- デフォルト 3 秒、環境変数で変更可能
+- 待機中の CANCEL/BYE で安全に中断できる
+
+### 仕様
+
+詳細仕様: [spec/issue-58_ring-duration.md](../spec/issue-58_ring-duration.md)
+
+#### 変更後のシーケンス
+
+```
+     Caller (PBX)                       本システム
+        |                                   |
+        |--- INVITE ----------------------> |
+        |                                   |
+        |<-- 100 Trying ------------------  | ← 即時
+        |<-- 180 Ringing -----------------  | ← 即時
+        |                                   |
+        |    ... RING_DURATION_MS 経過 ...   |
+        |                                   |
+        |<-- 200 OK ----------------------  | ← 遅延後
+        |--- ACK -------------------------> |
+```
+
+#### 環境変数
+
+| 変数名 | 型 | デフォルト | 最小 | 最大 | 備考 |
+|--------|-----|-----------|------|------|------|
+| `RING_DURATION_MS` | u64 | `3000` | `0` | `10000` | 0 で即応答（現行互換）|
+
+- パース失敗時: デフォルト値にフォールバック + warn ログ
+- 範囲外の値: 上限/下限にクランプ + warn ログ
+
+#### 適用条件
+
+- **着信 (inbound)**: 遅延を適用する
+- **発信 (outbound_mode=true)**: 遅延を適用しない（即時応答）
+
+#### Ringback tone
+
+- **暫定**: 本システムからの RTP Ringback tone 生成は行わない。180 Ringing で PBX 側がローカル呼出音を生成する前提
+- **将来検討**: 問題があれば Early Media（183 Session Progress + RTP 送出）を検討
+
+### 境界条件
+
+#### 待機中の CANCEL 受信
+
+待機を中断し、200 OK を送出せずセッション終了する。
+実装方針: `tokio::select!` で `sleep` と `SessionIn::SipCancel` を競合させる。
+
+```
+     Caller                             本システム
+        |--- INVITE ------------------>  |
+        |<-- 100 Trying --------------  |
+        |<-- 180 Ringing -------------  |
+        |                               | (待機中...)
+        |--- CANCEL ------------------>  |
+        |<-- 200 OK (for CANCEL) -----  |
+        |<-- 487 Request Terminated --  |
+        |                               | (セッション破棄)
+```
+
+#### 待機中の BYE 受信
+
+CANCEL と同様、待機を中断しセッション終了する。
+
+#### Session Timer との関係
+
+最大 10 秒 vs 最小 Session-Expires 90 秒。タイマー満了リスクなし。
+
+### DoD (Definition of Done)
+
+- [ ] `RING_DURATION_MS` 環境変数を `config.rs` に追加（デフォルト 3000、クランプ 0–10000）
+- [ ] `session.rs` の INVITE 処理で 180 送信後に `tokio::time::sleep` を挿入
+- [ ] `tokio::select!` で sleep と CANCEL/BYE を競合させる
+- [ ] `outbound_mode` 時は遅延を適用しない
+- [ ] `RING_DURATION_MS=0` で現行と同じ即時応答
+- [ ] `RING_DURATION_MS=3000` で約 3 秒の遅延を確認
+- [ ] 範囲外の値でクランプ + warn ログ出力
+- [ ] 100rel 再送は sleep 中も独立動作（SIP 層で処理、session 層に影響なし）
+- [ ] 既存テスト通過
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/config.rs` | `RING_DURATION_MS` 環境変数の読み取り、クランプ、フォールバック |
+| `src/session/session.rs` | INVITE 処理: 180 → sleep → 200 OK。`select!` で CANCEL/BYE 中断 |
+
+### 質問事項（Codex 向け）— 回答済み
+
+1. **Q1**: 3 秒固定でよいか、通話ごとに動的に変えたい要件はあるか？
+   - **回答: 暫定は固定 3 秒。`RING_DURATION_MS` 環境変数で config 可能にする**
+2. **Q2**: 180 Ringback tone を本システム側から RTP で送出する必要があるか？
+   - **回答: 暫定は不要（180 Ringing のみ）。問題があれば Early Media を検討**
+3. **Q3**: 100rel の場合、PRACK 受信を待ってから遅延カウント開始とするか？
+   - **回答: 遅延対象は 200 OK のみ。100 Trying / 180 Ringing は即時送信**
+4. **Q4**: 上限は何秒が妥当か？
+   - **回答: 10 秒。30 秒は長すぎる**
+
+### 設計判断
+
+| 項目 | 決定 | 理由 |
+|------|------|------|
+| 遅延対象 | 200 OK のみ | 100/180 は即時が SIP の慣例 |
+| デフォルト値 | 3000ms | Issue #58 の暫定値 |
+| 上限 | 10000ms | PBX 側 INVITE timeout（通常 30 秒以上）に対して十分な余裕 |
+| Ringback tone | 不要（暫定） | PBX 側ローカル生成で十分。問題時は Early Media 検討 |
+| CANCEL 処理 | `select!` で競合 | tokio の標準パターン、既存コードと整合 |
+
+### リスク/ロールバック観点
+
+| リスク | 影響度 | 軽減策 |
+|--------|--------|--------|
+| CANCEL 処理漏れで遅延後に 200 OK 送出 | 高 | `select!` で CANCEL/BYE と sleep を競合。テストで検証 |
+| PBX 側 INVITE タイムアウト | 低 | 上限 10 秒。PBX 側は通常 30 秒以上 |
+| 設定値パース失敗 | 低 | フォールバック + warn ログ。パニックしない |
+| ロールバック | 低 | `RING_DURATION_MS=0` で現行互換に即復帰 |
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -4653,6 +4792,7 @@ BYE 応答は即時（合成完了を待たない）
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-28 | 3.20 | Issue #58 統合: Step-38（着信応答遅延 Ring Duration）追加、180→200 OK 間に RING_DURATION_MS 待機、デフォルト 3 秒、上限 10 秒 |
 | 2026-01-27 | 3.19 | Issue #49 更新: Step-37 Q1-Q3 回答確定、B2BUA は 2ch×2本 + Rust 内後段合成方式 |
 | 2026-01-27 | 3.18 | Issue #49 統合: Step-37（ステレオ録音 L=RX, R=TX）追加、タイムスロット同期リングバッファ方式 |
 | 2026-01-26 | 3.17 | Issue #43 更新: Step-36 完了（PoC: 照合結果ログ出力のみ、IVR 分岐反映は次ステップ） |

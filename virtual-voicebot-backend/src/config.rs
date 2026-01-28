@@ -150,6 +150,39 @@ pub fn session_config() -> &'static SessionConfig {
     SESSION_CONFIG.get_or_init(SessionConfig::from_env)
 }
 
+static RING_DURATION: OnceLock<Duration> = OnceLock::new();
+
+pub fn ring_duration() -> Duration {
+    *RING_DURATION.get_or_init(|| {
+        const DEFAULT_MS: u64 = 3000;
+        const MAX_MS: u64 = 10_000;
+        let raw = std::env::var("RING_DURATION_MS").ok();
+        let mut ms = match raw.as_deref() {
+            Some(value) => match value.trim().parse::<u64>() {
+                Ok(v) => v,
+                Err(_) => {
+                    log::warn!(
+                        "[config] invalid RING_DURATION_MS={}, fallback to {}",
+                        value,
+                        DEFAULT_MS
+                    );
+                    DEFAULT_MS
+                }
+            },
+            None => DEFAULT_MS,
+        };
+        if ms > MAX_MS {
+            log::warn!(
+                "[config] RING_DURATION_MS={} exceeds max {}, clamped",
+                ms,
+                MAX_MS
+            );
+            ms = MAX_MS;
+        }
+        Duration::from_millis(ms)
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegistrarTransport {
     Udp,
