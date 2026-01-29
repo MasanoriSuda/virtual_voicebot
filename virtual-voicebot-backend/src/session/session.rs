@@ -3,17 +3,18 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use chrono::{Local, Timelike};
+use chrono::{DateTime, FixedOffset, Local, Timelike, Utc};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::time::{interval, Duration, Instant, MissedTickBehavior};
 
+use crate::session::b2bua;
 use crate::session::types::Sdp;
 use crate::session::types::*;
-use crate::session::b2bua;
 use crate::sip::{parse_name_addr, parse_uri};
 
-use crate::app::AppEvent;
+use crate::app::{AppEvent, EndReason};
+use crate::config;
 use crate::http::ingest::IngestPort;
 use crate::media::merge::merge_stereo_files;
 use crate::media::Recorder;
@@ -22,7 +23,6 @@ use crate::recording::storage::StoragePort;
 use crate::rtp::codec::mulaw_to_linear16;
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::capture::AudioCapture;
-use crate::config;
 use crate::session::timers::SessionTimers;
 use anyhow::Error;
 use log::{debug, info, warn};
@@ -32,27 +32,49 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
 const PLAYBACK_FRAME_INTERVAL: Duration = Duration::from_millis(20);
 const TRANSFER_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
 
-const INTRO_MORNING_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_morning.wav");
-const INTRO_AFTERNOON_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_afternoon.wav");
-const INTRO_EVENING_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_evening.wav");
+const INTRO_MORNING_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_morning.wav"
+);
+const INTRO_AFTERNOON_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_afternoon.wav"
+);
+const INTRO_EVENING_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_evening.wav"
+);
 const IVR_INTRO_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr.wav");
 const VOICEBOT_INTRO_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr_1.wav");
-const IVR_INTRO_AGAIN_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr_again.wav");
-const IVR_SENDAI_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sendai.wav");
+const IVR_INTRO_AGAIN_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_ivr_again.wav"
+);
+const IVR_SENDAI_WAV_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sendai.wav");
 const IVR_INVALID_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_invalid.wav");
-const TRANSFER_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_try_transfer.wav");
-const TRANSFER_FAIL_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_transfer_fail.wav");
+const TRANSFER_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_try_transfer.wav"
+);
+const TRANSFER_FAIL_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_transfer_fail.wav"
+);
 
+/// Returns the appropriate intro WAV path for a given hour in 24-hour time.
+///
+/// Returns the static path for morning (5–11), afternoon (12–16), or evening (all other hours).
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(intro_wav_path_for_hour(7), INTRO_MORNING_WAV_PATH);
+/// assert_eq!(intro_wav_path_for_hour(14), INTRO_AFTERNOON_WAV_PATH);
+/// assert_eq!(intro_wav_path_for_hour(3), INTRO_EVENING_WAV_PATH);
+/// ```
 fn intro_wav_path_for_hour(hour: u32) -> &'static str {
     match hour {
         5..=11 => INTRO_MORNING_WAV_PATH,
@@ -66,9 +88,30 @@ fn get_intro_wav_path() -> &'static str {
     intro_wav_path_for_hour(hour)
 }
 
+/// Extracts a candidate user identifier or telephone number from a SIP `To`/`From`-style header string.
+///
+/// Attempts to parse a name-addr or raw URI and returns the URI user component when present;
+/// for `tel:` URIs it returns the telephone host (digits) if non-empty. Returns `None` when no
+/// suitable user/telephone could be parsed.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(extract_user_from_to("Alice <sip:alice@example.com>"), Some("alice".to_string()));
+/// assert_eq!(extract_user_from_to("<tel:+819012345678>"), Some("+819012345678".to_string()));
+/// assert_eq!(extract_user_from_to("sip:anon@example.com;tag=123"), Some("anon".to_string()));
+/// assert_eq!(extract_user_from_to("invalid"), None);
+/// ```
 fn extract_user_from_to(value: &str) -> Option<String> {
     if let Ok(name_addr) = parse_name_addr(value) {
-        return name_addr.uri.user;
+        if name_addr.uri.scheme.eq_ignore_ascii_case("tel") {
+            if !name_addr.uri.host.trim().is_empty() {
+                return Some(name_addr.uri.host);
+            }
+        }
+        if let Some(user) = name_addr.uri.user {
+            return Some(user);
+        }
     }
     let trimmed = value.trim();
     let addr = if let Some(start) = trimmed.find('<') {
@@ -81,7 +124,48 @@ fn extract_user_from_to(value: &str) -> Option<String> {
         trimmed
     };
     let addr = addr.split(';').next().unwrap_or(addr).trim();
-    parse_uri(addr).ok().and_then(|uri| uri.user)
+    let uri = parse_uri(addr).ok()?;
+    if uri.scheme.eq_ignore_ascii_case("tel") {
+        if !uri.host.trim().is_empty() {
+            return Some(uri.host);
+        }
+    }
+    uri.user
+}
+
+/// Extracts the notification identifier from a SIP name-addr string.
+///
+/// The identifier is the user portion of a SIP URI or the host of a `tel:` URI when present;
+/// returns an empty string if no candidate is found.
+///
+/// # Examples
+///
+/// ```
+/// let v = extract_notify_from("Alice <sip:alice@example.com>");
+/// assert_eq!(v, "alice");
+///
+/// let v = extract_notify_from("<tel:+819012345678>");
+/// assert_eq!(v, "+819012345678");
+///
+/// let v = extract_notify_from("invalid");
+/// assert_eq!(v, "");
+/// ```
+fn extract_notify_from(value: &str) -> String {
+    extract_user_from_to(value).unwrap_or_default()
+}
+
+/// Get the current time in Japan Standard Time (UTC+9).
+///
+/// # Examples
+///
+/// ```
+/// let ts = now_jst();
+/// // Offset is +9 hours (32400 seconds)
+/// assert_eq!(ts.offset().local_minus_utc(), 9 * 3600);
+/// ```
+fn now_jst() -> DateTime<FixedOffset> {
+    let offset = FixedOffset::east_opt(9 * 3600).unwrap();
+    Utc::now().with_timezone(&offset)
 }
 
 #[derive(Clone)]
@@ -233,6 +317,27 @@ impl Session {
         SessionHandle { tx_in }
     }
 
+    /// Runs the session's main event loop, processing incoming `SessionIn` events,
+    /// periodic playback ticks, timers, media, SIP/B2BUA actions, IVR flow, and
+    /// performing cleanup when the input channel closes or the session ends.
+    ///
+    /// This method drives the session state machine: it receives events from the
+    /// provided `UnboundedReceiver<SessionIn>`, advances the internal `SessState`,
+    /// handles playback and recording, manages RTP and SIP interactions, and emits
+    /// outgoing actions via the session's configured channels. The loop exits when
+    /// the receiver is closed; recorders are stopped after the loop finishes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tokio::sync::mpsc::UnboundedReceiver;
+    ///
+    /// // In an async context where `session` and `rx` are available:
+    /// async fn run_session_example(mut session: crate::session::Session, rx: UnboundedReceiver<crate::session::SessionIn>) {
+    ///     // This will run until `rx` is closed or the session ends.
+    ///     session.run(rx).await;
+    /// }
+    /// ```
     async fn run(&mut self, mut rx: UnboundedReceiver<SessionIn>) {
         let mut playback_tick = interval(PLAYBACK_FRAME_INTERVAL);
         playback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -310,6 +415,12 @@ impl Session {
                                     let _ = self
                                         .session_out_tx
                                         .send((self.call_id.clone(), SessionOut::SipSend180));
+                                    let from = extract_notify_from(self.from_uri.as_str());
+                                    let _ = self.app_tx.send(AppEvent::CallRinging {
+                                        call_id: self.call_id.clone(),
+                                        from,
+                                        timestamp: now_jst(),
+                                    });
                                     let ring_duration = config::ring_duration();
                                     if ring_duration.is_zero() {
                                         let _ = self.session_out_tx.send((
@@ -655,9 +766,7 @@ impl Session {
                             let _ = self
                                 .session_out_tx
                                 .send((self.call_id.clone(), SessionOut::RtpStopTx));
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::Bye);
                         }
                         (_, SessionIn::B2buaRinging) => {
                             if self.outbound_mode
@@ -747,9 +856,7 @@ impl Session {
                                 },
                             ));
                             self.stop_recorders();
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::Cancel);
                         }
                         (_, SessionIn::SipBye) => {
                             self.stop_ring_delay();
@@ -768,9 +875,7 @@ impl Session {
                                 .send((self.call_id.clone(), SessionOut::SipSendBye200));
                             self.stop_recorders();
                             self.send_ingest("ended").await;
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::Bye);
                         }
                         (_, SessionIn::SipTransactionTimeout { call_id: _ }) => {
                             warn!("[session {}] transaction timeout notified", self.call_id);
@@ -801,9 +906,7 @@ impl Session {
                             let _ = self
                                 .session_out_tx
                                 .send((self.call_id.clone(), SessionOut::SipSendBye200));
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::AppHangup);
                         }
                         (_, SessionIn::AppTransferRequest { person }) => {
                             if self.transfer_cancel.is_some() || self.b_leg.is_some() {
@@ -875,9 +978,7 @@ impl Session {
                             let _ = self
                                 .session_out_tx
                                 .send((self.call_id.clone(), SessionOut::AppSessionTimeout));
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::Timeout);
                         }
                         (_, SessionIn::Abort(e)) => {
                             warn!("call {} abort: {e:?}", self.call_id);
@@ -894,9 +995,7 @@ impl Session {
                             let _ = self
                                 .session_out_tx
                                 .send((self.call_id.clone(), SessionOut::RtpStopTx));
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::Error);
                         }
                         _ => { /* それ以外は無視 or ログ */ }
                     }
@@ -909,11 +1008,61 @@ impl Session {
         self.stop_recorders();
     }
 
+    /// Builds a local SDP using PCMU/8000 with the session's configured local IP and port.
+    ///
+    /// The produced `Sdp` is configured for PCMU at 8000 Hz and targets the `media_cfg` local
+    /// IP address and port of this session.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Given a `session` with a valid `media_cfg`, produce a PCMU/8000 SDP answer:
+    /// let sdp = session.build_answer_pcmu8k();
+    /// ```
     fn build_answer_pcmu8k(&self) -> Sdp {
         // PCMU/8000 でローカル SDP を組み立て
         Sdp::pcmu(self.media_cfg.local_ip.clone(), self.media_cfg.local_port)
     }
 
+    /// Emit an AppEvent::CallEnded to the application channel containing call metadata.
+    ///
+    /// The event includes the call ID, the extracted caller identifier (`from`), the provided
+    /// `reason`, the call duration in seconds if the call had started, and a JST timestamp.
+    ///
+    /// # Parameters
+    ///
+    /// - `reason`: the EndReason value describing why the call ended; this is forwarded in the event.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // Assuming `session` is a Session instance and `EndReason` is in scope:
+    /// session.send_call_ended(EndReason::Bye);
+    /// ```
+    fn send_call_ended(&self, reason: EndReason) {
+        let from = extract_notify_from(self.from_uri.as_str());
+        let timestamp = now_jst();
+        let duration_sec = self.started_at.map(|started| started.elapsed().as_secs());
+        let _ = self.app_tx.send(AppEvent::CallEnded {
+            call_id: self.call_id.clone(),
+            from,
+            reason,
+            duration_sec,
+            timestamp,
+        });
+    }
+
+    /// Returns the peer RTP destination IP address and port.
+    ///
+    /// If a peer SDP is present, returns its IP and port. If no peer SDP is available,
+    /// returns the default address `"0.0.0.0"` and port `0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Given a Session with peer_sdp set to ("192.0.2.1", 49152),
+    /// // `peer_rtp_dst()` will return ("192.0.2.1".to_string(), 49152u16).
+    /// ```
     fn peer_rtp_dst(&self) -> (String, u16) {
         if let Some(sdp) = &self.peer_sdp {
             (sdp.ip.clone(), sdp.port)

@@ -18,9 +18,29 @@ pub struct Config {
 }
 
 impl Config {
+    /// Create a Config populated from environment variables, falling back to sensible defaults when keys are absent.
+    ///
+    /// Reads (and defaults) the following environment variables:
+    /// - SIP_BIND_IP (default "0.0.0.0")
+    /// - SIP_PORT (default 5060)
+    /// - RTP_PORT (default 10000)
+    /// - LOCAL_IP (default "0.0.0.0")
+    /// - ADVERTISED_IP (defaults to LOCAL_IP)
+    /// - ADVERTISED_RTP_PORT (defaults to RTP_PORT)
+    /// - RECORDING_HTTP_ADDR (default "0.0.0.0:18080")
+    /// - INGEST_CALL_URL (optional)
+    /// - RECORDING_BASE_URL (optional; if absent, derived from RECORDING_HTTP_ADDR and ADVERTISED_IP)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = crate::config::Config::from_env().unwrap();
+    /// // Access common fields
+    /// let _sip_port = cfg.sip_port;
+    /// ```
     pub fn from_env() -> Result<Self> {
-        let sip_bind_ip =
-            std::env::var("SIP_BIND_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
+    pub fn from_env() -> Result<Self> {
+        let sip_bind_ip = std::env::var("SIP_BIND_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
         let sip_port = std::env::var("SIP_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -30,8 +50,7 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(10000);
         let local_ip = std::env::var("LOCAL_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let advertised_ip =
-            std::env::var("ADVERTISED_IP").unwrap_or_else(|_| local_ip.clone());
+        let advertised_ip = std::env::var("ADVERTISED_IP").unwrap_or_else(|_| local_ip.clone());
         let advertised_rtp_port = std::env::var("ADVERTISED_RTP_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -39,15 +58,13 @@ impl Config {
         let recording_http_addr =
             std::env::var("RECORDING_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:18080".to_string());
         let ingest_call_url = std::env::var("INGEST_CALL_URL").ok();
-        let recording_base_url = std::env::var("RECORDING_BASE_URL")
-            .ok()
-            .or_else(|| {
-                if let Some(port) = recording_http_addr.strip_prefix("0.0.0.0:") {
-                    Some(format!("http://{}:{}", advertised_ip, port))
-                } else {
-                    Some(format!("http://{}", recording_http_addr))
-                }
-            });
+        let recording_base_url = std::env::var("RECORDING_BASE_URL").ok().or_else(|| {
+            if let Some(port) = recording_http_addr.strip_prefix("0.0.0.0:") {
+                Some(format!("http://{}:{}", advertised_ip, port))
+            } else {
+                Some(format!("http://{}", recording_http_addr))
+            }
+        });
 
         Ok(Self {
             sip_bind_ip,
@@ -237,6 +254,32 @@ pub struct RegistrarConfig {
 }
 
 impl RegistrarConfig {
+    /// Builds a `RegistrarConfig` from environment variables, returning `None` if required values are missing or the registrar address cannot be resolved.
+    ///
+    /// Required environment variables:
+    /// - `REGISTRAR_HOST` (host or IP of the registrar)
+    /// - `REGISTER_USER` (username to register as)
+    ///
+    /// Optional environment variables influence transport, ports, contact host/port, authentication, and expiration; sensible defaults and fallbacks are applied when they are omitted.
+    ///
+    /// # Returns
+    ///
+    /// `Some(RegistrarConfig)` when the required environment variables are present and the registrar address resolves, `None` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// std::env::set_var("REGISTRAR_HOST", "127.0.0.1");
+    /// std::env::set_var("REGISTER_USER", "alice");
+    /// // Optional: set transport/port/auth vars as needed
+    ///
+    /// if let Some(cfg) = RegistrarConfig::from_env() {
+    ///     assert_eq!(cfg.user, "alice");
+    ///     // cfg.addr is a resolved SocketAddr for 127.0.0.1 with the chosen port
+    /// } else {
+    ///     panic!("expected RegistrarConfig to be constructed from environment");
+    /// }
+    /// ```
     fn from_env() -> Option<Self> {
         let registrar_host = env_non_empty("REGISTRAR_HOST")?;
         let transport = env_non_empty("REGISTRAR_TRANSPORT")
@@ -258,8 +301,7 @@ impl RegistrarConfig {
                 RegistrarTransport::Tls => env_u16("SIP_TLS_PORT", 5061),
                 _ => env_u16("SIP_PORT", 5060),
             });
-        let auth_username =
-            env_non_empty("REGISTER_AUTH_USER").unwrap_or_else(|| user.clone());
+        let auth_username = env_non_empty("REGISTER_AUTH_USER").unwrap_or_else(|| user.clone());
         let auth_password = env_non_empty("REGISTER_AUTH_PASSWORD");
 
         Some(Self {
@@ -278,8 +320,32 @@ impl RegistrarConfig {
 
 static REGISTRAR_CONFIG: OnceLock<Option<RegistrarConfig>> = OnceLock::new();
 
+/// Accesses the global registrar configuration initialized from environment variables.
+///
+/// This returns a cached, static reference to the registrar configuration constructed by
+/// `RegistrarConfig::from_env`. The configuration is initialized on first use and reused
+/// thereafter.
+///
+/// # Returns
+///
+/// `Some(&RegistrarConfig)` when a valid registrar configuration can be constructed from
+/// environment variables (for example, `REGISTRAR_HOST` and `REGISTER_USER` are present and
+/// the host resolves); `None` when required environment values are missing or resolution fails.
+///
+/// # Examples
+///
+/// ```
+/// if let Some(cfg) = registrar_config() {
+///     // Use cfg.addr, cfg.domain, cfg.user, etc.
+///     println!("Registering {} at {}", cfg.user, cfg.addr);
+/// } else {
+///     eprintln!("No registrar configured");
+/// }
+/// ```
 pub fn registrar_config() -> Option<&'static RegistrarConfig> {
-    REGISTRAR_CONFIG.get_or_init(RegistrarConfig::from_env).as_ref()
+    REGISTRAR_CONFIG
+        .get_or_init(RegistrarConfig::from_env)
+        .as_ref()
 }
 
 #[derive(Clone, Debug)]
@@ -356,8 +422,84 @@ pub fn phone_lookup_enabled() -> bool {
     phone_lookup_config().enabled
 }
 
+/// Returns the configured TSURUGI phone-lookup endpoint, if any.
+///
+/// # Examples
+///
+/// ```
+/// let _endpoint = tsurugi_endpoint();
+/// ```
 pub fn tsurugi_endpoint() -> Option<String> {
     phone_lookup_config().tsurugi_endpoint.clone()
+}
+
+#[derive(Clone, Debug)]
+pub struct LineNotifyConfig {
+    pub enabled: bool,
+    pub channel_access_token: Option<String>,
+    pub user_id: Option<String>,
+}
+
+impl LineNotifyConfig {
+    /// Creates a LineNotifyConfig by reading the following environment variables:
+    /// - `LINE_NOTIFY_ENABLED` (default: `true`)
+    /// - `LINE_CHANNEL_ACCESS_TOKEN` (optional)
+    /// - `LINE_USER_ID` (optional)
+    ///
+    /// If `LINE_NOTIFY_ENABLED` is true but either `LINE_CHANNEL_ACCESS_TOKEN` or
+    /// `LINE_USER_ID` is missing, a runtime warning is emitted. The returned
+    /// configuration's `enabled` field is true only when `LINE_NOTIFY_ENABLED` is
+    /// true and both `channel_access_token` and `user_id` are present; otherwise it
+    /// is false.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// std::env::set_var("LINE_NOTIFY_ENABLED", "true");
+    /// std::env::set_var("LINE_CHANNEL_ACCESS_TOKEN", "tok");
+    /// std::env::set_var("LINE_USER_ID", "uid");
+    /// let cfg = LineNotifyConfig::from_env();
+    /// assert!(cfg.enabled);
+    /// assert_eq!(cfg.channel_access_token.as_deref(), Some("tok"));
+    /// assert_eq!(cfg.user_id.as_deref(), Some("uid"));
+    /// ```
+    fn from_env() -> Self {
+        let enabled = env_bool("LINE_NOTIFY_ENABLED", true);
+        let channel_access_token = env_non_empty("LINE_CHANNEL_ACCESS_TOKEN");
+        let user_id = env_non_empty("LINE_USER_ID");
+        if enabled && (channel_access_token.is_none() || user_id.is_none()) {
+            log::warn!(
+                "[config] LINE_NOTIFY_ENABLED is true but LINE_CHANNEL_ACCESS_TOKEN/LINE_USER_ID is missing"
+            );
+        }
+        let effective_enabled = enabled && channel_access_token.is_some() && user_id.is_some();
+        Self {
+            enabled: effective_enabled,
+            channel_access_token,
+            user_id,
+        }
+    }
+}
+
+static LINE_NOTIFY_CONFIG: OnceLock<LineNotifyConfig> = OnceLock::new();
+
+/// Accesses the global LineNotify configuration, initializing it from environment variables on first use.
+///
+/// The configuration is created once and then cached for the lifetime of the process.
+///
+/// # Returns
+///
+/// A reference to the global `LineNotifyConfig`.
+///
+/// # Examples
+///
+/// ```
+/// let cfg = line_notify_config();
+/// // Access fields, e.g. `enabled`.
+/// let _ = cfg.enabled;
+/// ```
+pub fn line_notify_config() -> &'static LineNotifyConfig {
+    LINE_NOTIFY_CONFIG.get_or_init(LineNotifyConfig::from_env)
 }
 
 #[derive(Clone, Debug)]
@@ -528,8 +670,14 @@ mod tests {
             dial_plan,
         };
         assert_eq!(cfg.resolve_number("100"), Some("09012345678".to_string()));
-        assert_eq!(cfg.resolve_number("09011112222"), Some("09011112222".to_string()));
-        assert_eq!(cfg.resolve_number("unknown"), Some("09000000000".to_string()));
+        assert_eq!(
+            cfg.resolve_number("09011112222"),
+            Some("09011112222".to_string())
+        );
+        assert_eq!(
+            cfg.resolve_number("unknown"),
+            Some("09000000000".to_string())
+        );
     }
 
     #[test]
@@ -617,11 +765,43 @@ pub struct AiConfig {
 }
 
 impl AiConfig {
+    /// Constructs an AI-related configuration from environment variables, using sensible defaults when variables are absent.
+    ///
+    /// The following environment variables are read:
+    /// - `GEMINI_API_KEY`: optional API key for Gemini (kept as `None` if unset).
+    /// - `GEMINI_MODEL`: model name for Gemini; defaults to `"gemini-2.5-flash-lite"`.
+    /// - `OLLAMA_MODEL`: model name for Ollama; defaults to `"gemma3:4b"`.
+    /// - `OLLAMA_INTENT_MODEL`: intent model for Ollama; defaults to the value of `OLLAMA_MODEL`.
+    /// - `USE_AWS_TRANSCRIBE`: treated as a boolean; defaults to `false`.
+    /// - `AWS_TRANSCRIBE_BUCKET`: optional S3 bucket name for AWS Transcribe.
+    /// - `AWS_TRANSCRIBE_PREFIX`: prefix for transcribe objects; defaults to `"voicebot"`.
+    /// - `SER_URL`: optional SER service URL.
+    ///
+    /// The returned value is an instance populated from these environment variables with the described defaults.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::env;
+    /// // Ensure relevant vars are not set to exercise defaults in this example.
+    /// env::remove_var("GEMINI_API_KEY");
+    /// env::remove_var("GEMINI_MODEL");
+    /// env::remove_var("OLLAMA_MODEL");
+    /// env::remove_var("OLLAMA_INTENT_MODEL");
+    /// env::remove_var("USE_AWS_TRANSCRIBE");
+    /// env::remove_var("AWS_TRANSCRIBE_BUCKET");
+    /// env::remove_var("AWS_TRANSCRIBE_PREFIX");
+    /// env::remove_var("SER_URL");
+    ///
+    /// let cfg = AiConfig::from_env();
+    /// assert_eq!(cfg.ollama_model, "gemma3:4b");
+    /// assert_eq!(cfg.gemini_model, "gemini-2.5-flash-lite");
+    /// ```
     fn from_env() -> Self {
         let ollama_model =
             std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma3:4b".to_string());
-        let ollama_intent_model = std::env::var("OLLAMA_INTENT_MODEL")
-            .unwrap_or_else(|_| ollama_model.clone());
+        let ollama_intent_model =
+            std::env::var("OLLAMA_INTENT_MODEL").unwrap_or_else(|_| ollama_model.clone());
         Self {
             gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
             gemini_model: std::env::var("GEMINI_MODEL")

@@ -97,14 +97,30 @@ fn fallback_summary(report: &WeatherReport) -> String {
     format!("{}です。", parts.join(" "))
 }
 
+/// Fetches a weather report for the given query, using a cached value when available and falling back to the remote weather API.
+///
+/// The function will parse the API response into a `WeatherReport` and store it in the cache before returning.
+///
+/// # Returns
+///
+/// `Ok(WeatherReport)` on success, `Err` if the request, parsing, or client construction fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use crate::weather::WeatherQuery;
+/// # async fn _example() -> anyhow::Result<()> {
+/// let q = WeatherQuery { location: "Tokyo".into(), date: None };
+/// let report = crate::weather::fetch_weather_report(&q).await?;
+/// println!("{}", report.location);
+/// # Ok(())
+/// # }
+/// ```
 async fn fetch_weather_report(query: &WeatherQuery) -> Result<WeatherReport> {
     let weather_cfg = config::weather_config();
     let area_code = location_to_area_code(query.location.as_str())
         .unwrap_or_else(|| weather_cfg.default_area_code.clone());
-    let date = query
-        .date
-        .clone()
-        .unwrap_or_else(|| "today".to_string());
+    let date = query.date.clone().unwrap_or_else(|| "today".to_string());
     let cache_key = format!("{area_code}:{date}");
     if let Some(cached) = load_cache(&cache_key, weather_cfg.cache_ttl).await {
         return Ok(cached);

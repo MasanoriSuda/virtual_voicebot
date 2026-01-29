@@ -76,6 +76,15 @@ fn linear16_to_mulaw(sample: i16) -> u8 {
     mu
 }
 
+/// Converts an 8-bit A-law encoded value into a 16-bit linear PCM sample.
+///
+/// # Examples
+///
+/// ```
+/// let pcm: i16 = 1000;
+/// let a = linear16_to_alaw(pcm);
+/// assert_eq!(alaw_to_linear16(a), pcm);
+/// ```
 fn alaw_to_linear16(a: u8) -> i16 {
     let a = a ^ 0x55;
     let sign = (a & 0x80) != 0;
@@ -88,9 +97,26 @@ fn alaw_to_linear16(a: u8) -> i16 {
         value += 0x100;
         value <<= exponent - 1;
     }
-    if sign { -value } else { value }
+    if sign {
+        -value
+    } else {
+        value
+    }
 }
 
+/// Converts a 16-bit linear PCM sample to its G.711 A-law encoded byte.
+///
+/// The input sample is clamped to the 16-bit positive range, mapped to sign,
+/// exponent and mantissa fields, assembled into an A-law byte, and then
+/// XOR-masked with 0x55 to produce the final encoded value.
+///
+/// # Examples
+///
+/// ```
+/// let encoded = linear16_to_alaw(0i16);
+/// // `encoded` is the A-law representation of the silent PCM sample
+/// let _ = encoded;
+/// ```
 fn linear16_to_alaw(sample: i16) -> u8 {
     let mut pcm = sample as i32;
     let sign = if pcm >= 0 {

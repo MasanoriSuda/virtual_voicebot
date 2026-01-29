@@ -65,6 +65,20 @@ pub struct RtcpReportBlock {
     pub dlsr: u32,
 }
 
+/// Parses consecutive RTCP packets from a byte slice into a vector of `RtcpPacket`.
+///
+/// The function iterates over `data`, decoding RTCP headers and extracting Sender Report
+/// (PT=200) and Receiver Report (PT=201) packets when enough bytes are present. Parsing
+/// stops if an RTCP header has an unsupported version, if a packet length would exceed the
+/// available bytes, or if a packet is too short to be valid. Invalid or incomplete packets
+/// are ignored; already-parsed packets up to that point are returned.
+///
+/// # Examples
+///
+/// ```
+/// let empty = parse_rtcp_packets(&[]);
+/// assert!(empty.is_empty());
+/// ```
 pub fn parse_rtcp_packets(data: &[u8]) -> Vec<RtcpPacket> {
     let mut packets = Vec::new();
     let mut offset = 0usize;
@@ -119,7 +133,10 @@ pub fn parse_rtcp_packets(data: &[u8]) -> Vec<RtcpPacket> {
                     } else {
                         None
                     };
-                    packets.push(RtcpPacket::ReceiverReport(RtcpReceiverReport { ssrc, report }));
+                    packets.push(RtcpPacket::ReceiverReport(RtcpReceiverReport {
+                        ssrc,
+                        report,
+                    }));
                 }
             }
             _ => {}

@@ -217,19 +217,39 @@ pub(crate) enum SessState {
     Terminated,
 }
 
-    pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
-        match event {
-            SessionIn::SipBye
-            | SessionIn::SipCancel
-            | SessionIn::BLegBye
-            | SessionIn::AppHangup
-            | SessionIn::SessionTimerFired
-            | SessionIn::Abort(_) => SessState::Terminated,
-            SessionIn::RingDurationElapsed => current,
-            SessionIn::SipInvite { .. } => match current {
-                SessState::Idle => SessState::Early,
-                _ => current,
-            },
+/// Compute the next session state given the current state and an incoming event.
+///
+/// The next state is determined by the event: terminal events transition to `SessState::Terminated`; a
+/// `SipInvite` moves `SessState::Idle` to `SessState::Early`; a `SipAck` moves `SessState::Early` to
+/// `SessState::Established`; `RingDurationElapsed` preserves the current state; all other events leave
+/// the state unchanged.
+///
+/// # Returns
+///
+/// `SessState` representing the session's next lifecycle state.
+///
+/// # Examples
+///
+/// ```
+/// use crate::types::{next_session_state, SessState, SessionIn};
+///
+/// let s = SessState::Idle;
+/// let next = next_session_state(s, &SessionIn::SipInvite { call_id: "".into(), from: "".into(), to: "".into(), offer: None, session_timer: None });
+/// assert_eq!(next, SessState::Early);
+/// ```
+pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
+    match event {
+        SessionIn::SipBye
+        | SessionIn::SipCancel
+        | SessionIn::BLegBye
+        | SessionIn::AppHangup
+        | SessionIn::SessionTimerFired
+        | SessionIn::Abort(_) => SessState::Terminated,
+        SessionIn::RingDurationElapsed => current,
+        SessionIn::SipInvite { .. } => match current {
+            SessState::Idle => SessState::Early,
+            _ => current,
+        },
         SessionIn::SipAck => match current {
             SessState::Early => SessState::Established,
             _ => current,

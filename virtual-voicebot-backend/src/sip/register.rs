@@ -69,6 +69,19 @@ impl RegisterClient {
         self.build_request_with_expires(self.current_expires, self.cseq)
     }
 
+    /// Constructs a SIP REGISTER request for this client using the provided `expires` and `cseq`.
+    ///
+    /// The returned `SipRequest` contains standard REGISTER headers (Via, From, To, Contact, Call-ID, CSeq)
+    /// derived from the client's configuration and the supplied values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Given a configured RegisterClient `client`:
+    /// let req = client.build_request_with_expires(3600, client.cseq);
+    /// // request URI should target the registrar domain configured on the client
+    /// assert!(req.request_uri.contains(&client.cfg.domain));
+    /// ```
     fn build_request_with_expires(&self, expires: u32, cseq: u32) -> SipRequest {
         let scheme = self.cfg.transport.scheme();
         let via = format!(
@@ -80,10 +93,7 @@ impl RegisterClient {
         );
         let from = format!(
             "<{}:{}@{}>;tag={}",
-            scheme,
-            self.cfg.user,
-            self.cfg.domain,
-            self.from_tag
+            scheme, self.cfg.user, self.cfg.domain, self.from_tag
         );
         let to = format!("<{}:{}@{}>", scheme, self.cfg.user, self.cfg.domain);
         let contact = format!(
@@ -107,6 +117,23 @@ impl RegisterClient {
         self.pending_request.take()
     }
 
+    /// Process a SIP response intended for this registrar client and update internal registration state.
+    ///
+    /// Validates that the response comes from the expected transport peer (if applicable), matches the
+    /// client's Call-ID and CSeq for a REGISTER request, and then handles the response status:
+    /// - 200: parse the Expires header (falling back to the configured expiry) and record a successful registration.
+    /// - 401 / 407: attempt to prepare an authenticated REGISTER; if a challenge header is missing or auth preparation fails, schedule a retry.
+    /// - other status codes: mark as unregistered and schedule a retry.
+    ///
+    /// Returns `true` if the response matched this client (peer, Call-ID, CSeq and method) and was processed, `false` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // Assume `client` is a RegisterClient, `resp` a SipResponse and `peer` the TransportPeer source.
+    /// // The call returns `true` when `resp` was accepted and handled by `client`.
+    /// // let handled = client.handle_response(&resp, peer);
+    /// ```
     pub fn handle_response(&mut self, resp: &SipResponse, peer: TransportPeer) -> bool {
         if let Some(expected_peer) = self.transport_peer() {
             if peer != expected_peer {
@@ -150,8 +177,7 @@ impl RegisterClient {
                     self.schedule_retry();
                     return true;
                 };
-                if let Some(req) =
-                    self.prepare_authenticated_request(challenge_value, auth_header)
+                if let Some(req) = self.prepare_authenticated_request(challenge_value, auth_header)
                 {
                     self.pending_request = Some(req);
                 } else {
