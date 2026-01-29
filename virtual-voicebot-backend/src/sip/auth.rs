@@ -47,6 +47,63 @@ pub fn parse_digest_challenge(header_value: &str) -> Option<DigestChallenge> {
     })
 }
 
+/// Builds a Digest Authorization header value from the given credentials and challenge.
+
+///
+
+/// The function computes the response value according to the challenge fields (realm, nonce,
+
+/// optional algorithm, optional qop, optional opaque) and returns a header string beginning with
+
+/// `"Digest "` containing the required parameters. If the challenge is missing required fields
+
+/// (realm or nonce) or specifies an unsupported algorithm, `None` is returned.
+
+///
+
+/// # Parameters
+
+///
+
+/// - `nc`: the nonce count for this request; formatted as an eight-digit hexadecimal in the header.
+
+/// - `challenge`: the parsed `DigestChallenge` describing server-supplied parameters.
+
+///
+
+/// # Returns
+
+///
+
+/// `Some` containing the full Authorization header value when computation succeeds, `None` otherwise.
+
+///
+
+/// # Examples
+
+///
+
+/// ```
+
+/// let challenge = DigestChallenge {
+
+///     realm: "example.com".into(),
+
+///     nonce: "nonce123".into(),
+
+///     algorithm: None,
+
+///     qop: Some("auth".into()),
+
+///     opaque: None,
+
+/// };
+
+/// let header = build_authorization_header("alice", "password", "GET", "/protected", &challenge, 1);
+
+/// assert!(header.is_some());
+
+/// ```
 pub fn build_authorization_header(
     username: &str,
     password: &str,
@@ -58,6 +115,44 @@ pub fn build_authorization_header(
     build_authorization_header_with_cnonce(username, password, method, uri, challenge, nc, None)
 }
 
+/// Builds an HTTP Digest Authorization header value using the provided credentials and server challenge.
+///
+/// Generates the Digest header with the required parameters (username, realm, nonce, uri, response)
+/// and optional fields (opaque, algorithm, qop, nc, cnonce). If `challenge.algorithm` is present
+/// and not equal to `"MD5"` (case-insensitive), the function returns `None`.
+///
+/// # Parameters
+///
+/// - `nc`: The nonce count value to include when `qop` is used; formatted as an 8-digit hexadecimal.
+/// - `cnonce_override`: Optional client nonce to use instead of generating a random one; used only when `qop` requires a `cnonce`.
+///
+/// # Returns
+///
+/// `Some(String)` containing the complete `Digest ...` authorization header on success, or `None` if the challenge requires an unsupported algorithm.
+///
+/// # Examples
+///
+/// ```
+/// let challenge = DigestChallenge {
+///     realm: "realm".into(),
+///     nonce: "nonce".into(),
+///     algorithm: None,
+///     qop: Some("auth".into()),
+///     opaque: None,
+/// };
+/// let header = build_authorization_header_with_cnonce(
+///     "user",
+///     "pass",
+///     "GET",
+///     "/",
+///     &challenge,
+///     1,
+///     Some("deadbeef"),
+/// );
+/// assert!(header.is_some());
+/// let value = header.unwrap();
+/// assert!(value.starts_with("Digest "));
+/// ```
 fn build_authorization_header_with_cnonce(
     username: &str,
     password: &str,
@@ -152,6 +247,21 @@ fn md5_hex(input: &str) -> String {
     out
 }
 
+/// Compute the MD5 digest for the given input.
+///
+/// Returns the 16-byte MD5 digest of `input` as an array in little-endian byte order
+/// (a0, b0, c0, d0 concatenated).
+///
+/// # Examples
+///
+/// ```
+/// let digest = md5_bytes(b"");
+/// let expected: [u8; 16] = [
+///     0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04,
+///     0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8, 0x42, 0x7e,
+/// ];
+/// assert_eq!(digest, expected);
+/// ```
 fn md5_bytes(input: &[u8]) -> [u8; 16] {
     let mut msg = input.to_vec();
     let bit_len = (msg.len() as u64) * 8;

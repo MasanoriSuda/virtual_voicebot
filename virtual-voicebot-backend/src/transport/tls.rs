@@ -27,6 +27,17 @@ pub fn build_tls_acceptor(settings: &TlsSettings) -> Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
+/// Loads a PEM-encoded certificate chain from the file at `path`.
+///
+/// Returns a vector of `rustls::Certificate` parsed from the PEM file.
+/// Returns an error if the file cannot be opened, if the PEM cannot be read, or if no certificates are present.
+///
+/// # Examples
+///
+/// ```
+/// // Expect an error for a missing file
+/// assert!(crate::load_cert_chain("/does/not/exist").is_err());
+/// ```
 fn load_cert_chain(path: &str) -> Result<Vec<Certificate>> {
     let file = File::open(path).with_context(|| format!("open cert file {}", path))?;
     let mut reader = BufReader::new(file);

@@ -16,6 +16,17 @@ pub fn init_system_prompt() {
     let _ = system_prompt();
 }
 
+/// Provides the active system prompt used by the AI assistant.
+///
+/// The returned string comes from a cached value that prefers a local override file when present;
+/// if no override is available, the built-in default prompt is returned.
+///
+/// # Examples
+///
+/// ```
+/// let prompt = system_prompt();
+/// assert!(!prompt.is_empty());
+/// ```
 pub fn system_prompt() -> String {
     SYSTEM_PROMPT_CACHE
         .get_or_init(|| read_prompt_file().unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string()))

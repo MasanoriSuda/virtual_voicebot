@@ -20,6 +20,41 @@ struct SerResponse {
     valence: Option<f32>,
 }
 
+/// Analyze PCM input for speech emotion recognition using the configured SER service.
+///
+/// If the configured SER URL is empty, returns the same result as `dummy_result(input)`.
+/// If `input.pcm` is empty, returns a `SerResult` with `Emotion::Unknown` and `confidence` 0.0.
+/// Otherwise, sends `input` to the configured SER HTTP endpoint and:
+/// - on HTTP/network errors or JSON parse errors, returns a `SerError` containing the `session_id` and a descriptive `reason`,
+/// - on non-success HTTP status, returns a `SerError` whose `reason` includes the status code and response body,
+/// - on success, returns a `SerResult` with the mapped `Emotion`, `confidence` (defaulting to 0.0 if missing), and optional `arousal`/`valence`.
+///
+/// # Examples
+///
+/// ```
+/// # // This example assumes a tokio runtime and that SerInputPcm and related types are in scope.
+/// # use crate::{analyze, SerInputPcm, Emotion};
+/// # tokio_test::block_on(async {
+/// let input = SerInputPcm {
+///     session_id: "sess1".to_string(),
+///     stream_id: "stream1".to_string(),
+///     sample_rate: 16000,
+///     channels: 1,
+///     pcm: vec![0i16; 16000],
+/// };
+///
+/// match analyze(input).await {
+///     Ok(result) => {
+///         // result.emotion, result.confidence, result.arousal, result.valence
+///         let _ = result;
+///     }
+///     Err(err) => {
+///         // err.session_id and err.reason describe the failure
+///         let _ = err;
+///     }
+/// }
+/// # });
+/// ```
 pub async fn analyze(input: SerInputPcm) -> std::result::Result<SerResult, SerError> {
     let ser_url = config::ai_config().ser_url.as_deref().unwrap_or("");
     if ser_url.trim().is_empty() {

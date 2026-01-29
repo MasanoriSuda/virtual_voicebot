@@ -33,10 +33,49 @@ struct TcpConn {
 
 type TcpConnMap = Arc<Mutex<HashMap<ConnId, TcpConn>>>;
 
-/// packet層のメインループ
+/// Run the packet I/O loop handling SIP and RTP transport.
 ///
-/// - SIPソケット (5060) を受信して SipInput を送る
-/// - RTPソケット (40000など) を受信して SessionIn::RtpIn を各セッションに送る
+/// This function binds the provided sockets and spawns background tasks to:
+/// - receive SIP messages over UDP and forward them as `SipInput` to `sip_tx`,
+/// - accept and handle optional SIP TCP and TLS connections, and
+/// - receive RTP packets and dispatch them to the RTP receiver.
+///
+/// The function returns when the main SIP UDP and RTP UDP tasks complete or on error during setup.
+///
+/// # Examples
+///
+/// ```
+/// use tokio::net::{UdpSocket, TcpListener};
+/// use tokio::sync::mpsc::unbounded_channel;
+/// use std::net::SocketAddr;
+///
+/// #[tokio::test]
+/// async fn spawn_packet_loop_smoke() {
+///     let sip_sock = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+///     let rtp_sock = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+///     let (sip_tx, _sip_rx) = unbounded_channel();
+///     let (send_tx, send_rx) = tokio::sync::mpsc::unbounded_channel();
+///     // Minimal placeholders for session_map, rtp_port_map, rtcp_tx
+///     let session_map = crate::session::SessionMap::default();
+///     let rtp_port_map = crate::packet::RtpPortMap::default();
+///     let rtcp_tx = None;
+///
+///     // Run the loop in background; this will return quickly in tests when sockets are dropped.
+///     let _handle = tokio::spawn(async move {
+///         let _ = crate::packet::run_packet_loop(
+///             sip_sock,
+///             None::<TcpListener>,
+///             rtp_sock,
+///             sip_tx,
+///             send_rx,
+///             session_map,
+///             rtp_port_map,
+///             rtcp_tx,
+///         )
+///         .await;
+///     });
+/// }
+/// ```
 pub async fn run_packet_loop(
     sip_sock: UdpSocket,
     sip_tcp_listener: Option<TcpListener>,
@@ -181,6 +220,41 @@ async fn run_rtp_udp_loop(sock: UdpSocket, rtp_rx: RtpReceiver) -> std::io::Resu
     }
 }
 
+/// Accepts incoming SIP TCP connections and spawns a per-connection handler for each.
+///
+/// The function retrieves the listener's local address for logging, then repeatedly accepts
+/// new TCP streams. Each accepted connection is assigned a unique connection id and handled
+/// in a dedicated tokio task that runs the connection lifecycle and forwards complete SIP
+/// messages to the SIP processing channel.
+///
+/// # Returns
+///
+/// `Ok(())` when the listener local address is obtained and the accept loop is running; returns
+/// an `Err(std::io::Error)` if obtaining the local address or accepting a connection fails.
+///
+/// # Examples
+///
+/// ```
+/// # use tokio::net::TcpListener;
+/// # use tokio::sync::mpsc::unbounded_channel;
+/// # use std::sync::{Arc, atomic::AtomicU64};
+/// # use std::time::Duration;
+/// # async fn example() -> std::io::Result<()> {
+/// let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+/// let (sip_tx, _sip_rx) = unbounded_channel();
+/// // Placeholder for the real TcpConnMap type used by the library:
+/// let tcp_conns = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+/// let conn_seq = Arc::new(AtomicU64::new(1));
+/// tokio::spawn(run_sip_tcp_accept_loop(
+///     listener,
+///     sip_tx,
+///     tcp_conns,
+///     conn_seq,
+///     Duration::from_secs(60),
+/// ));
+/// Ok(())
+/// # }
+/// ```
 async fn run_sip_tcp_accept_loop(
     listener: TcpListener,
     sip_tx: UnboundedSender<SipInput>,

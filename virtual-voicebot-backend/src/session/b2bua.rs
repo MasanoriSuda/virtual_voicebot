@@ -815,6 +815,22 @@ fn send_non2xx_ack(
     }
 }
 
+/// Resolve a SIP URI's host and port to a socket address.
+///
+/// If the URI has no port, the default SIP port (5060) is used. The function parses
+/// the provided SIP URI, performs DNS resolution for the host:port pair, and returns
+/// the first SocketAddr found.
+///
+/// # Errors
+///
+/// Returns an error if the URI cannot be parsed or if name resolution yields no addresses.
+///
+/// # Examples
+///
+/// ```no_run
+/// let addr = resolve_target_addr("sip:alice@example.com").unwrap();
+/// println!("{}", addr);
+/// ```
 fn resolve_target_addr(uri: &str) -> Result<SocketAddr> {
     let parsed = parse_uri(uri)?;
     let port = parsed.port.unwrap_or(DEFAULT_SIP_PORT);
@@ -825,6 +841,24 @@ fn resolve_target_addr(uri: &str) -> Result<SocketAddr> {
         .ok_or_else(|| anyhow!("unable to resolve {}", host))
 }
 
+/// Resolve the first socket address for the SDP's IP and port.
+///
+/// # Parameters
+///
+/// * `sdp` - SDP containing the `ip` and `port` to resolve.
+///
+/// # Returns
+///
+/// A `SocketAddr` for the SDP's IP and port, or an error if the address cannot be resolved.
+///
+/// # Examples
+///
+/// ```
+/// use std::net::SocketAddr;
+/// let sdp = crate::Sdp { ip: "127.0.0.1".into(), port: 1234 };
+/// let addr = crate::resolve_rtp_addr(&sdp).unwrap();
+/// assert_eq!(addr, "127.0.0.1:1234".parse::<SocketAddr>().unwrap());
+/// ```
 fn resolve_rtp_addr(sdp: &Sdp) -> Result<SocketAddr> {
     let mut addrs = (sdp.ip.as_str(), sdp.port).to_socket_addrs()?;
     addrs
@@ -874,6 +908,46 @@ fn build_outbound_auth_value(
     Some(auth_value)
 }
 
+/// Sends an outbound SIP INVITE to the specified peer using the B2BUA transport.
+///
+/// Constructs an INVITE request with the provided request URI, headers, Contact built
+/// from the registrar and `via_port`, an optional authentication header, and the given SDP
+/// body, then sends it via the B2BUA UDP transport to `peer`.
+///
+/// # Parameters
+///
+/// - `auth`: when `Some((name, value))`, the pair is added as an extra header (typically
+///   an Authorization or Proxy-Authorization header) where `name` is the header name and
+///   `value` is the header value.
+///
+/// # Errors
+///
+/// Returns an `Err` if sending the constructed request payload over the B2BUA transport fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::net::SocketAddr;
+///
+/// // `RegistrarConfig` is the registrar configuration containing `user` and `contact_host`.
+/// // Assume `registrar` and other values are available in the calling context.
+/// # struct RegistrarConfig { user: String, contact_host: String }
+/// # async fn example(registrar: RegistrarConfig) -> Result<(), Box<dyn std::error::Error>> {
+/// let peer: SocketAddr = "192.0.2.10:5060".parse()?;
+/// let request_uri = "sip:1234@example.com";
+/// let from_header = "<sip:alice@example.com>";
+/// let to_header = "<sip:1234@example.com>";
+/// let call_id = "callid123";
+/// let cseq = 1;
+/// let via = "SIP/2.0/UDP 198.51.100.1:5060;branch=z9hG4bK...";
+/// let via_port = 5060;
+/// let sdp = "v=0\r\n...";
+/// let auth = Some(("Authorization", "Digest ...".to_string()));
+///
+/// // send_outbound_invite(peer, request_uri, from_header, to_header, call_id, cseq,
+/// //     via, via_port, &registrar, sdp, auth).await?;
+/// # Ok(()) }
+/// ```
 async fn send_outbound_invite(
     peer: SocketAddr,
     request_uri: &str,
@@ -911,10 +985,40 @@ async fn send_outbound_invite(
     Ok(())
 }
 
+/// Builds a SIP Via header value for a UDP transport with a generated branch parameter.
+///
+/// # Examples
+///
+/// ```
+/// let via = build_via("198.51.100.1", 5060);
+/// assert!(via.starts_with("SIP/2.0/UDP 198.51.100.1:5060"));
+/// assert!(via.contains(";branch="));
+/// ```
 fn build_via(host: &str, port: u16) -> String {
     format!("SIP/2.0/UDP {}:{};branch={}", host, port, generate_branch())
 }
 
+/// Generates a unique SIP "branch" parameter suitable for Via headers.
+
+///
+
+/// The returned string is a branch token prefixed with `z9hG4bK-` followed by a
+
+/// randomized numeric component to avoid collisions.
+
+///
+
+/// # Examples
+
+///
+
+/// ```
+
+/// let branch = generate_branch();
+
+/// assert!(branch.starts_with("z9hG4bK-"));
+
+/// ```
 fn generate_branch() -> String {
     let mut rng = rand::thread_rng();
     format!("z9hG4bK-{}", rng.gen::<u64>())
@@ -964,6 +1068,26 @@ fn extract_tag(value: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
+/// Extracts the URI portion from a SIP Contact header value.
+///
+/// The function returns the URI without surrounding `<` and `>` when present,
+/// otherwise returns the left-most token before any `;` parameter, trimmed of whitespace.
+///
+/// # Parameters
+///
+/// - `value`: SIP Contact header value, which may contain an angle-bracketed URI and optional parameters.
+///
+/// # Returns
+///
+/// A string slice containing the extracted URI (without angle brackets or parameters).
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(extract_contact_uri("<sip:alice@example.com>;expires=3600"), "sip:alice@example.com");
+/// assert_eq!(extract_contact_uri("sip:bob@example.org"), "sip:bob@example.org");
+/// assert_eq!(extract_contact_uri("  <sip:carol@host>  "), "sip:carol@host");
+/// ```
 fn extract_contact_uri(value: &str) -> &str {
     let trimmed = value.trim();
     if let Some(start) = trimmed.find('<') {
@@ -974,6 +1098,19 @@ fn extract_contact_uri(value: &str) -> &str {
     trimmed.split(';').next().unwrap_or(trimmed).trim()
 }
 
+/// Logs key fields of an INVITE SIP request at INFO level.
+///
+/// The log includes the request URI, `From`, `To`, `Contact`, `Call-ID`, and
+/// which authorization header is present (`Authorization`, `Proxy-Authorization`,
+/// or `none`). If the INFO log level is disabled, the function returns without
+/// performing any work.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Assuming `request` is a `SipRequest` and `peer` is a `SocketAddr`:
+/// log_invite("outbound", peer, &request);
+/// ```
 fn log_invite(label: &str, peer: SocketAddr, request: &SipRequest) {
     if !log::log_enabled!(log::Level::Info) {
         return;
@@ -1009,6 +1146,25 @@ fn log_cancel(label: &str, peer: SocketAddr, request: &SipRequest) {
     );
 }
 
+/// Formats a SIP response for logging, omitting Authorization headers and summarizing large or non-UTF-8 bodies.
+///
+/// The returned string contains the status line, all headers except `Authorization` and
+/// `Proxy-Authorization`, and then either the UTF-8 body if its length is 1024 bytes or less,
+/// or a `<body_len=N>` placeholder when the body is larger or not valid UTF-8.
+///
+/// # Examples
+///
+/// ```
+/// let resp = SipResponse {
+///     version: "SIP/2.0".to_string(),
+///     status_code: 200,
+///     reason_phrase: "OK".to_string(),
+///     headers: vec![],
+///     body: vec![],
+/// };
+/// let dump = format_response_dump(&resp);
+/// assert!(dump.starts_with("SIP/2.0 200 OK"));
+/// ```
 fn format_response_dump(resp: &SipResponse) -> String {
     let mut out = String::new();
     let _ = std::fmt::Write::write_fmt(

@@ -8,6 +8,20 @@ use crate::config::{self, LogFormat, LogMode};
 
 static INIT: Once = Once::new();
 
+/// Initializes the global logger once using the application's logging configuration.
+///
+/// This function configures and installs a global logger on first call according to
+/// `config::logging_config()`. It supports JSON or plain-text formatting and directs
+/// output to stdout or to a configured file. Any issues creating the log directory or
+/// opening the log file are recorded and emitted as warning-level log entries.
+///
+/// # Examples
+///
+/// ```
+/// // Initialize the global logger (safe to call multiple times).
+/// my_crate::logging::init();
+/// log::info!("logger initialized");
+/// ```
 pub fn init() {
     INIT.call_once(|| {
         let mut init_warnings = Vec::new();
