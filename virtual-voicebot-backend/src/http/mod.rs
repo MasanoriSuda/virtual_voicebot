@@ -51,6 +51,28 @@ async fn run_with_listener(listener: TcpListener, base_dir: PathBuf) -> std::io:
     }
 }
 
+/// Handles a single TCP connection and serves recording files over HTTP.
+///
+/// This function reads an HTTP request from `socket`, validates and sanitizes the request
+/// path (must begin with `/recordings/` and resolve to `<callId>/mixed.wav`), and responds
+/// with the requested audio file or an appropriate HTTP error. It supports GET and HEAD,
+/// Range requests, enforces payload and I/O timeouts, logs each response, and writes
+/// complete HTTP responses to the socket.
+///
+/// # Examples
+///
+/// ```
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// use std::path::Path;
+/// use tokio::net::TcpStream;
+///
+/// // Example usage (illustrative): connect to a server socket and handle the connection.
+/// // In real usage `socket` will be the accepted client stream from a listener.
+/// if let Ok(mut socket) = TcpStream::connect("127.0.0.1:0").await {
+///     let _ = crate::handle_conn(&mut socket, Path::new("/var/lib/recordings")).await;
+/// }
+/// # })
+/// ```
 async fn handle_conn(socket: &mut tokio::net::TcpStream, base_dir: &Path) -> std::io::Result<()> {
     let mut buf = vec![0u8; 4096];
     let mut read_len = 0usize;
@@ -276,6 +298,25 @@ fn sanitize_path(p: &str) -> PathBuf {
     clean
 }
 
+/// Write an HTTP response with standard headers and optional body to the given TCP stream.
+///
+/// Content-Type is set to `audio/wav` when `status` is `200`, otherwise `text/plain`. The response
+/// will include an `Accept-Ranges: bytes` header and the appropriate `Content-Length`.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use tokio::net::TcpStream;
+/// # async fn example() -> std::io::Result<()> {
+/// let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
+/// write_response(&mut stream, 200, "OK", b"hello world").await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Returns
+///
+/// `Ok(())` on successful write, `Err(std::io::Error)` on I/O failure.
 async fn write_response(
     socket: &mut tokio::net::TcpStream,
     status: u16,

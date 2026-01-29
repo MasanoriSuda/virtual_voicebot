@@ -59,6 +59,30 @@ impl AudioCapture {
         self.reset_state();
     }
 
+    /// Processes a single mu-law audio frame for voice activity detection, accumulating frames into a speech segment and emitting the captured speech when configured end conditions are met.
+    ///
+    /// This method uses the capture configuration (VAD threshold, start/end silence windows, and min/max speech durations) to decide whether a frame contains voice, to start or continue a speech segment, and to finish and return the collected payload when the segment ends and satisfies the minimum speech duration.
+    ///
+    /// # Returns
+    ///
+    /// `Some(Vec<u8>)` containing the captured speech payload (raw mu-law frames) when a speech segment finishes and meets the configured minimum duration; `None` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = VadConfig {
+    ///     vad_threshold: 50,
+    ///     start_silence_ms: 0,
+    ///     end_silence_ms: 200,
+    ///     min_speech_ms: 100,
+    ///     max_speech_ms: 5000,
+    /// };
+    /// let mut ac = AudioCapture::new(cfg);
+    /// ac.start();
+    /// let frame = vec![0u8; 160]; // one 20ms mu-law frame at 8kHz
+    /// let result = ac.ingest(&frame);
+    /// // result is `Some` only when a speech segment finishes and meets min_speech_ms
+    /// ```
     pub fn ingest(&mut self, payload: &[u8]) -> Option<Vec<u8>> {
         if !self.active || payload.is_empty() {
             return None;

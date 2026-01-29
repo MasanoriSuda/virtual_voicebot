@@ -299,6 +299,21 @@ impl Router {
             .unwrap_or_else(|| TransferConfig::default().not_found_message)
     }
 
+    /// Resolves a transfer directory key that matches the provided person identifier.
+    ///
+    /// The input is normalized (whitespace and full-/half-width spaces removed) and compared
+    /// against directory keys and each entry's aliases. If the normalized input is empty
+    /// or no match is found, `None` is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let router = Router::new();
+    /// // Default config includes an entry keyed by "須田" with several aliases.
+    /// assert_eq!(router.resolve_transfer_person("須田"), Some("須田".to_string()));
+    /// assert_eq!(router.resolve_transfer_person("  須田  "), Some("須田".to_string()));
+    /// assert_eq!(router.resolve_transfer_person("unknown"), None);
+    /// ```
     pub fn resolve_transfer_person(&self, person: &str) -> Option<String> {
         let Some(cfg) = &self.cfg.transfer else {
             return None;
@@ -323,6 +338,17 @@ impl Router {
     }
 }
 
+/// Normalize a person name by trimming and removing full-width and half-width spaces.
+///
+/// The returned string has leading and trailing whitespace removed and all full-width
+/// spaces (U+3000) and ASCII space characters removed from the remainder.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(normalize_person("  山田　太郎  "), "山田太郎");
+/// assert_eq!(normalize_person("　 Alice Bob "), "AliceBob");
+/// ```
 fn normalize_person(input: &str) -> String {
     input.trim().replace('　', "").replace(' ', "")
 }

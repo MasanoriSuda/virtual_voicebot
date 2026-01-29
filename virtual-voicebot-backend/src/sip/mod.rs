@@ -370,6 +370,31 @@ fn apply_session_timer_headers(resp: &mut SipResponse, cfg: &SessionTimerConfig)
     }
 }
 
+/// Builds a SIP UPDATE request for the dialog represented by `ctx` using `cfg` and the given session expiration.
+///
+/// If the request contained in `ctx` lacks a `To`, `From`, or `Call-ID` header (or other required header values),
+/// the function returns `None`. The function increments `ctx.local_cseq` (minimum value 1) and inserts a `Session-Expires`
+/// header set from `expires`. If the original `From` header has no `tag` parameter, a `;tag=rustbot` is appended.
+///
+/// # Parameters
+///
+/// - `expires`: used to populate the `Session-Expires` header (seconds).
+///
+/// # Returns
+///
+/// `Some` containing the serialized bytes of the constructed UPDATE request on success, `None` if required header values are missing.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Example usage (types omitted for brevity):
+/// let mut ctx = /* InviteContext built from an incoming INVITE */;
+/// let cfg = /* SipConfig with advertised_ip and sip_port */;
+/// let bytes = build_update_request(&mut ctx, &cfg, std::time::Duration::from_secs(90));
+/// if let Some(pkt) = bytes {
+///     // send pkt over transport
+/// }
+/// ```
 fn build_update_request(
     ctx: &mut InviteContext,
     cfg: &SipConfig,
@@ -458,6 +483,20 @@ fn build_bye_request(ctx: &mut InviteContext, cfg: &SipConfig) -> Option<Vec<u8>
     Some(builder.build().to_bytes())
 }
 
+/// Extracts the URI portion from a Contact header value.
+///
+/// If the header contains an angle-bracketed address, returns the substring inside the first `<...>`.
+/// Otherwise returns the header value up to the first semicolon (`;`), trimmed of surrounding whitespace.
+///
+/// # Examples
+///
+/// ```
+/// let uri = extract_contact_uri("Alice <sip:alice@example.com>;expires=3600");
+/// assert_eq!(uri, "sip:alice@example.com");
+///
+/// let uri = extract_contact_uri("sip:bob@example.com;tag=123");
+/// assert_eq!(uri, "sip:bob@example.com");
+/// ```
 fn extract_contact_uri(value: &str) -> &str {
     let trimmed = value.trim();
     if let Some(start) = trimmed.find('<') {
@@ -468,6 +507,22 @@ fn extract_contact_uri(value: &str) -> &str {
     trimmed.split(';').next().unwrap_or(trimmed).trim()
 }
 
+/// Selects the SIP contact scheme from a URI.
+///
+/// The check is case-insensitive and ignores leading ASCII whitespace.
+///
+/// # Returns
+///
+/// `'sips'` if the URI begins with `sips:` (case-insensitive, ignoring leading whitespace), `'sip'` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(contact_scheme_from_uri("sips:alice@example.com"), "sips");
+/// assert_eq!(contact_scheme_from_uri(" SIP:alice@example.com"), "sip");
+/// assert_eq!(contact_scheme_from_uri("   sIps:bob@ex"), "sips");
+/// assert_eq!(contact_scheme_from_uri("alice@example.com"), "sip");
+/// ```
 fn contact_scheme_from_uri(uri: &str) -> &'static str {
     if uri.trim_start().to_ascii_lowercase().starts_with("sips:") {
         "sips"
@@ -607,6 +662,16 @@ impl SipCore {
         events
     }
 
+    /// Shuts down the registrar by sending an explicit SIP REGISTER with expires=0 if a register client is configured.
+    ///
+    /// If no register client is configured this is a no-op. If a register client exists but has no transport, a warning is logged instead of sending.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // assuming `core` is an initialized `SipCore`
+    /// // core.shutdown();
+    /// ```
     pub fn shutdown(&mut self) {
         let Some(register) = self.register.as_ref() else {
             return;
@@ -668,6 +733,22 @@ impl SipCore {
         }
     }
 
+    /// Process an incoming SIP response and delegate it to the registrar when configured.
+    ///
+    /// If a registrar is present and it handles the response, this method will optionally
+    /// retransmit a pending REGISTER via the transport, notify any waiter, and return an
+    /// empty event list. If the response is not handled by the registrar (or no registrar
+    /// exists), the method returns a single `SipEvent::Unknown`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // Assume `core` is a mutable SipCore, `resp` is a SipResponse and `peer` is TransportPeer.
+    /// // When registrar handles the response the returned vector will be empty:
+    /// let events = core.handle_response(resp, peer);
+    /// // Otherwise:
+    /// // assert_eq!(events, vec![SipEvent::Unknown]);
+    /// ```
     fn handle_response(&mut self, resp: SipResponse, peer: TransportPeer) -> Vec<SipEvent> {
         if let Some(register) = self.register.as_ref() {
             let (handled, pending_req, pending_peer) = {
@@ -698,6 +779,26 @@ impl SipCore {
         vec![SipEvent::Unknown]
     }
 
+    /// Process an incoming INVITE request, handling retransmits, re-INVITEs, busy call rejection,
+    /// and session-timer validation, and start a new invite server transaction when appropriate.
+    ///
+    /// If the request is a retransmit the function will retransmit or resend the final 2xx as needed
+    /// and return an empty vector. If it is a re-INVITE for an existing dialog it delegates to the
+    /// re-INVITE handler. If the core is busy with another active call the INVITE is rejected with
+    /// 486 Busy Here. If the Session-Expires header is invalid or too small the function responds with
+    /// 400 or 422 (including Min-SE) respectively. On successful acceptance a new InviteContext is
+    /// created and a single `SipEvent::IncomingInvite` is returned containing the parsed SDP offer and
+    /// optional session-timer info.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// // Illustrative example (omits construction of realistic SipCore/SipRequest values).
+    /// // let mut core = SipCore::new(cfg, transport_tx);
+    /// // let events = core.handle_invite(req, headers, peer);
+    /// // assert!(matches!(events.as_slice(), [SipEvent::IncomingInvite{ .. }]) || events.is_empty());
+    /// ```
+    —
     fn handle_invite(
         &mut self,
         req: SipRequest,
@@ -810,6 +911,34 @@ impl SipCore {
         }]
     }
 
+    /// Handle an in-dialog re-INVITE request and produce a ReInvite event.
+    ///
+    /// Validates Session-Expires and Min-SE headers; on validation failure this method
+    /// sends the appropriate error response (400 or 422) and returns an empty vector.
+    /// When accepted, it updates the stored invite context (resets reliable/retransmit
+    /// state and applies any session-timer configuration) and returns a single
+    /// `SipEvent::ReInvite` containing the call ID, parsed SDP offer (falls back to
+    /// a silent SDP when parsing fails), and optional session timer info.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<SipEvent>` containing one `SipEvent::ReInvite` when the re-INVITE is
+    /// accepted, or an empty vector if the request was rejected or handled locally.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // Assume `core` is a mutable SipCore and `req`, `headers`, `peer` are prepared.
+    /// // The call below will validate session timers, update internal invite state,
+    /// // and return a ReInvite event when accepted.
+    /// let events = core.handle_reinvite(req, headers, peer);
+    /// match events.first() {
+    ///     Some(SipEvent::ReInvite { call_id, offer, session_timer }) => {
+    ///         // handle re-INVITE
+    ///     }
+    ///     _ => { /* rejected or no event */ }
+    /// }
+    /// ```
     fn handle_reinvite(
         &mut self,
         req: SipRequest,
@@ -888,6 +1017,30 @@ impl SipCore {
         vec![SipEvent::Ack { call_id }]
     }
 
+    /// Handle an incoming CANCEL request for an existing INVITE transaction.
+    ///
+    /// Sends a 200 OK and returns a `SipEvent::Cancel` when the CANCEL is accepted
+    /// for an INVITE that is currently in the Proceeding state. If no matching
+    /// invite exists or the invite is not in Proceeding, sends a 481 "Call/Transaction
+    /// Does Not Exist" and returns an empty vector. If the CANCEL request is
+    /// missing required headers, no response is sent and an empty vector is returned.
+    ///
+    /// # Returns
+    ///
+    /// `Vec<SipEvent>` containing `SipEvent::Cancel { call_id }` if the CANCEL was
+    /// accepted, or an empty vector otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // Assuming `core` is a mutable SipCore, `req` is a parsed CANCEL request,
+    /// // `headers` is a CoreHeaderSnapshot extracted from the request, and
+    /// // `peer` is the transport peer the request arrived from:
+    /// let events = core.handle_cancel(req, headers, peer);
+    /// if let Some(event) = events.into_iter().next() {
+    ///     // handle the Cancel event
+    /// }
+    /// ```
     fn handle_cancel(
         &mut self,
         req: SipRequest,
@@ -989,6 +1142,18 @@ impl SipCore {
         vec![]
     }
 
+    /// Handle an incoming PRACK request for a pending reliable provisional response.
+    ///
+    /// Validates the `RAck` header and ensures it matches the expected RAck stored for the
+    /// invite identified by `headers.call_id`. On malformed or unexpected RAck values this
+    /// sends the appropriate SIP error response (400 or 481) and takes no further action.
+    /// When the RAck matches, the function updates/creates the non-invite transaction state,
+    /// replies with `200 OK`, stops retransmission of the reliable provisional, and does not
+    /// emit any session-level events.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<SipEvent>`; currently always empty (no session events are emitted by PRACK handling).
     fn handle_prack(
         &mut self,
         req: SipRequest,
@@ -1062,6 +1227,35 @@ impl SipCore {
         vec![]
     }
 
+    /// Handle an incoming UPDATE request: validate session-timer headers, respond, update transaction state,
+    /// and emit a SessionRefresh event when a valid session-timer is present.
+    ///
+    /// This updates or creates a non-invite server transaction for the request, handles retransmits,
+    /// sends a 200 OK (including Session-Expires/Min-SE headers when appropriate), records the last
+    /// request and final response for retransmission, and updates the associated invite's session timer
+    /// if one is negotiated.
+    ///
+    /// # Parameters
+    ///
+    /// - `req`: the incoming UPDATE request message.
+    /// - `headers`: core header snapshot extracted from the request (call-id, via, from, to, cseq).
+    /// - `peer`: transport peer information used to send responses.
+    ///
+    /// # Returns
+    ///
+    /// A vector containing `SipEvent::SessionRefresh` with the negotiated timer when a Session-Expires
+    /// value was accepted; otherwise an empty vector.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// // `core` is a mutable SipCore instance, `req` is a parsed UPDATE request,
+    /// // `headers` is a CoreHeaderSnapshot for that request, and `peer` is the transport peer.
+    /// let events = core.handle_update(req, headers, peer);
+    /// if let Some(evt) = events.into_iter().next() {
+    ///     // handle SessionRefresh
+    /// }
+    /// ```
     fn handle_update(
         &mut self,
         req: SipRequest,
@@ -1262,6 +1456,23 @@ impl SipCore {
         }
     }
 
+    /// Process a SessionOut command by sending the corresponding SIP message(s)
+    /// and updating transaction state.
+    ///
+    /// This applies the requested outgoing session action (provisional responses,
+    /// final answers, UPDATE, BYE, error responses, and related retransmit control),
+    /// including starting/stopping reliable-provisional or final-OK retransmit loops,
+    /// applying session-timer headers when applicable, clearing or removing invite
+    /// state, and emitting warnings when message construction fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use crate::sip::{SipCore, CallId, SessionOut};
+    /// # fn example(core: &mut SipCore, call_id: &CallId, out: SessionOut) {
+    /// core.handle_session_out(call_id, out);
+    /// # }
+    /// ```
     pub fn handle_session_out(&mut self, call_id: &CallId, out: SessionOut) {
         match out {
             SessionOut::SipSend100 => {

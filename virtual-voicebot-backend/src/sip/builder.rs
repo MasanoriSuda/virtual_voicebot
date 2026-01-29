@@ -380,6 +380,31 @@ mod tests {
     use super::*;
     use crate::session::types::Sdp;
 
+    /// Verifies that a final SDP response for an INVITE to a `sips:` URI uses a `sips:` Contact header.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Build an INVITE request addressed to a sips: URI and generate a 200 OK SDP response.
+    /// let req = SipRequestBuilder::new(SipMethod::Invite, "sips:alice@example.com")
+    ///     .header("Via", "SIP/2.0/TLS example.com;branch=z9hG4bK-1")
+    ///     .header("From", "<sips:alice@example.com>;tag=alice")
+    ///     .header("To", "<sips:bob@example.com>")
+    ///     .header("Call-ID", "call-1")
+    ///     .header("CSeq", "1 INVITE")
+    ///     .build();
+    /// let answer = Sdp::pcmu("127.0.0.1", 4000);
+    ///
+    /// let resp = response_final_with_sdp(&req, 200, "OK", "127.0.0.1", 5061, &answer).expect("response");
+    /// let contact = resp
+    ///     .headers
+    ///     .iter()
+    ///     .find(|h| h.name.eq_ignore_ascii_case("Contact"))
+    ///     .map(|h| h.value.clone())
+    ///     .expect("contact header");
+    ///
+    /// assert!(contact.starts_with("sips:"));
+    /// ```
     #[test]
     fn response_final_with_sdp_uses_sips_contact() {
         let req = SipRequestBuilder::new(SipMethod::Invite, "sips:alice@example.com")
