@@ -253,7 +253,11 @@ impl DefaultAiPort {
 }
 
 impl AiPort for DefaultAiPort {
-    fn transcribe_chunks(&self, call_id: String, chunks: Vec<AsrChunk>) -> AiFuture<Result<String>> {
+    fn transcribe_chunks(
+        &self,
+        call_id: String,
+        chunks: Vec<AsrChunk>,
+    ) -> AiFuture<Result<String>> {
         Box::pin(async move { asr::transcribe_chunks(&call_id, &chunks).await })
     }
 
@@ -353,9 +357,7 @@ async fn call_gemini(messages: &[ChatMessage]) -> Result<String> {
         });
     }
 
-    let req_body = GeminiRequest {
-        contents,
-    };
+    let req_body = GeminiRequest { contents };
 
     let resp = client.post(&url).json(&req_body).send().await?;
     let status = resp.status();
@@ -387,9 +389,10 @@ fn aws_transcribe_enabled() -> bool {
 
 async fn transcribe_with_aws(wav_path: &str) -> Result<String> {
     let ai_cfg = config::ai_config();
-    let bucket = ai_cfg.aws_transcribe_bucket.as_deref().ok_or_else(|| {
-        anyhow!("AWS_TRANSCRIBE_BUCKET must be set when USE_AWS_TRANSCRIBE=1")
-    })?;
+    let bucket = ai_cfg
+        .aws_transcribe_bucket
+        .as_deref()
+        .ok_or_else(|| anyhow!("AWS_TRANSCRIBE_BUCKET must be set when USE_AWS_TRANSCRIBE=1"))?;
     let prefix = ai_cfg.aws_transcribe_prefix.as_str();
 
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();

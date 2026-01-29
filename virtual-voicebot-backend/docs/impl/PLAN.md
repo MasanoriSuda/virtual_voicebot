@@ -5260,3 +5260,226 @@ transfer:
 - 本PLAN（#57）はConfirmed状態です
 - 新しいSIP実装は不要。既存の `spawn_transfer()` を再利用する
 - 暫定対応として「須田さん」のみ。人物追加はYAMLへの追記で可能
+
+---
+
+# Step-XX: LINE通知機能 (Issue #61)
+
+| 項目 | 値 |
+|------|-----|
+| **Issue** | [#61](https://github.com/MasanoriSuda/virtual_voicebot/issues/61) |
+| **依存** | なし |
+| **Status** | Confirmed |
+| **Last Updated** | 2026-01-29 |
+
+---
+
+## 概要
+
+incoming（着信）時にLINE Messaging APIを使用して通知する機能を追加する。
+
+| 通知種別 | トリガー | 内容 |
+|----------|----------|------|
+| 着信通知 | INVITE受領時 | 発信者番号（user部）、時刻（JST） |
+| 不在着信通知 | CANCEL受領時 | 発信者番号（user部）、時刻（JST） |
+| 通話終了通知 | BYE受領時 | 発信者番号（user部）、通話時間 |
+
+---
+
+## 処理フロー
+
+```
+[着信時]
+INVITE受領 → session: 180 Ringing送信
+           → session→app: CallRinging { call_id, from, timestamp }
+           → app: LINE通知（非同期spawn）
+
+[切断時（CANCEL）]
+CANCEL受領 → session→app: CallEnded { call_id, from, reason: Cancel, timestamp }
+           → app: LINE通知（非同期spawn）
+
+[切断時（BYE）]
+BYE受領 → session→app: CallEnded { call_id, from, reason: Bye, duration_sec }
+        → app: LINE通知（非同期spawn）
+```
+
+---
+
+## 通知内容フォーマット
+
+```
+【着信】
+着信あり
+発信者: 0312345678
+時刻: 2026-01-29 18:30:45
+
+【不在着信（CANCEL）】
+不在着信
+発信者: 0312345678
+時刻: 2026-01-29 18:30:45
+
+【通話終了（BYE）】
+通話終了
+発信者: 0312345678
+通話時間: 03:25
+```
+
+---
+
+## From番号の抽出ロジック
+
+```
+入力: sip:0312345678@example.com → 抽出: 0312345678
+入力: tel:+81312345678           → 抽出: +81312345678
+```
+
+- `sip:` プレフィックスを除去
+- `@` 以降を除去
+- `tel:` 形式にも対応
+
+---
+
+## イベント設計
+
+### 新規イベント（session→app）
+
+```rust
+/// 着信開始（INVITE受領・180 Ringing送信時）
+pub struct CallRinging {
+    pub call_id: String,
+    pub from: String,        // 抽出済みの発信者番号
+    pub timestamp: DateTime<Jst>,
+}
+```
+
+### 既存イベント拡張（session→app）
+
+```rust
+pub enum EndReason {
+    Bye,      // 通話後の正常切断
+    Cancel,   // 応答前切断（不在着信）
+    Timeout,  // タイムアウト（既存）
+    Error,    // エラー（既存）
+}
+
+pub struct CallEnded {
+    pub call_id: String,
+    pub from: String,
+    pub reason: EndReason,
+    pub duration_sec: Option<u64>,  // BYE時のみ有効
+    pub timestamp: DateTime<Jst>,
+}
+```
+
+---
+
+## 責務配置
+
+```
+app/
+├─ mod.rs
+├─ notification.rs   # NotificationPort + LineAdapter
+└─ ...
+```
+
+### NotificationPort（trait）
+
+```rust
+#[async_trait]
+pub trait NotificationPort: Send + Sync {
+    async fn notify_ringing(&self, from: &str, timestamp: DateTime<Jst>);
+    async fn notify_missed(&self, from: &str, timestamp: DateTime<Jst>);
+    async fn notify_ended(&self, from: &str, duration_sec: u64);
+}
+```
+
+### LineAdapter
+
+- LINE Messaging API（Push Message）を使用
+- エンドポイント: `https://api.line.me/v2/bot/message/push`
+- 失敗時: `warn!` ログのみ、リトライなし
+
+---
+
+## 環境変数
+
+| 変数名 | 説明 | 必須 |
+|--------|------|------|
+| `LINE_CHANNEL_ACCESS_TOKEN` | Messaging API のチャネルアクセストークン | Yes |
+| `LINE_USER_ID` | 通知先ユーザーID | Yes |
+| `LINE_NOTIFY_ENABLED` | 通知有効/無効（デフォルト: `true`） | No |
+
+---
+
+## 重複排除
+
+```rust
+struct NotificationState {
+    ringing_notified: bool,
+    ended_notified: bool,
+}
+// セッション単位で保持、1通話1イベント1通知を保証
+```
+
+---
+
+## 非機能要件
+
+| 項目 | 仕様 |
+|------|------|
+| 通知方式 | 非同期（`tokio::spawn`） |
+| タイムアウト | 5秒 |
+| リトライ | なし |
+| 失敗時 | `warn!` ログのみ |
+| タイムゾーン | JST固定 |
+
+---
+
+## ドキュメント変更
+
+### design.md §6.2 への追記
+
+```diff
+ [session → app]     CallStarted/PcmReceived/CallEnded/SessionTimeout : 通話状態の通知
++[session → app]     CallRinging : 着信開始の通知（INVITE受領・180送信時）
+```
+
+### session.md §5 への追記
+
+```diff
+ - app出力: `SessionOut::CallStarted` / `PcmReceived` / `CallEnded` / `SessionTimeout`
++- app出力: `SessionOut::CallRinging` : 着信開始（INVITE受領・180 Ringing送信時）
+```
+
+---
+
+## 受入条件（Acceptance Criteria）
+
+1. INVITE受領時にLINE通知が送信される（発信者番号・時刻JST）
+2. CANCEL受領時に「不在着信」通知が送信される
+3. BYE受領時に「通話終了」通知が送信される（通話時間含む）
+4. From番号は `sip:user@host` から `user` 部分のみ抽出される
+5. 同一通話で同種通知が2回以上送信されない
+6. LINE通知失敗時、通話処理に影響しない
+7. `LINE_NOTIFY_ENABLED=false` で通知無効化
+8. 環境変数未設定時、panicせずログ出力して通知機能を無効化
+
+---
+
+## リスク
+
+| リスク | 影響 | 緩和策 |
+|--------|------|--------|
+| LINE API障害 | 通知欠落 | best effort許容、ログで追跡 |
+| rate limit | 大量着信時に通知失敗 | MVP許容、将来キュー化検討 |
+| トークン漏洩 | セキュリティリスク | ログにトークンを出さない |
+
+**即時ロールバック**: `LINE_NOTIFY_ENABLED=false`
+
+---
+
+## 備考
+
+- 実装はCodex担当へ引き継いでください
+- 本PLAN（#61）はConfirmed状態です
+- LINE Notify はサービス終了済みのため、Messaging API を使用

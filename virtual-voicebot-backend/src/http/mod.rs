@@ -87,10 +87,7 @@ async fn handle_conn(socket: &mut tokio::net::TcpStream, base_dir: &Path) -> std
             break;
         }
         if let Some((name, value)) = line.split_once(':') {
-            headers.insert(
-                name.trim().to_ascii_lowercase(),
-                value.trim().to_string(),
-            );
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
         }
     }
 
@@ -123,7 +120,12 @@ async fn handle_conn(socket: &mut tokio::net::TcpStream, base_dir: &Path) -> std
         .map(|value| value.to_string());
     let file_path = base_dir.join(&rel);
 
-    let meta = match tokio::time::timeout(config::timeouts().recording_io, tokio::fs::metadata(&file_path)).await {
+    let meta = match tokio::time::timeout(
+        config::timeouts().recording_io,
+        tokio::fs::metadata(&file_path),
+    )
+    .await
+    {
         Ok(Ok(meta)) => meta,
         Ok(Err(_)) => {
             log_recording_response(404, call_id.as_deref(), &req_path, range_value);
@@ -149,7 +151,9 @@ async fn handle_conn(socket: &mut tokio::net::TcpStream, base_dir: &Path) -> std
                 resp.extend_from_slice(b"HTTP/1.1 416 Range Not Satisfiable\r\n");
                 resp.extend_from_slice(b"Content-Type: text/plain\r\n");
                 resp.extend_from_slice(b"Accept-Ranges: bytes\r\n");
-                resp.extend_from_slice(format!("Content-Range: bytes */{}\r\n", total_len).as_bytes());
+                resp.extend_from_slice(
+                    format!("Content-Range: bytes */{}\r\n", total_len).as_bytes(),
+                );
                 resp.extend_from_slice(b"Access-Control-Allow-Origin: *\r\n");
                 resp.extend_from_slice(b"Content-Length: 0\r\n");
                 resp.extend_from_slice(b"Connection: close\r\n\r\n");
@@ -171,18 +175,24 @@ async fn handle_conn(socket: &mut tokio::net::TcpStream, base_dir: &Path) -> std
                     format!("bytes {}-{}/{}", start, end, total_len),
                 ),
             ];
-            return write_response_with_headers(socket, 206, "Partial Content", &headers, &[], chunk_len, false).await;
+            return write_response_with_headers(
+                socket,
+                206,
+                "Partial Content",
+                &headers,
+                &[],
+                chunk_len,
+                false,
+            )
+            .await;
         }
-        let read_res = tokio::time::timeout(
-            config::timeouts().recording_io,
-            async {
-                let mut file = tokio::fs::File::open(&file_path).await?;
-                file.seek(SeekFrom::Start(start)).await?;
-                let mut buf = vec![0u8; chunk_len as usize];
-                file.read_exact(&mut buf).await?;
-                Ok::<_, std::io::Error>(buf)
-            },
-        )
+        let read_res = tokio::time::timeout(config::timeouts().recording_io, async {
+            let mut file = tokio::fs::File::open(&file_path).await?;
+            file.seek(SeekFrom::Start(start)).await?;
+            let mut buf = vec![0u8; chunk_len as usize];
+            file.read_exact(&mut buf).await?;
+            Ok::<_, std::io::Error>(buf)
+        })
         .await;
         match read_res {
             Ok(Ok(bytes)) => {
@@ -223,7 +233,9 @@ async fn handle_conn(socket: &mut tokio::net::TcpStream, base_dir: &Path) -> std
         ];
         write_response_with_headers(socket, 200, "OK", &headers, &[], total_len, false).await
     } else {
-        match tokio::time::timeout(config::timeouts().recording_io, tokio::fs::read(&file_path)).await {
+        match tokio::time::timeout(config::timeouts().recording_io, tokio::fs::read(&file_path))
+            .await
+        {
             Ok(Ok(bytes)) => {
                 log_recording_response(200, call_id.as_deref(), &req_path, range_value);
                 let headers = [
@@ -270,7 +282,11 @@ async fn write_response(
     reason: &str,
     body: &[u8],
 ) -> std::io::Result<()> {
-    let content_type = if status == 200 { "audio/wav" } else { "text/plain" };
+    let content_type = if status == 200 {
+        "audio/wav"
+    } else {
+        "text/plain"
+    };
     let headers = [
         ("Content-Type", content_type.to_string()),
         ("Accept-Ranges", "bytes".to_string()),

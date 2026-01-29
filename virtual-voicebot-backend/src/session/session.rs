@@ -3,17 +3,18 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use chrono::{Local, Timelike};
+use chrono::{DateTime, FixedOffset, Local, Timelike, Utc};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::time::{interval, Duration, Instant, MissedTickBehavior};
 
+use crate::session::b2bua;
 use crate::session::types::Sdp;
 use crate::session::types::*;
-use crate::session::b2bua;
 use crate::sip::{parse_name_addr, parse_uri};
 
-use crate::app::AppEvent;
+use crate::app::{AppEvent, EndReason};
+use crate::config;
 use crate::http::ingest::IngestPort;
 use crate::media::merge::merge_stereo_files;
 use crate::media::Recorder;
@@ -22,7 +23,6 @@ use crate::recording::storage::StoragePort;
 use crate::rtp::codec::mulaw_to_linear16;
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::capture::AudioCapture;
-use crate::config;
 use crate::session::timers::SessionTimers;
 use anyhow::Error;
 use log::{debug, info, warn};
@@ -32,26 +32,37 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
 const PLAYBACK_FRAME_INTERVAL: Duration = Duration::from_millis(20);
 const TRANSFER_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
 
-const INTRO_MORNING_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_morning.wav");
-const INTRO_AFTERNOON_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_afternoon.wav");
-const INTRO_EVENING_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_evening.wav");
+const INTRO_MORNING_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_morning.wav"
+);
+const INTRO_AFTERNOON_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_afternoon.wav"
+);
+const INTRO_EVENING_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_evening.wav"
+);
 const IVR_INTRO_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr.wav");
 const VOICEBOT_INTRO_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr_1.wav");
-const IVR_INTRO_AGAIN_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr_again.wav");
-const IVR_SENDAI_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sendai.wav");
+const IVR_INTRO_AGAIN_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_ivr_again.wav"
+);
+const IVR_SENDAI_WAV_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sendai.wav");
 const IVR_INVALID_WAV_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_invalid.wav");
-const TRANSFER_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_try_transfer.wav");
-const TRANSFER_FAIL_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_transfer_fail.wav");
+const TRANSFER_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_try_transfer.wav"
+);
+const TRANSFER_FAIL_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_transfer_fail.wav"
+);
 
 fn intro_wav_path_for_hour(hour: u32) -> &'static str {
     match hour {
@@ -68,7 +79,14 @@ fn get_intro_wav_path() -> &'static str {
 
 fn extract_user_from_to(value: &str) -> Option<String> {
     if let Ok(name_addr) = parse_name_addr(value) {
-        return name_addr.uri.user;
+        if name_addr.uri.scheme.eq_ignore_ascii_case("tel") {
+            if !name_addr.uri.host.trim().is_empty() {
+                return Some(name_addr.uri.host);
+            }
+        }
+        if let Some(user) = name_addr.uri.user {
+            return Some(user);
+        }
     }
     let trimmed = value.trim();
     let addr = if let Some(start) = trimmed.find('<') {
@@ -81,7 +99,22 @@ fn extract_user_from_to(value: &str) -> Option<String> {
         trimmed
     };
     let addr = addr.split(';').next().unwrap_or(addr).trim();
-    parse_uri(addr).ok().and_then(|uri| uri.user)
+    let uri = parse_uri(addr).ok()?;
+    if uri.scheme.eq_ignore_ascii_case("tel") {
+        if !uri.host.trim().is_empty() {
+            return Some(uri.host);
+        }
+    }
+    uri.user
+}
+
+fn extract_notify_from(value: &str) -> String {
+    extract_user_from_to(value).unwrap_or_default()
+}
+
+fn now_jst() -> DateTime<FixedOffset> {
+    let offset = FixedOffset::east_opt(9 * 3600).unwrap();
+    Utc::now().with_timezone(&offset)
 }
 
 #[derive(Clone)]
@@ -310,6 +343,12 @@ impl Session {
                                     let _ = self
                                         .session_out_tx
                                         .send((self.call_id.clone(), SessionOut::SipSend180));
+                                    let from = extract_notify_from(self.from_uri.as_str());
+                                    let _ = self.app_tx.send(AppEvent::CallRinging {
+                                        call_id: self.call_id.clone(),
+                                        from,
+                                        timestamp: now_jst(),
+                                    });
                                     let ring_duration = config::ring_duration();
                                     if ring_duration.is_zero() {
                                         let _ = self.session_out_tx.send((
@@ -655,9 +694,7 @@ impl Session {
                             let _ = self
                                 .session_out_tx
                                 .send((self.call_id.clone(), SessionOut::RtpStopTx));
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::Bye);
                         }
                         (_, SessionIn::B2buaRinging) => {
                             if self.outbound_mode
@@ -747,9 +784,7 @@ impl Session {
                                 },
                             ));
                             self.stop_recorders();
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::Cancel);
                         }
                         (_, SessionIn::SipBye) => {
                             self.stop_ring_delay();
@@ -768,9 +803,7 @@ impl Session {
                                 .send((self.call_id.clone(), SessionOut::SipSendBye200));
                             self.stop_recorders();
                             self.send_ingest("ended").await;
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::Bye);
                         }
                         (_, SessionIn::SipTransactionTimeout { call_id: _ }) => {
                             warn!("[session {}] transaction timeout notified", self.call_id);
@@ -801,9 +834,7 @@ impl Session {
                             let _ = self
                                 .session_out_tx
                                 .send((self.call_id.clone(), SessionOut::SipSendBye200));
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::AppHangup);
                         }
                         (_, SessionIn::AppTransferRequest { person }) => {
                             if self.transfer_cancel.is_some() || self.b_leg.is_some() {
@@ -875,9 +906,7 @@ impl Session {
                             let _ = self
                                 .session_out_tx
                                 .send((self.call_id.clone(), SessionOut::AppSessionTimeout));
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::Timeout);
                         }
                         (_, SessionIn::Abort(e)) => {
                             warn!("call {} abort: {e:?}", self.call_id);
@@ -894,9 +923,7 @@ impl Session {
                             let _ = self
                                 .session_out_tx
                                 .send((self.call_id.clone(), SessionOut::RtpStopTx));
-                            let _ = self.app_tx.send(AppEvent::CallEnded {
-                                call_id: self.call_id.clone(),
-                            });
+                            self.send_call_ended(EndReason::Error);
                         }
                         _ => { /* それ以外は無視 or ログ */ }
                     }
@@ -912,6 +939,19 @@ impl Session {
     fn build_answer_pcmu8k(&self) -> Sdp {
         // PCMU/8000 でローカル SDP を組み立て
         Sdp::pcmu(self.media_cfg.local_ip.clone(), self.media_cfg.local_port)
+    }
+
+    fn send_call_ended(&self, reason: EndReason) {
+        let from = extract_notify_from(self.from_uri.as_str());
+        let timestamp = now_jst();
+        let duration_sec = self.started_at.map(|started| started.elapsed().as_secs());
+        let _ = self.app_tx.send(AppEvent::CallEnded {
+            call_id: self.call_id.clone(),
+            from,
+            reason,
+            duration_sec,
+            timestamp,
+        });
     }
 
     fn peer_rtp_dst(&self) -> (String, u16) {

@@ -119,7 +119,10 @@ pub fn parse_rtcp_packets(data: &[u8]) -> Vec<RtcpPacket> {
                     } else {
                         None
                     };
-                    packets.push(RtcpPacket::ReceiverReport(RtcpReceiverReport { ssrc, report }));
+                    packets.push(RtcpPacket::ReceiverReport(RtcpReceiverReport {
+                        ssrc,
+                        report,
+                    }));
                 }
             }
             _ => {}

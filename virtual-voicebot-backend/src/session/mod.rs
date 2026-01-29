@@ -1,11 +1,11 @@
 #![allow(clippy::module_inception)]
 
-pub mod session;
-pub mod types;
-pub mod writing;
 pub mod b2bua;
 mod capture;
+pub mod session;
 mod timers;
+pub mod types;
+pub mod writing;
 
 #[allow(unused_imports)]
 pub use session::{Session, SessionHandle};

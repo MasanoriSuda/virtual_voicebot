@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc::unbounded_channel;
 
+use crate::app::{AppNotificationPort, LineAdapter, NoopNotification};
 use crate::db::{NoopPhoneLookup, PhoneLookupPort, TsurugiAdapter};
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::{
@@ -109,6 +110,23 @@ async fn main() -> anyhow::Result<()> {
     } else {
         Arc::new(NoopPhoneLookup::new())
     };
+
+    let notification_port: Arc<dyn AppNotificationPort> = {
+        let cfg = config::line_notify_config();
+        if cfg.enabled {
+            let token = cfg.channel_access_token.clone().unwrap_or_default();
+            let user_id = cfg.user_id.clone().unwrap_or_default();
+            match LineAdapter::new(token, user_id) {
+                Ok(adapter) => Arc::new(adapter),
+                Err(err) => {
+                    log::warn!("[main] line adapter init failed: {}", err);
+                    Arc::new(NoopNotification::new())
+                }
+            }
+        } else {
+            Arc::new(NoopNotification::new())
+        }
+    };
     let ingest_port = Arc::new(http::ingest::HttpIngestPort::new(
         config::timeouts().ingest_http,
     ));
@@ -154,6 +172,7 @@ async fn main() -> anyhow::Result<()> {
                                 session_out_tx.clone(),
                                 ai_port.clone(),
                                 phone_lookup.clone(),
+                                notification_port.clone(),
                             );
                             let sess_tx = spawn_session(
                                 call_id.clone(),

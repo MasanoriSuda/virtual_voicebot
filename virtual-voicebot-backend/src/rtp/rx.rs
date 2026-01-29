@@ -155,9 +155,8 @@ impl RtpReceiver {
                             let payload = decode_to_mulaw(codec, &frame.payload);
                             let digit = {
                                 let mut map = self.dtmf.lock().unwrap();
-                                let detector = map
-                                    .entry(call_id.clone())
-                                    .or_insert_with(DtmfDetector::new);
+                                let detector =
+                                    map.entry(call_id.clone()).or_insert_with(DtmfDetector::new);
                                 detector.ingest_mulaw(&payload)
                             };
                             if let Some(digit) = digit {

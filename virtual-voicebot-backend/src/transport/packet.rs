@@ -77,16 +77,18 @@ pub async fn run_packet_loop(
         let tcp_conns = tcp_conns.clone();
         let conn_seq = conn_seq.clone();
         tokio::spawn(async move {
-            if let Err(e) = run_sip_tls_accept_loop(listener, acceptor, sip_tx, tcp_conns, conn_seq, tcp_idle).await {
+            if let Err(e) =
+                run_sip_tls_accept_loop(listener, acceptor, sip_tx, tcp_conns, conn_seq, tcp_idle)
+                    .await
+            {
                 log::error!("[packet] SIP TLS loop error: {:?}", e);
             }
         });
     }
 
-    let sip_task =
-        tokio::spawn(async move {
-            run_sip_udp_loop(sip_sock, sip_tx, &mut sip_send_rx, tcp_conns).await
-        });
+    let sip_task = tokio::spawn(async move {
+        run_sip_udp_loop(sip_sock, sip_tx, &mut sip_send_rx, tcp_conns).await
+    });
     let rtp_task = tokio::spawn(run_rtp_udp_loop(rtp_sock, rtp_rx));
 
     let (_r1, _r2) = tokio::join!(sip_task, rtp_task);
@@ -197,7 +199,9 @@ async fn run_sip_tcp_accept_loop(
         let sip_tx = sip_tx.clone();
         let tcp_conns = tcp_conns.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_sip_tcp_conn(conn_id, peer, stream, sip_tx, tcp_conns, idle_timeout).await {
+            if let Err(e) =
+                handle_sip_tcp_conn(conn_id, peer, stream, sip_tx, tcp_conns, idle_timeout).await
+            {
                 log::warn!("[sip tcp] conn_id={} error: {:?}", conn_id, e);
             }
         });

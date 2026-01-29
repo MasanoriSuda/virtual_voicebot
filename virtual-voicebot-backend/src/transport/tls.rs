@@ -3,8 +3,8 @@ use std::io::BufReader;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use rustls::{Certificate, PrivateKey, RootCertStore, ServerConfig};
 use rustls::server::AllowAnyAuthenticatedClient;
+use rustls::{Certificate, PrivateKey, RootCertStore, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 
 use crate::config::TlsSettings;
@@ -30,8 +30,8 @@ pub fn build_tls_acceptor(settings: &TlsSettings) -> Result<TlsAcceptor> {
 fn load_cert_chain(path: &str) -> Result<Vec<Certificate>> {
     let file = File::open(path).with_context(|| format!("open cert file {}", path))?;
     let mut reader = BufReader::new(file);
-    let certs = rustls_pemfile::certs(&mut reader)
-        .with_context(|| format!("read certs from {}", path))?;
+    let certs =
+        rustls_pemfile::certs(&mut reader).with_context(|| format!("read certs from {}", path))?;
     if certs.is_empty() {
         return Err(anyhow!("no certificates found in {}", path));
     }

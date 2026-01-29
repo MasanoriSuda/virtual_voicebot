@@ -16,7 +16,7 @@ use crate::config;
 use crate::config::RegistrarConfig;
 use crate::rtp::codec::{codec_from_pt, decode_to_mulaw};
 use crate::rtp::parser::parse_rtp_packet;
-use crate::session::types::{SessionIn, Sdp};
+use crate::session::types::{Sdp, SessionIn};
 use crate::sip::auth::{build_authorization_header, parse_digest_challenge};
 use crate::sip::auth_cache::{self, DigestAuthChallenge, DigestAuthHeader};
 use crate::sip::b2bua_bridge::{self, B2buaRegistration, B2buaSipMessage};
@@ -820,7 +820,9 @@ fn resolve_target_addr(uri: &str) -> Result<SocketAddr> {
     let port = parsed.port.unwrap_or(DEFAULT_SIP_PORT);
     let host = parsed.host;
     let mut addrs = (host.as_str(), port).to_socket_addrs()?;
-    addrs.next().ok_or_else(|| anyhow!("unable to resolve {}", host))
+    addrs
+        .next()
+        .ok_or_else(|| anyhow!("unable to resolve {}", host))
 }
 
 fn resolve_rtp_addr(sdp: &Sdp) -> Result<SocketAddr> {
@@ -910,12 +912,7 @@ async fn send_outbound_invite(
 }
 
 fn build_via(host: &str, port: u16) -> String {
-    format!(
-        "SIP/2.0/UDP {}:{};branch={}",
-        host,
-        port,
-        generate_branch()
-    )
+    format!("SIP/2.0/UDP {}:{};branch={}", host, port, generate_branch())
 }
 
 fn generate_branch() -> String {
@@ -974,11 +971,7 @@ fn extract_contact_uri(value: &str) -> &str {
             return &trimmed[start + 1..start + 1 + end];
         }
     }
-    trimmed
-        .split(';')
-        .next()
-        .unwrap_or(trimmed)
-        .trim()
+    trimmed.split(';').next().unwrap_or(trimmed).trim()
 }
 
 fn log_invite(label: &str, peer: SocketAddr, request: &SipRequest) {
@@ -1020,7 +1013,10 @@ fn format_response_dump(resp: &SipResponse) -> String {
     let mut out = String::new();
     let _ = std::fmt::Write::write_fmt(
         &mut out,
-        format_args!("{} {} {}\r\n", resp.version, resp.status_code, resp.reason_phrase),
+        format_args!(
+            "{} {} {}\r\n",
+            resp.version, resp.status_code, resp.reason_phrase
+        ),
     );
     for header in &resp.headers {
         if header.name.eq_ignore_ascii_case("Authorization")

@@ -88,7 +88,11 @@ fn alaw_to_linear16(a: u8) -> i16 {
         value += 0x100;
         value <<= exponent - 1;
     }
-    if sign { -value } else { value }
+    if sign {
+        -value
+    } else {
+        value
+    }
 }
 
 fn linear16_to_alaw(sample: i16) -> u8 {

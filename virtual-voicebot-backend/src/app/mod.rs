@@ -3,12 +3,14 @@
 //! ai ポートを呼び出してボット音声(WAV)のパスを session に返す。
 //! transport/sip/rtp には依存せず、SessionOut 経由のイベントのみを返す。
 
+mod notification;
 mod router;
 
 use std::sync::Arc;
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
+use crate::app::notification::{NotificationFuture, NotificationPort};
 use crate::app::router::{
     parse_intent_json, router_config, system_info_response, RouteAction, Router,
 };
@@ -17,8 +19,9 @@ use crate::db::port::PhoneLookupPort;
 use crate::ports::ai::{AiSerPort, AsrChunk, ChatMessage, Role, SerInputPcm, WeatherQuery};
 use crate::session::SessionOut;
 
-const SORRY_WAV_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sorry.wav");
+pub use notification::{LineAdapter, NoopNotification, NotificationPort as AppNotificationPort};
+
+const SORRY_WAV_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sorry.wav");
 const SPEC_FILTER_KEYWORDS: [&str; 21] = [
     "仕様",
     "内部",
@@ -45,6 +48,11 @@ const SPEC_FILTER_KEYWORDS: [&str; 21] = [
 
 #[derive(Debug)]
 pub enum AppEvent {
+    CallRinging {
+        call_id: String,
+        from: String,
+        timestamp: chrono::DateTime<chrono::FixedOffset>,
+    },
     CallStarted {
         call_id: String,
         caller: Option<String>,
@@ -54,7 +62,22 @@ pub enum AppEvent {
         pcm_mulaw: Vec<u8>,
         pcm_linear16: Vec<i16>,
     },
-    CallEnded { call_id: String },
+    CallEnded {
+        call_id: String,
+        from: String,
+        reason: EndReason,
+        duration_sec: Option<u64>,
+        timestamp: chrono::DateTime<chrono::FixedOffset>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndReason {
+    Bye,
+    Cancel,
+    Timeout,
+    Error,
+    AppHangup,
 }
 
 /// シンプルな app ワーカーを起動する。現行の挙動を維持するため、
@@ -64,9 +87,17 @@ pub fn spawn_app_worker(
     session_out_tx: UnboundedSender<(String, SessionOut)>,
     ai_port: Arc<dyn AiSerPort>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
+    notification_port: Arc<dyn NotificationPort>,
 ) -> UnboundedSender<AppEvent> {
     let (tx, rx) = unbounded_channel();
-    let worker = AppWorker::new(call_id, session_out_tx, rx, ai_port, phone_lookup);
+    let worker = AppWorker::new(
+        call_id,
+        session_out_tx,
+        rx,
+        ai_port,
+        phone_lookup,
+        notification_port,
+    );
     tokio::spawn(async move { worker.run().await });
     tx
 }
@@ -80,6 +111,15 @@ struct AppWorker {
     ai_port: Arc<dyn AiSerPort>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
     router: Router,
+    notification_port: Arc<dyn NotificationPort>,
+    notification_state: NotificationState,
+}
+
+#[derive(Debug, Default)]
+struct NotificationState {
+    ringing_notified: bool,
+    missed_notified: bool,
+    ended_notified: bool,
 }
 
 impl AppWorker {
@@ -89,6 +129,7 @@ impl AppWorker {
         rx: UnboundedReceiver<AppEvent>,
         ai_port: Arc<dyn AiSerPort>,
         phone_lookup: Arc<dyn PhoneLookupPort>,
+        notification_port: Arc<dyn NotificationPort>,
     ) -> Self {
         Self {
             call_id,
@@ -99,12 +140,28 @@ impl AppWorker {
             ai_port,
             phone_lookup,
             router: Router::new(),
+            notification_port,
+            notification_state: NotificationState::default(),
         }
     }
 
     async fn run(mut self) {
         while let Some(ev) = self.rx.recv().await {
             match ev {
+                AppEvent::CallRinging {
+                    call_id,
+                    from,
+                    timestamp,
+                } => {
+                    if call_id != self.call_id {
+                        log::warn!(
+                            "[app {}] CallRinging received for mismatched call_id={}",
+                            self.call_id,
+                            call_id
+                        );
+                    }
+                    self.notify_ringing(from, timestamp);
+                }
                 AppEvent::CallStarted { call_id, caller } => {
                     if call_id != self.call_id {
                         log::warn!(
@@ -114,9 +171,7 @@ impl AppWorker {
                         );
                     }
                     self.active = true;
-                    let caller_display = caller
-                        .as_deref()
-                        .filter(|value| !value.trim().is_empty());
+                    let caller_display = caller.as_deref().filter(|value| !value.trim().is_empty());
                     if let Some(value) = caller_display {
                         log::info!("[app {}] caller extracted={}", self.call_id, value);
                     } else {
@@ -144,13 +199,20 @@ impl AppWorker {
                         continue;
                     }
                     let call_id = self.call_id.clone();
-                    if let Err(e) =
-                        self.handle_audio_buffer(&call_id, pcm_mulaw, pcm_linear16).await
+                    if let Err(e) = self
+                        .handle_audio_buffer(&call_id, pcm_mulaw, pcm_linear16)
+                        .await
                     {
                         log::warn!("[app {}] audio handling failed: {:?}", self.call_id, e);
                     }
                 }
-                AppEvent::CallEnded { call_id } => {
+                AppEvent::CallEnded {
+                    call_id,
+                    from,
+                    reason,
+                    duration_sec,
+                    timestamp,
+                } => {
                     if call_id != self.call_id {
                         log::warn!(
                             "[app {}] CallEnded received for mismatched call_id={}",
@@ -158,6 +220,7 @@ impl AppWorker {
                             call_id
                         );
                     }
+                    self.notify_ended(from, reason, duration_sec, timestamp);
                     break;
                 }
             }
@@ -211,9 +274,7 @@ impl AppWorker {
 
         let trimmed = user_text.trim();
         if trimmed.is_empty() {
-            log::debug!(
-                "[app {call_id}] empty ASR text after filtering, playing sorry audio"
-            );
+            log::debug!("[app {call_id}] empty ASR text after filtering, playing sorry audio");
             let _ = self.session_out_tx.send((
                 self.call_id.clone(),
                 SessionOut::AppSendBotAudioFile {
@@ -347,15 +408,65 @@ impl AppWorker {
         // TTS
         match self.ai_port.synth_to_wav(answer_text, None).await {
             Ok(bot_wav) => {
-                let _ = self
-                    .session_out_tx
-                    .send((self.call_id.clone(), SessionOut::AppSendBotAudioFile { path: bot_wav }));
+                let _ = self.session_out_tx.send((
+                    self.call_id.clone(),
+                    SessionOut::AppSendBotAudioFile { path: bot_wav },
+                ));
             }
             Err(e) => {
                 log::warn!("[app {call_id}] TTS failed: {e:?}");
             }
         }
         Ok(())
+    }
+
+    fn notify_ringing(&mut self, from: String, timestamp: chrono::DateTime<chrono::FixedOffset>) {
+        if self.notification_state.ringing_notified {
+            return;
+        }
+        self.notification_state.ringing_notified = true;
+        let fut = self.notification_port.notify_ringing(from, timestamp);
+        self.spawn_notify("ringing", fut);
+    }
+
+    fn notify_ended(
+        &mut self,
+        from: String,
+        reason: EndReason,
+        duration_sec: Option<u64>,
+        timestamp: chrono::DateTime<chrono::FixedOffset>,
+    ) {
+        match reason {
+            EndReason::Cancel => {
+                if self.notification_state.missed_notified {
+                    return;
+                }
+                self.notification_state.missed_notified = true;
+                let fut = self.notification_port.notify_missed(from, timestamp);
+                self.spawn_notify("missed", fut);
+            }
+            EndReason::Bye => {
+                if self.notification_state.ended_notified {
+                    return;
+                }
+                let Some(duration_sec) = duration_sec else {
+                    return;
+                };
+                self.notification_state.ended_notified = true;
+                let fut = self.notification_port.notify_ended(from, duration_sec);
+                self.spawn_notify("ended", fut);
+            }
+            _ => {}
+        }
+    }
+
+    fn spawn_notify(&self, label: &'static str, fut: NotificationFuture) {
+        let call_id = self.call_id.clone();
+        tokio::spawn(async move {
+            if let Err(err) = fut.await {
+                log::warn!("[app {call_id}] notification {label} failed: {err}");
+            }
+        });
     }
 
     async fn handle_phone_lookup(&mut self, caller: Option<String>) {
@@ -399,9 +510,7 @@ impl AppWorker {
 
 fn is_spec_question(input: &str) -> bool {
     let lowered = input.to_ascii_lowercase();
-    SPEC_FILTER_KEYWORDS
-        .iter()
-        .any(|kw| lowered.contains(kw))
+    SPEC_FILTER_KEYWORDS.iter().any(|kw| lowered.contains(kw))
 }
 
 #[cfg(test)]

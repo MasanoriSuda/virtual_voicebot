@@ -44,11 +44,10 @@ pub async fn analyze(input: SerInputPcm) -> std::result::Result<SerResult, SerEr
         pcm: input.pcm.as_slice(),
     };
 
-    let client = super::http_client(config::timeouts().ai_http)
-        .map_err(|e| SerError {
-            session_id: input.session_id.clone(),
-            reason: format!("ser client error: {e}"),
-        })?;
+    let client = super::http_client(config::timeouts().ai_http).map_err(|e| SerError {
+        session_id: input.session_id.clone(),
+        reason: format!("ser client error: {e}"),
+    })?;
 
     let resp = client
         .post(ser_url)

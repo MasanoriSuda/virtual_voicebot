@@ -80,10 +80,7 @@ impl RegisterClient {
         );
         let from = format!(
             "<{}:{}@{}>;tag={}",
-            scheme,
-            self.cfg.user,
-            self.cfg.domain,
-            self.from_tag
+            scheme, self.cfg.user, self.cfg.domain, self.from_tag
         );
         let to = format!("<{}:{}@{}>", scheme, self.cfg.user, self.cfg.domain);
         let contact = format!(
@@ -150,8 +147,7 @@ impl RegisterClient {
                     self.schedule_retry();
                     return true;
                 };
-                if let Some(req) =
-                    self.prepare_authenticated_request(challenge_value, auth_header)
+                if let Some(req) = self.prepare_authenticated_request(challenge_value, auth_header)
                 {
                     self.pending_request = Some(req);
                 } else {

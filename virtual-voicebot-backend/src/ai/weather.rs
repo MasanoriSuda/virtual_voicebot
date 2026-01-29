@@ -101,10 +101,7 @@ async fn fetch_weather_report(query: &WeatherQuery) -> Result<WeatherReport> {
     let weather_cfg = config::weather_config();
     let area_code = location_to_area_code(query.location.as_str())
         .unwrap_or_else(|| weather_cfg.default_area_code.clone());
-    let date = query
-        .date
-        .clone()
-        .unwrap_or_else(|| "today".to_string());
+    let date = query.date.clone().unwrap_or_else(|| "today".to_string());
     let cache_key = format!("{area_code}:{date}");
     if let Some(cached) = load_cache(&cache_key, weather_cfg.cache_ttl).await {
         return Ok(cached);

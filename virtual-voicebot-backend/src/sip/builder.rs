@@ -391,8 +391,8 @@ mod tests {
             .build();
         let answer = Sdp::pcmu("127.0.0.1", 4000);
 
-        let resp = response_final_with_sdp(&req, 200, "OK", "127.0.0.1", 5061, &answer)
-            .expect("response");
+        let resp =
+            response_final_with_sdp(&req, 200, "OK", "127.0.0.1", 5061, &answer).expect("response");
         let contact = resp
             .headers
             .iter()

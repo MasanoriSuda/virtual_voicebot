@@ -25,7 +25,9 @@ pub struct IntentResult {
 #[derive(Debug, Clone)]
 pub enum RouteAction {
     FixedResponse(String),
-    GeneralChat { query: String },
+    GeneralChat {
+        query: String,
+    },
     Weather {
         query: String,
         location: String,
@@ -319,7 +321,6 @@ impl Router {
         }
         None
     }
-
 }
 
 fn normalize_person(input: &str) -> String {

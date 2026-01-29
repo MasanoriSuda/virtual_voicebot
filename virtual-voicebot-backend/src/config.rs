@@ -19,8 +19,7 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let sip_bind_ip =
-            std::env::var("SIP_BIND_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
+        let sip_bind_ip = std::env::var("SIP_BIND_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
         let sip_port = std::env::var("SIP_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -30,8 +29,7 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(10000);
         let local_ip = std::env::var("LOCAL_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let advertised_ip =
-            std::env::var("ADVERTISED_IP").unwrap_or_else(|_| local_ip.clone());
+        let advertised_ip = std::env::var("ADVERTISED_IP").unwrap_or_else(|_| local_ip.clone());
         let advertised_rtp_port = std::env::var("ADVERTISED_RTP_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -39,15 +37,13 @@ impl Config {
         let recording_http_addr =
             std::env::var("RECORDING_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:18080".to_string());
         let ingest_call_url = std::env::var("INGEST_CALL_URL").ok();
-        let recording_base_url = std::env::var("RECORDING_BASE_URL")
-            .ok()
-            .or_else(|| {
-                if let Some(port) = recording_http_addr.strip_prefix("0.0.0.0:") {
-                    Some(format!("http://{}:{}", advertised_ip, port))
-                } else {
-                    Some(format!("http://{}", recording_http_addr))
-                }
-            });
+        let recording_base_url = std::env::var("RECORDING_BASE_URL").ok().or_else(|| {
+            if let Some(port) = recording_http_addr.strip_prefix("0.0.0.0:") {
+                Some(format!("http://{}:{}", advertised_ip, port))
+            } else {
+                Some(format!("http://{}", recording_http_addr))
+            }
+        });
 
         Ok(Self {
             sip_bind_ip,
@@ -258,8 +254,7 @@ impl RegistrarConfig {
                 RegistrarTransport::Tls => env_u16("SIP_TLS_PORT", 5061),
                 _ => env_u16("SIP_PORT", 5060),
             });
-        let auth_username =
-            env_non_empty("REGISTER_AUTH_USER").unwrap_or_else(|| user.clone());
+        let auth_username = env_non_empty("REGISTER_AUTH_USER").unwrap_or_else(|| user.clone());
         let auth_password = env_non_empty("REGISTER_AUTH_PASSWORD");
 
         Some(Self {
@@ -279,7 +274,9 @@ impl RegistrarConfig {
 static REGISTRAR_CONFIG: OnceLock<Option<RegistrarConfig>> = OnceLock::new();
 
 pub fn registrar_config() -> Option<&'static RegistrarConfig> {
-    REGISTRAR_CONFIG.get_or_init(RegistrarConfig::from_env).as_ref()
+    REGISTRAR_CONFIG
+        .get_or_init(RegistrarConfig::from_env)
+        .as_ref()
 }
 
 #[derive(Clone, Debug)]
@@ -358,6 +355,38 @@ pub fn phone_lookup_enabled() -> bool {
 
 pub fn tsurugi_endpoint() -> Option<String> {
     phone_lookup_config().tsurugi_endpoint.clone()
+}
+
+#[derive(Clone, Debug)]
+pub struct LineNotifyConfig {
+    pub enabled: bool,
+    pub channel_access_token: Option<String>,
+    pub user_id: Option<String>,
+}
+
+impl LineNotifyConfig {
+    fn from_env() -> Self {
+        let enabled = env_bool("LINE_NOTIFY_ENABLED", true);
+        let channel_access_token = env_non_empty("LINE_CHANNEL_ACCESS_TOKEN");
+        let user_id = env_non_empty("LINE_USER_ID");
+        if enabled && (channel_access_token.is_none() || user_id.is_none()) {
+            log::warn!(
+                "[config] LINE_NOTIFY_ENABLED is true but LINE_CHANNEL_ACCESS_TOKEN/LINE_USER_ID is missing"
+            );
+        }
+        let effective_enabled = enabled && channel_access_token.is_some() && user_id.is_some();
+        Self {
+            enabled: effective_enabled,
+            channel_access_token,
+            user_id,
+        }
+    }
+}
+
+static LINE_NOTIFY_CONFIG: OnceLock<LineNotifyConfig> = OnceLock::new();
+
+pub fn line_notify_config() -> &'static LineNotifyConfig {
+    LINE_NOTIFY_CONFIG.get_or_init(LineNotifyConfig::from_env)
 }
 
 #[derive(Clone, Debug)]
@@ -528,8 +557,14 @@ mod tests {
             dial_plan,
         };
         assert_eq!(cfg.resolve_number("100"), Some("09012345678".to_string()));
-        assert_eq!(cfg.resolve_number("09011112222"), Some("09011112222".to_string()));
-        assert_eq!(cfg.resolve_number("unknown"), Some("09000000000".to_string()));
+        assert_eq!(
+            cfg.resolve_number("09011112222"),
+            Some("09011112222".to_string())
+        );
+        assert_eq!(
+            cfg.resolve_number("unknown"),
+            Some("09000000000".to_string())
+        );
     }
 
     #[test]
@@ -620,8 +655,8 @@ impl AiConfig {
     fn from_env() -> Self {
         let ollama_model =
             std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma3:4b".to_string());
-        let ollama_intent_model = std::env::var("OLLAMA_INTENT_MODEL")
-            .unwrap_or_else(|_| ollama_model.clone());
+        let ollama_intent_model =
+            std::env::var("OLLAMA_INTENT_MODEL").unwrap_or_else(|_| ollama_model.clone());
         Self {
             gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
             gemini_model: std::env::var("GEMINI_MODEL")

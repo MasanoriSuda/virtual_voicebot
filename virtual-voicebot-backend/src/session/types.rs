@@ -217,19 +217,19 @@ pub(crate) enum SessState {
     Terminated,
 }
 
-    pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
-        match event {
-            SessionIn::SipBye
-            | SessionIn::SipCancel
-            | SessionIn::BLegBye
-            | SessionIn::AppHangup
-            | SessionIn::SessionTimerFired
-            | SessionIn::Abort(_) => SessState::Terminated,
-            SessionIn::RingDurationElapsed => current,
-            SessionIn::SipInvite { .. } => match current {
-                SessState::Idle => SessState::Early,
-                _ => current,
-            },
+pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
+    match event {
+        SessionIn::SipBye
+        | SessionIn::SipCancel
+        | SessionIn::BLegBye
+        | SessionIn::AppHangup
+        | SessionIn::SessionTimerFired
+        | SessionIn::Abort(_) => SessState::Terminated,
+        SessionIn::RingDurationElapsed => current,
+        SessionIn::SipInvite { .. } => match current {
+            SessState::Idle => SessState::Early,
+            _ => current,
+        },
         SessionIn::SipAck => match current {
             SessState::Early => SessState::Established,
             _ => current,

@@ -156,7 +156,8 @@ mod tests {
     }
     fn detect_tone(tone: &[u8]) -> Option<char> {
         let mut detector = DtmfDetector::new();
-        tone.chunks(160).find_map(|chunk| detector.ingest_mulaw(chunk))
+        tone.chunks(160)
+            .find_map(|chunk| detector.ingest_mulaw(chunk))
     }
     #[test]
     fn detects_dtmf_one() {

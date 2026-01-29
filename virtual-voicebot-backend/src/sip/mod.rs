@@ -1,11 +1,11 @@
-pub mod builder;
 pub mod auth;
 pub mod auth_cache;
 pub mod b2bua_bridge;
-pub mod register;
+pub mod builder;
 pub mod message;
 pub mod parse;
 pub mod protocols;
+pub mod register;
 pub mod transaction;
 pub mod tx;
 
@@ -26,6 +26,7 @@ pub use crate::sip::parse::{
 #[allow(unused_imports)]
 pub use protocols::*;
 
+use crate::config;
 use crate::session::types::{CallId, Sdp, SessionOut, SessionRefresher, SessionTimerInfo};
 use crate::sip::builder::{
     response_final_with_sdp, response_options_from_request, response_provisional_from_request,
@@ -38,14 +39,13 @@ use crate::sip::transaction::{
 };
 use crate::sip::tx::{SipTransportRequest, SipTransportTx};
 use crate::transport::{SipInput, TransportPeer};
-use crate::config;
 use rand::Rng;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::time::sleep;
 use tokio::sync::Notify;
+use tokio::time::sleep;
 
 /// sip 層から session 層へ渡すイベント（設計ドキュメントの「sip→session 通知」と対応）
 #[derive(Debug)]
@@ -411,7 +411,10 @@ fn build_update_request(
         .header("CSeq", format!("{cseq} UPDATE"))
         .header(
             "Contact",
-            format!("{contact_scheme}:rustbot@{}:{}", cfg.advertised_ip, cfg.sip_port),
+            format!(
+                "{contact_scheme}:rustbot@{}:{}",
+                cfg.advertised_ip, cfg.sip_port
+            ),
         )
         .header("Session-Expires", expires.as_secs().to_string())
         .header("Supported", "timer");
@@ -462,11 +465,7 @@ fn extract_contact_uri(value: &str) -> &str {
             return &trimmed[start + 1..start + 1 + end];
         }
     }
-    trimmed
-        .split(';')
-        .next()
-        .unwrap_or(trimmed)
-        .trim()
+    trimmed.split(';').next().unwrap_or(trimmed).trim()
 }
 
 fn contact_scheme_from_uri(uri: &str) -> &'static str {
@@ -625,7 +624,10 @@ impl SipCore {
             }
             (None, _) => {
                 let transport = register.lock().unwrap().transport();
-                log::warn!("[sip register] no transport for unregister: {:?}", transport);
+                log::warn!(
+                    "[sip register] no transport for unregister: {:?}",
+                    transport
+                );
             }
             _ => {}
         }
@@ -671,10 +673,12 @@ impl SipCore {
             let (handled, pending_req, pending_peer) = {
                 let mut reg = register.lock().unwrap();
                 let handled = reg.handle_response(&resp, peer);
-                let pending_req = if handled { reg.take_pending_request() } else { None };
-                let pending_peer = pending_req
-                    .as_ref()
-                    .and_then(|_| reg.transport_peer());
+                let pending_req = if handled {
+                    reg.take_pending_request()
+                } else {
+                    None
+                };
+                let pending_peer = pending_req.as_ref().and_then(|_| reg.transport_peer());
                 (handled, pending_req, pending_peer)
             };
             if handled {
@@ -741,8 +745,7 @@ impl SipCore {
             }
         }
 
-        let session_timer =
-            match session_timer_from_request(&req, config::session_config(), true) {
+        let session_timer = match session_timer_from_request(&req, config::session_config(), true) {
             Ok(timer) => timer,
             Err(SessionTimerError::Invalid) => {
                 if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
@@ -754,7 +757,8 @@ impl SipCore {
                 if let Some(mut resp) =
                     response_simple_from_request(&req, 422, "Session Interval Too Small")
                 {
-                    resp.headers.push(SipHeader::new("Min-SE", min_se.to_string()));
+                    resp.headers
+                        .push(SipHeader::new("Min-SE", min_se.to_string()));
                     self.send_payload(peer, resp.to_bytes());
                 }
                 return vec![];
@@ -812,25 +816,26 @@ impl SipCore {
         headers: CoreHeaderSnapshot,
         peer: TransportPeer,
     ) -> Vec<SipEvent> {
-        let session_timer =
-            match session_timer_from_request(&req, config::session_config(), false) {
-                Ok(timer) => timer,
-                Err(SessionTimerError::Invalid) => {
-                    if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
-                        self.send_payload(peer, resp.to_bytes());
-                    }
-                    return vec![];
+        let session_timer = match session_timer_from_request(&req, config::session_config(), false)
+        {
+            Ok(timer) => timer,
+            Err(SessionTimerError::Invalid) => {
+                if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
+                    self.send_payload(peer, resp.to_bytes());
                 }
-                Err(SessionTimerError::TooSmall { min_se }) => {
-                    if let Some(mut resp) =
-                        response_simple_from_request(&req, 422, "Session Interval Too Small")
-                    {
-                        resp.headers.push(SipHeader::new("Min-SE", min_se.to_string()));
-                        self.send_payload(peer, resp.to_bytes());
-                    }
-                    return vec![];
+                return vec![];
+            }
+            Err(SessionTimerError::TooSmall { min_se }) => {
+                if let Some(mut resp) =
+                    response_simple_from_request(&req, 422, "Session Interval Too Small")
+                {
+                    resp.headers
+                        .push(SipHeader::new("Min-SE", min_se.to_string()));
+                    self.send_payload(peer, resp.to_bytes());
                 }
-            };
+                return vec![];
+            }
+        };
 
         if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
             ctx.req = req.clone();
@@ -906,7 +911,10 @@ impl SipCore {
         if let Some(resp) = response_simple_from_request(&req, code, reason) {
             self.send_payload(peer, resp.to_bytes());
         } else {
-            log::warn!("[sip cancel] invalid CANCEL (missing headers) call_id={}", call_id);
+            log::warn!(
+                "[sip cancel] invalid CANCEL (missing headers) call_id={}",
+                call_id
+            );
             return vec![];
         }
 
@@ -1010,7 +1018,9 @@ impl SipCore {
                 "[sip 100rel] unexpected PRACK (no pending reliable provisional) call_id={}",
                 headers.call_id
             );
-            if let Some(resp) = response_simple_from_request(&req, 481, "Call/Transaction Does Not Exist") {
+            if let Some(resp) =
+                response_simple_from_request(&req, 481, "Call/Transaction Does Not Exist")
+            {
                 self.send_payload(peer, resp.to_bytes());
             }
             return vec![];
@@ -1023,7 +1033,9 @@ impl SipCore {
                 expected,
                 rack
             );
-            if let Some(resp) = response_simple_from_request(&req, 481, "Call/Transaction Does Not Exist") {
+            if let Some(resp) =
+                response_simple_from_request(&req, 481, "Call/Transaction Does Not Exist")
+            {
                 self.send_payload(peer, resp.to_bytes());
             }
             return vec![];
@@ -1056,8 +1068,8 @@ impl SipCore {
         headers: CoreHeaderSnapshot,
         peer: TransportPeer,
     ) -> Vec<SipEvent> {
-        let session_timer =
-            match session_timer_from_request(&req, config::session_config(), false) {
+        let session_timer = match session_timer_from_request(&req, config::session_config(), false)
+        {
             Ok(timer) => timer,
             Err(SessionTimerError::Invalid) => {
                 if let Some(resp) = response_simple_from_request(&req, 400, "Bad Request") {
@@ -1069,7 +1081,8 @@ impl SipCore {
                 if let Some(mut resp) =
                     response_simple_from_request(&req, 422, "Session Interval Too Small")
                 {
-                    resp.headers.push(SipHeader::new("Min-SE", min_se.to_string()));
+                    resp.headers
+                        .push(SipHeader::new("Min-SE", min_se.to_string()));
                     self.send_payload(peer, resp.to_bytes());
                 }
                 return vec![];
@@ -1253,8 +1266,7 @@ impl SipCore {
         match out {
             SessionOut::SipSend100 => {
                 if let Some(ctx) = self.invites.get_mut(call_id) {
-                    if let Some(resp) = response_provisional_from_request(&ctx.req, 100, "Trying")
-                    {
+                    if let Some(resp) = response_provisional_from_request(&ctx.req, 100, "Trying") {
                         let bytes = resp.to_bytes();
                         ctx.tx.remember_provisional(bytes.clone());
                         let peer = ctx.tx.peer;
@@ -1374,11 +1386,7 @@ impl SipCore {
                         }
                         if let Ok(sdp) = std::str::from_utf8(&resp.body) {
                             let sdp_inline = sdp.replace('\r', "").replace('\n', "\\n");
-                            log::info!(
-                                "[sip 200 sdp] call_id={} sdp={}",
-                                call_id,
-                                sdp_inline
-                            );
+                            log::info!("[sip 200 sdp] call_id={} sdp={}", call_id, sdp_inline);
                         } else {
                             log::info!(
                                 "[sip 200 sdp] call_id={} sdp_len={}",

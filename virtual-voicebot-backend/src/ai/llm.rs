@@ -18,9 +18,7 @@ pub fn init_system_prompt() {
 
 pub fn system_prompt() -> String {
     SYSTEM_PROMPT_CACHE
-        .get_or_init(|| {
-            read_prompt_file().unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string())
-        })
+        .get_or_init(|| read_prompt_file().unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string()))
         .clone()
 }
 

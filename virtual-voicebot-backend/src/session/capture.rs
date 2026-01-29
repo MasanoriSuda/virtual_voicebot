@@ -97,8 +97,7 @@ impl AudioCapture {
                     self.last_voice_len = self.payloads.len();
                     self.end_silence_ms_accum = 0;
                 } else {
-                    self.end_silence_ms_accum =
-                        self.end_silence_ms_accum.saturating_add(frame_ms);
+                    self.end_silence_ms_accum = self.end_silence_ms_accum.saturating_add(frame_ms);
                 }
 
                 if self.total_ms >= self.max_speech_ms
