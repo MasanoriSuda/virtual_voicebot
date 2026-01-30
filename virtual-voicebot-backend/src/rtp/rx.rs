@@ -57,6 +57,25 @@ impl RtpReceiver {
         }
     }
 
+    /// Process a raw packet received from the transport and dispatch it as either RTCP or RTP.
+    ///
+    /// For RTCP packets this updates RTCP reporting state and forwards the raw RTCP payload
+    /// to the optional RTCP events channel. For RTP packets this locates the associated call
+    /// by destination port, parses and reports RTP arrival to the RTCP reporter, reorders
+    /// frames via the per-call jitter buffer, decodes payloads, runs per-call DTMF detection,
+    /// and delivers resulting MediaRtpIn and Dtmf events to the session. Logs are emitted for
+    /// unsupported payload types, parse errors, unmapped ports, late/duplicate frames, and
+    /// unknown sessions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Create a RawRtp and pass it to an existing RtpReceiver instance.
+    /// // The concrete construction of RtpReceiver is omitted for brevity.
+    /// let raw = RawRtp { src: "127.0.0.1:5004".parse().unwrap(), dst_port: 5004, data: vec![/* RTP/RTCP bytes */] };
+    /// // `receiver` is an existing RtpReceiver.
+    /// // receiver.handle_raw(raw);
+    /// ```
     pub fn handle_raw(&self, raw: RawRtp) {
         // RTCP簡易判定
         if is_rtcp_packet(&raw.data) {
@@ -155,9 +174,8 @@ impl RtpReceiver {
                             let payload = decode_to_mulaw(codec, &frame.payload);
                             let digit = {
                                 let mut map = self.dtmf.lock().unwrap();
-                                let detector = map
-                                    .entry(call_id.clone())
-                                    .or_insert_with(DtmfDetector::new);
+                                let detector =
+                                    map.entry(call_id.clone()).or_insert_with(DtmfDetector::new);
                                 detector.ingest_mulaw(&payload)
                             };
                             if let Some(digit) = digit {

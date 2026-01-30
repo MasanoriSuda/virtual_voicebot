@@ -47,6 +47,63 @@ pub fn parse_digest_challenge(header_value: &str) -> Option<DigestChallenge> {
     })
 }
 
+/// Builds a Digest Authorization header value from the given credentials and challenge.
+
+///
+
+/// The function computes the response value according to the challenge fields (realm, nonce,
+
+/// optional algorithm, optional qop, optional opaque) and returns a header string beginning with
+
+/// `"Digest "` containing the required parameters. If the challenge is missing required fields
+
+/// (realm or nonce) or specifies an unsupported algorithm, `None` is returned.
+
+///
+
+/// # Parameters
+
+///
+
+/// - `nc`: the nonce count for this request; formatted as an eight-digit hexadecimal in the header.
+
+/// - `challenge`: the parsed `DigestChallenge` describing server-supplied parameters.
+
+///
+
+/// # Returns
+
+///
+
+/// `Some` containing the full Authorization header value when computation succeeds, `None` otherwise.
+
+///
+
+/// # Examples
+
+///
+
+/// ```
+
+/// let challenge = DigestChallenge {
+
+///     realm: "example.com".into(),
+
+///     nonce: "nonce123".into(),
+
+///     algorithm: None,
+
+///     qop: Some("auth".into()),
+
+///     opaque: None,
+
+/// };
+
+/// let header = build_authorization_header("alice", "password", "GET", "/protected", &challenge, 1);
+
+/// assert!(header.is_some());
+
+/// ```
 pub fn build_authorization_header(
     username: &str,
     password: &str,
@@ -55,17 +112,47 @@ pub fn build_authorization_header(
     challenge: &DigestChallenge,
     nc: u32,
 ) -> Option<String> {
-    build_authorization_header_with_cnonce(
-        username,
-        password,
-        method,
-        uri,
-        challenge,
-        nc,
-        None,
-    )
+    build_authorization_header_with_cnonce(username, password, method, uri, challenge, nc, None)
 }
 
+/// Builds an HTTP Digest Authorization header value using the provided credentials and server challenge.
+///
+/// Generates the Digest header with the required parameters (username, realm, nonce, uri, response)
+/// and optional fields (opaque, algorithm, qop, nc, cnonce). If `challenge.algorithm` is present
+/// and not equal to `"MD5"` (case-insensitive), the function returns `None`.
+///
+/// # Parameters
+///
+/// - `nc`: The nonce count value to include when `qop` is used; formatted as an 8-digit hexadecimal.
+/// - `cnonce_override`: Optional client nonce to use instead of generating a random one; used only when `qop` requires a `cnonce`.
+///
+/// # Returns
+///
+/// `Some(String)` containing the complete `Digest ...` authorization header on success, or `None` if the challenge requires an unsupported algorithm.
+///
+/// # Examples
+///
+/// ```
+/// let challenge = DigestChallenge {
+///     realm: "realm".into(),
+///     nonce: "nonce".into(),
+///     algorithm: None,
+///     qop: Some("auth".into()),
+///     opaque: None,
+/// };
+/// let header = build_authorization_header_with_cnonce(
+///     "user",
+///     "pass",
+///     "GET",
+///     "/",
+///     &challenge,
+///     1,
+///     Some("deadbeef"),
+/// );
+/// assert!(header.is_some());
+/// let value = header.unwrap();
+/// assert!(value.starts_with("Digest "));
+/// ```
 fn build_authorization_header_with_cnonce(
     username: &str,
     password: &str,
@@ -160,6 +247,21 @@ fn md5_hex(input: &str) -> String {
     out
 }
 
+/// Compute the MD5 digest for the given input.
+///
+/// Returns the 16-byte MD5 digest of `input` as an array in little-endian byte order
+/// (a0, b0, c0, d0 concatenated).
+///
+/// # Examples
+///
+/// ```
+/// let digest = md5_bytes(b"");
+/// let expected: [u8; 16] = [
+///     0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04,
+///     0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8, 0x42, 0x7e,
+/// ];
+/// assert_eq!(digest, expected);
+/// ```
 fn md5_bytes(input: &[u8]) -> [u8; 16] {
     let mut msg = input.to_vec();
     let bit_len = (msg.len() as u64) * 8;
@@ -202,8 +304,7 @@ fn md5_bytes(input: &[u8]) -> [u8; 16] {
             d = c;
             c = b;
             b = b.wrapping_add(
-                (a.wrapping_add(f).wrapping_add(K[i]).wrapping_add(m[g]))
-                    .rotate_left(S[i]),
+                (a.wrapping_add(f).wrapping_add(K[i]).wrapping_add(m[g])).rotate_left(S[i]),
             );
             a = temp;
         }
@@ -223,22 +324,20 @@ fn md5_bytes(input: &[u8]) -> [u8; 16] {
 }
 
 const S: [u32; 64] = [
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14,
-    20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11,
-    16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
+    14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15,
+    21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
 ];
 
 const K: [u32; 64] = [
-    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
-    0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
-    0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
-    0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
-    0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
-    0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
-    0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
-    0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
-    0xeb86d391,
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
 ];
 
 #[cfg(test)]

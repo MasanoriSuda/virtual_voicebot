@@ -20,7 +20,9 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_transcribe as transcribe;
 
 use crate::config;
-use crate::ports::ai::{AiFuture, AiPort, AsrChunk, ChatMessage, Role, SerInputPcm, SerOutcome, SerPort};
+use crate::ports::ai::{
+    AiFuture, AiPort, AsrChunk, ChatMessage, Role, SerInputPcm, SerOutcome, SerPort, WeatherQuery,
+};
 
 #[derive(Serialize)]
 struct OllamaChatRequest {
@@ -73,9 +75,11 @@ struct WhisperResponse {
 }
 
 pub mod asr;
+pub mod intent;
 pub mod llm;
 pub mod ser;
 pub mod tts;
+pub mod weather;
 
 fn http_client(timeout: Duration) -> Result<Client> {
     Ok(Client::builder().timeout(timeout).build()?)
@@ -175,13 +179,22 @@ pub async fn handle_user_question_from_whisper_llm_only(
 }
 
 async fn call_ollama(messages: &[ChatMessage]) -> Result<String> {
+    let model = config::ai_config().ollama_model.clone();
+    let system_prompt = llm::system_prompt();
+    call_ollama_with_prompt(messages, &system_prompt, &model).await
+}
+
+pub(crate) async fn call_ollama_with_prompt(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    model: &str,
+) -> Result<String> {
     let client = http_client(config::timeouts().ai_http)?;
 
     let mut ollama_messages = Vec::with_capacity(messages.len() + 1);
-    let system_prompt = llm::system_prompt();
     ollama_messages.push(OllamaMessage {
         role: "system".to_string(),
-        content: system_prompt,
+        content: system_prompt.to_string(),
     });
     for msg in messages {
         let role = match msg.role {
@@ -195,7 +208,7 @@ async fn call_ollama(messages: &[ChatMessage]) -> Result<String> {
     }
 
     let req = OllamaChatRequest {
-        model: "gemma3:27b".to_string(),
+        model: model.to_string(),
         messages: ollama_messages,
         stream: false,
     };
@@ -240,12 +253,42 @@ impl DefaultAiPort {
 }
 
 impl AiPort for DefaultAiPort {
-    fn transcribe_chunks(&self, call_id: String, chunks: Vec<AsrChunk>) -> AiFuture<Result<String>> {
+    /// Transcribes a sequence of ASR audio chunks for a given call and returns the resulting transcript.
+    ///
+    /// # Parameters
+    ///
+    /// - `call_id`: identifier for the call/session associated with the chunks (used for tracking/logging).
+    /// - `chunks`: list of `AsrChunk` items representing the audio segments to transcribe.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(String)` with the full transcript on success, or an `Err` describing the failure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use virtual_voicebot_backend::ai::DefaultAiPort;
+    /// let port = DefaultAiPort::new();
+    /// let transcript = futures::executor::block_on(port.transcribe_chunks("call-1".to_string(), vec![])).unwrap();
+    /// ```
+    fn transcribe_chunks(
+        &self,
+        call_id: String,
+        chunks: Vec<AsrChunk>,
+    ) -> AiFuture<Result<String>> {
         Box::pin(async move { asr::transcribe_chunks(&call_id, &chunks).await })
+    }
+
+    fn classify_intent(&self, text: String) -> AiFuture<Result<String>> {
+        Box::pin(async move { intent::classify_intent(text).await })
     }
 
     fn generate_answer(&self, messages: Vec<ChatMessage>) -> AiFuture<Result<String>> {
         Box::pin(async move { llm::generate_answer(messages).await })
+    }
+
+    fn handle_weather(&self, query: WeatherQuery) -> AiFuture<Result<String>> {
+        Box::pin(async move { weather::handle_weather(query).await })
     }
 
     fn synth_to_wav(&self, text: String, path: Option<String>) -> AiFuture<Result<String>> {
@@ -296,6 +339,28 @@ pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Call Google's Gemini (Generative Language) API with a sequence of chat messages and return the model's reply.
+///
+/// The messages are converted into Gemini `contents` with the module's system prompt prepended; the function POSTs the assembled `GeminiRequest` to the Generative Language API and returns the text of the first candidate's first part. If Gemini returns no candidates or parts, the function returns `"<no response>"`.
+///
+/// # Errors
+///
+/// Returns an error if required configuration (API key) is missing, the HTTP request fails, or the response cannot be parsed.
+///
+/// # Returns
+///
+/// The first candidate's first part text from Gemini, or `"<no response>"` if the response contains no usable content.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use crate::ai::llm::{call_gemini, ChatMessage, Role};
+/// # tokio_test::block_on(async {
+/// let msgs = vec![ChatMessage { role: Role::User, content: "Hello".into() }];
+/// let reply = call_gemini(&msgs).await.unwrap();
+/// println!("{}", reply);
+/// # });
+/// ```
 async fn call_gemini(messages: &[ChatMessage]) -> Result<String> {
     let client = http_client(config::timeouts().ai_http)?;
 
@@ -332,9 +397,7 @@ async fn call_gemini(messages: &[ChatMessage]) -> Result<String> {
         });
     }
 
-    let req_body = GeminiRequest {
-        contents,
-    };
+    let req_body = GeminiRequest { contents };
 
     let resp = client.post(&url).json(&req_body).send().await?;
     let status = resp.status();
@@ -364,11 +427,38 @@ fn aws_transcribe_enabled() -> bool {
     config::ai_config().use_aws_transcribe
 }
 
+/// Uploads a WAV file to S3, starts an AWS Transcribe job, and returns the resulting transcript.
+///
+/// The function prepares the WAV for AWS Transcribe (mono 16-bit 16 kHz when required), uploads it to the configured
+/// S3 bucket and prefix, starts a transcription job with a timestamped job name, polls until completion, and returns
+/// the final transcript text.
+///
+/// # Parameters
+///
+/// - `wav_path`: Path to the local WAV file to transcribe.
+///
+/// # Returns
+///
+/// `Ok(String)` containing the transcribed text on success, or an `Err` if any step (preparation, upload, job start,
+/// polling, or transcript retrieval/parsing) fails.
+///
+/// # Examples
+///
+/// ```
+/// # tokio_test::block_on(async {
+/// let transcript = crate::ai::transcribe_with_aws("/tmp/example.wav").await;
+/// match transcript {
+///     Ok(text) => println!("Transcript: {}", text),
+///     Err(e) => eprintln!("Transcription failed: {}", e),
+/// }
+/// # });
+/// ```
 async fn transcribe_with_aws(wav_path: &str) -> Result<String> {
     let ai_cfg = config::ai_config();
-    let bucket = ai_cfg.aws_transcribe_bucket.as_deref().ok_or_else(|| {
-        anyhow!("AWS_TRANSCRIBE_BUCKET must be set when USE_AWS_TRANSCRIBE=1")
-    })?;
+    let bucket = ai_cfg
+        .aws_transcribe_bucket
+        .as_deref()
+        .ok_or_else(|| anyhow!("AWS_TRANSCRIBE_BUCKET must be set when USE_AWS_TRANSCRIBE=1"))?;
     let prefix = ai_cfg.aws_transcribe_prefix.as_str();
 
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();

@@ -129,12 +129,18 @@ pub enum SessionIn {
     },
     /// app からの終了指示
     AppHangup,
+    /// app からの転送指示
+    AppTransferRequest {
+        person: String,
+    },
     /// Session Timer (keepalive 含む) の失効
     SessionTimerFired,
     /// Session-Expires の更新時刻（refresher=uas 用）
     SessionRefreshDue,
     /// keepalive tick
     MediaTimerTick,
+    /// 180 Ringing 後の遅延満了
+    RingDurationElapsed,
     /// Session-Expires による更新（INVITE/UPDATE）
     SipSessionExpires {
         timer: SessionTimerInfo,
@@ -190,6 +196,10 @@ pub enum SessionOut {
     },
     /// app からの切断指示
     AppRequestHangup,
+    /// app からの転送指示
+    AppRequestTransfer {
+        person: String,
+    },
     Metrics {
         name: &'static str,
         value: i64,
@@ -207,6 +217,26 @@ pub(crate) enum SessState {
     Terminated,
 }
 
+/// Compute the next session state given the current state and an incoming event.
+///
+/// The next state is determined by the event: terminal events transition to `SessState::Terminated`; a
+/// `SipInvite` moves `SessState::Idle` to `SessState::Early`; a `SipAck` moves `SessState::Early` to
+/// `SessState::Established`; `RingDurationElapsed` preserves the current state; all other events leave
+/// the state unchanged.
+///
+/// # Returns
+///
+/// `SessState` representing the session's next lifecycle state.
+///
+/// # Examples
+///
+/// ```
+/// use crate::types::{next_session_state, SessState, SessionIn};
+///
+/// let s = SessState::Idle;
+/// let next = next_session_state(s, &SessionIn::SipInvite { call_id: "".into(), from: "".into(), to: "".into(), offer: None, session_timer: None });
+/// assert_eq!(next, SessState::Early);
+/// ```
 pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
     match event {
         SessionIn::SipBye
@@ -215,6 +245,7 @@ pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessS
         | SessionIn::AppHangup
         | SessionIn::SessionTimerFired
         | SessionIn::Abort(_) => SessState::Terminated,
+        SessionIn::RingDurationElapsed => current,
         SessionIn::SipInvite { .. } => match current {
             SessState::Idle => SessState::Early,
             _ => current,

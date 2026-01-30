@@ -8,13 +8,26 @@ use crate::config::{self, LogFormat, LogMode};
 
 static INIT: Once = Once::new();
 
+/// Initializes the global logger once using the application's logging configuration.
+///
+/// This function configures and installs a global logger on first call according to
+/// `config::logging_config()`. It supports JSON or plain-text formatting and directs
+/// output to stdout or to a configured file. Any issues creating the log directory or
+/// opening the log file are recorded and emitted as warning-level log entries.
+///
+/// # Examples
+///
+/// ```
+/// // Initialize the global logger (safe to call multiple times).
+/// my_crate::logging::init();
+/// log::info!("logger initialized");
+/// ```
 pub fn init() {
     INIT.call_once(|| {
         let mut init_warnings = Vec::new();
         let cfg = config::logging_config().clone();
-        let mut builder = env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or("info"),
-        );
+        let mut builder =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
 
         builder.format(move |buf, record| {
             let ts = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -48,8 +61,7 @@ pub fn init() {
             LogMode::File => {
                 if let Some(dir) = cfg.dir.as_ref() {
                     if let Err(err) = std::fs::create_dir_all(dir) {
-                        init_warnings
-                            .push(format!("[logging] failed to create log dir: {}", err));
+                        init_warnings.push(format!("[logging] failed to create log dir: {}", err));
                     }
                     let path = std::path::Path::new(dir).join(&cfg.file_name);
                     match OpenOptions::new().create(true).append(true).open(&path) {

@@ -131,6 +131,17 @@ mod tests {
         }
         out
     }
+    /// Encodes a 16-bit linear PCM sample into 8-bit mu-law (μ-law).
+    ///
+    /// The function applies the standard μ-law companding algorithm with a bias
+    /// and returns the resulting encoded byte.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Zero maps to 0xFF in this μ-law implementation.
+    /// assert_eq!(linear16_to_mulaw(0), 0xFF);
+    /// ```
     fn linear16_to_mulaw(sample: i16) -> u8 {
         const BIAS: i32 = 0x84;
         let mut pcm = sample as i32;
@@ -154,9 +165,29 @@ mod tests {
         let mantissa = ((pcm >> (exponent + 3)) & 0x0F) as u8;
         !(sign | ((exponent as u8) << 4) | mantissa)
     }
+    /// Detects the first debounced DTMF digit in a mu-law encoded audio buffer.
+    ///
+    /// Processes the provided 8-bit mu-law PCM samples in 160-sample frames and returns the first
+    /// DTMF digit that the detector promotes to an active tone.
+    ///
+    /// # Parameters
+    ///
+    /// - `tone`: mu-law encoded audio samples (8-bit mu-law PCM), arranged as contiguous samples.
+    ///
+    /// # Returns
+    ///
+    /// `Some(char)` with the detected DTMF character if a stable tone is found, `None` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let empty: &[u8] = &[];
+    /// assert_eq!(detect_tone(empty), None);
+    /// ```
     fn detect_tone(tone: &[u8]) -> Option<char> {
         let mut detector = DtmfDetector::new();
-        tone.chunks(160).find_map(|chunk| detector.ingest_mulaw(chunk))
+        tone.chunks(160)
+            .find_map(|chunk| detector.ingest_mulaw(chunk))
     }
     #[test]
     fn detects_dtmf_one() {

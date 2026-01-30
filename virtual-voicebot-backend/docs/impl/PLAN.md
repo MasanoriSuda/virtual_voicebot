@@ -8,9 +8,9 @@
 |------|-----|
 | **Status** | Active |
 | **Owner** | TBD |
-| **Last Updated** | 2026-01-24 |
+| **Last Updated** | 2026-01-26 |
 | **SoT (Source of Truth)** | Yes - 実装計画 |
-| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36), [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37), [Issue #38](https://github.com/MasanoriSuda/virtual_voicebot/issues/38), [Issue #39](https://github.com/MasanoriSuda/virtual_voicebot/issues/39) |
+| **上流ドキュメント** | [gap-analysis.md](../gap-analysis.md), [Issue #8](https://github.com/MasanoriSuda/virtual_voicebot/issues/8), [Issue #9](https://github.com/MasanoriSuda/virtual_voicebot/issues/9), [Issue #13](https://github.com/MasanoriSuda/virtual_voicebot/issues/13), [Issue #18](https://github.com/MasanoriSuda/virtual_voicebot/issues/18), [Issue #19](https://github.com/MasanoriSuda/virtual_voicebot/issues/19), [Issue #20](https://github.com/MasanoriSuda/virtual_voicebot/issues/20), [Issue #21](https://github.com/MasanoriSuda/virtual_voicebot/issues/21), [Issue #22](https://github.com/MasanoriSuda/virtual_voicebot/issues/22), [Issue #23](https://github.com/MasanoriSuda/virtual_voicebot/issues/23), [Issue #24](https://github.com/MasanoriSuda/virtual_voicebot/issues/24), [Issue #25](https://github.com/MasanoriSuda/virtual_voicebot/issues/25), [Issue #26](https://github.com/MasanoriSuda/virtual_voicebot/issues/26), [Issue #27](https://github.com/MasanoriSuda/virtual_voicebot/issues/27), [Issue #29](https://github.com/MasanoriSuda/virtual_voicebot/issues/29), [Issue #30](https://github.com/MasanoriSuda/virtual_voicebot/issues/30), [Issue #31](https://github.com/MasanoriSuda/virtual_voicebot/issues/31), [Issue #32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32), [Issue #33](https://github.com/MasanoriSuda/virtual_voicebot/issues/33), [Issue #34](https://github.com/MasanoriSuda/virtual_voicebot/issues/34), [Issue #35](https://github.com/MasanoriSuda/virtual_voicebot/issues/35), [Issue #36](https://github.com/MasanoriSuda/virtual_voicebot/issues/36), [Issue #37](https://github.com/MasanoriSuda/virtual_voicebot/issues/37), [Issue #38](https://github.com/MasanoriSuda/virtual_voicebot/issues/38), [Issue #39](https://github.com/MasanoriSuda/virtual_voicebot/issues/39), [Issue #43](https://github.com/MasanoriSuda/virtual_voicebot/issues/43), [Issue #58](https://github.com/MasanoriSuda/virtual_voicebot/issues/58) |
 
 ---
 
@@ -61,6 +61,8 @@
 | [Step-33](#step-33-a-leg-cancel-受信処理-issue-36) | A-leg CANCEL 受信処理 (Issue #36) | - | 完了 |
 | [Step-34](#step-34-b2bua-keepalive無音干渉修正-issue-37) | B2BUA Keepalive無音干渉修正 (Issue #37) | - | 完了 |
 | [Step-35](#step-35-発信時rtpリスナー早期起動-issue-38) | 発信時RTPリスナー早期起動 (Issue #38) | - | 未着手 |
+| [Step-36](#step-36-tsurugi-db-電話番号照合-issue-43) | Tsurugi DB 電話番号照合 (Issue #43) | - | 完了 |
+| [Step-38](#step-38-着信応答遅延ring-duration-issue-58) | 着信応答遅延 Ring Duration (Issue #58) | - | 未着手 |
 | [Step-01](#step-01-cancel-受信処理) | CANCEL 受信処理 | - | 完了 (→ Step-33) |
 | [Step-02](#step-02-dtmf-トーン検出-goertzel) | DTMF トーン検出 (Goertzel) | - | 完了 |
 | [Step-03](#step-03-sipp-cancel-シナリオ) | SIPp CANCEL シナリオ | → Step-01 | 未着手 |
@@ -4321,6 +4323,459 @@ if !rtp_listener_started {
 
 ---
 
+## Step-36: Tsurugi DB 電話番号照合 (Issue #43)
+
+**Refs:** [Issue #43](https://github.com/MasanoriSuda/virtual_voicebot/issues/43)
+
+### 概要
+
+着信時に発信元電話番号を Tsurugi データベースで照合し、登録有無に基づいて IVR 分岐の判断を行う PoC を実装する。
+
+### 背景
+
+- 電話番号ごとに IVR 有効/無効を切り替えたい
+- 事前登録された番号のみ特別な処理を行いたい
+- Tsurugi（NTT 開発の分散 OLTP DB）を技術検証として導入
+
+### ユースケース
+
+```
+[着信 INVITE]
+    ↓
+[session] Fromヘッダから電話番号を抽出
+    ↓
+[session → app] CallStarted { call_id, caller: "09026889453" }
+    ↓
+[app] Tsurugi DB で電話番号を照合
+    ↓
+  ┌─ 登録あり → ivr_enabled フラグに従う
+  └─ 登録なし → デフォルト動作（IVR有効）
+    ↓
+[app] 対話処理へ
+```
+
+### 境界条件
+
+#### 入力
+
+| 条件 | 値 |
+|------|-----|
+| 電話番号 | SIP From ヘッダから抽出 |
+| DB エンドポイント | `tcp://localhost:12345`（環境変数で設定） |
+
+#### 出力
+
+| パターン | 動作 |
+|---------|------|
+| 登録あり | `ivr_enabled` フラグに従う |
+| 登録なし | デフォルト（IVR 有効） |
+| DB 接続失敗 | フォールバック（IVR 有効） |
+
+### DoD (Definition of Done)
+
+- [x] `Cargo.toml` に `tsubakuro-rust-core` 依存を追加
+- [x] `src/db/` モジュールを新規作成（Port/Adapter パターン）
+- [x] `AppEvent::CallStarted` に `caller` フィールドを追加
+- [x] 着信時に電話番号照合を実行、結果をログ出力
+- [x] DB 接続失敗時にフォールバック動作
+- [x] 既存テスト（`cargo test`）が通ること
+
+### 実装結果メモ
+
+- **PoC 完了**: 照合結果はログ出力のみ、**IVR 分岐への反映は未実装**
+- **依存**: `tsubakuro-rust-core = "0.7.0"`、ビルドに `protoc` 必須、MSRV 1.84.1
+- **セキュリティ**: SQL リテラルは `'` を `''` にエスケープ（電話番号マスキングは不要：ナンバーディスプレイで確認可能なため）
+- **動作**: `PHONE_LOOKUP_ENABLED=true` かつ `TSURUGI_ENDPOINT` 有効時のみ lookup 実行
+- **次ステップ**: `ivr_enabled=false` を IVR 分岐に反映する場合は別 Step で対応
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `Cargo.toml` | `tsubakuro-rust-core` 依存追加 |
+| `src/db/mod.rs` | 新規: モジュール定義 |
+| `src/db/port.rs` | 新規: `PhoneLookupPort` trait |
+| `src/db/tsurugi.rs` | 新規: `TsurugiAdapter` 実装 |
+| `src/app/mod.rs` | `CallStarted` 拡張、照合ロジック追加 |
+| `src/session/b2bua.rs` | `caller` 抽出、`CallStarted` 送信時に含める |
+| `src/config.rs` | `TSURUGI_ENDPOINT`, `PHONE_LOOKUP_ENABLED` 追加 |
+| `src/lib.rs` | `db` モジュール公開 |
+
+### テストシナリオ
+
+| # | 電話番号 | DB登録 | 期待結果 |
+|---|---------|--------|---------|
+| 1 | 09026889453 | なし | `NOT found` ログ出力、ivr_enabled=true |
+| 2 | 09012345678 | あり(ivr=1) | `found, ivr_enabled=true` ログ出力 |
+| 3 | - | DB停止 | `lookup failed` ログ出力、フォールバック |
+
+### 前提条件
+
+```bash
+# Tsurugi 起動
+docker run -d -p 12345:12345 --name tsurugi ghcr.io/project-tsurugi/tsurugidb:1.7.0
+
+# テーブル作成
+docker exec -it tsurugi tgsql -c ipc:tsurugi
+> CREATE TABLE phone_entries (phone_number VARCHAR(20) PRIMARY KEY, ivr_enabled INT);
+> INSERT INTO phone_entries VALUES ('09012345678', 1);
+> \quit
+
+# 環境変数
+export TSURUGI_ENDPOINT=tcp://localhost:12345
+export PHONE_LOOKUP_ENABLED=true
+```
+
+### 設計判断
+
+| 項目 | 決定 | 理由 |
+|------|------|------|
+| 依存方向 | `app → db` | design.md 準拠、session から db は呼ばない |
+| Port/Adapter | 採用 | 将来の PostgreSQL 等への差し替えを考慮 |
+| フォールバック | IVR 有効 | DB 障害時もサービス継続 |
+| タイムアウト | PoC では省略 | 本実装時に追加予定 |
+
+### リスク/ロールバック観点
+
+| リスク | 影響度 | 軽減策 |
+|--------|--------|--------|
+| tsubakuro-rust-core の成熟度 | 中 | PoC で早期検証、問題時は PostgreSQL にフォールバック |
+| DB 接続遅延 | 低 | フォールバック動作で継続 |
+| ロールバック | 低 | 新規モジュール追加のみ、既存コードへの影響軽微 |
+
+---
+
+## Step-37: ステレオ録音（L=RX, R=TX）— Issue #49
+
+### 状態: 未着手
+
+### 背景・課題
+
+現状の `mixed.wav` は **モノラルで RX/TX を順番に追記** しているため、10秒の通話が約22秒のファイルになる（両方向分 + keepalive 等）。
+
+**現状の問題点**:
+```
+push_rx_mulaw() → push_mulaw() → writer.write_sample()
+push_tx_mulaw() → push_mulaw() → writer.write_sample()
+↓
+[RX1][RX2][TX1][TX2][RX3][TX3]... ← 届いた順に連結
+```
+
+### ゴール
+
+- `mixed.wav` を **ステレオ (channels=2)** で出力
+- **L ch = 相手側 (RX)**, **R ch = 自分側 (TX)**
+- 通話時間 ≒ ファイル再生時間
+
+### 実装アイデア
+
+#### 方式: タイムスロット同期リングバッファ
+
+```
+┌─────────────────────────────────────────────────────┐
+│                     Recorder                        │
+│                                                     │
+│  ┌──────────────┐      ┌──────────────┐            │
+│  │  RX Buffer   │      │  TX Buffer   │            │
+│  │  (Ring)      │      │  (Ring)      │            │
+│  └──────┬───────┘      └──────┬───────┘            │
+│         │                     │                     │
+│         └──────────┬──────────┘                     │
+│                    ↓                                │
+│         ┌──────────────────┐                        │
+│         │   Mixer/Writer   │                        │
+│         │  (20ms tick)     │                        │
+│         └──────────────────┘                        │
+│                    ↓                                │
+│         [L, R, L, R, ...] interleaved WAV          │
+└─────────────────────────────────────────────────────┘
+```
+
+#### 詳細設計
+
+1. **タイムスロット単位**: 20ms = 160 samples @ 8kHz
+2. **リングバッファ構造**:
+   ```rust
+   struct StereoRecorder {
+       rx_buffer: VecDeque<[i16; 160]>,  // L ch (受信)
+       tx_buffer: VecDeque<[i16; 160]>,  // R ch (送信)
+       write_cursor: u64,                 // 書き込み済みスロット数
+       last_tick: Instant,
+   }
+   ```
+
+3. **書き込みロジック** (20ms ティックごと):
+   ```rust
+   fn flush_slot(&mut self) {
+       let rx_frame = self.rx_buffer.pop_front().unwrap_or(SILENCE_FRAME);
+       let tx_frame = self.tx_buffer.pop_front().unwrap_or(SILENCE_FRAME);
+
+       // インターリーブ書き込み
+       for i in 0..160 {
+           writer.write_sample(rx_frame[i]);  // L
+           writer.write_sample(tx_frame[i]);  // R
+       }
+   }
+   ```
+
+4. **無音埋め**: 片方のバッファが空なら `0x7F7F...` (μ-law) または `0` (PCM) で埋める
+
+5. **タイミング同期**:
+   - `tokio::time::interval(Duration::from_millis(20))` で定期 flush
+   - または RTP パケット到着トリガーで同期
+
+#### 代替案
+
+| 方式 | メリット | デメリット |
+|------|---------|-----------|
+| **A. リングバッファ + tick** | シンプル、遅延一定 | tick 管理が必要 |
+| **B. RTP timestamp 同期** | 正確な時刻同期 | 実装複雑、ジッタ処理必要 |
+| **C. 後処理ミックス** | リアルタイム負荷なし | 別途ツール必要、即時再生不可 |
+
+**推奨**: 方式 A（tick ベース）— 既存の interval 再生と同様の設計
+
+### 境界条件
+
+#### 入力
+
+| 条件 | 値 |
+|------|-----|
+| RTP フレーム | 160 bytes (20ms @ 8kHz μ-law) |
+| サンプルレート | 8000 Hz |
+
+#### 出力
+
+| 項目 | 値 |
+|------|-----|
+| WAV channels | 2 (stereo) |
+| L ch | RX (相手側) |
+| R ch | TX (自分側) |
+| bits_per_sample | 16 |
+
+### DoD (Definition of Done)
+
+- [ ] `Recorder` を `StereoRecorder` に改修（または新規追加）
+- [ ] `channels: 2` の WAV 出力
+- [ ] RX/TX バッファ分離、20ms interval tick で flush
+- [ ] 片方無音時は silence 埋め
+- [ ] 10秒通話 ≒ 10秒ファイル（±1秒程度の誤差許容）
+- [ ] B2BUA: `a_leg.wav` + `b_leg.wav` を個別出力
+- [ ] B2BUA: 終話時に `merged.wav` を非同期生成（`tokio::spawn`）
+- [ ] 既存テスト通過
+- [ ] meta.json の channels を更新
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/media/mod.rs` | `StereoRecorder` 実装、バッファ分離、interval tick flush |
+| `src/media/merge.rs` | 新規: `merge_stereo_files()` 後段合成関数 |
+| `src/session/session.rs` | interval flush 追加、B2BUA 終話時に merge spawn |
+| `src/session/b2bua.rs` | A-leg/B-leg 個別 Recorder 管理 |
+
+### 質問事項（Codex 向け）— 回答済み
+
+1. **Q1**: flush を `tokio::time::interval` で行うか、RTP 到着タイミングで行うか？
+   - **回答: interval で固定**（既存の再生 tick と統一）
+2. **Q2**: 既存の `push_rx_mulaw` / `push_tx_mulaw` API は維持するか、シグネチャ変更するか？
+   - **回答: 維持**（できれば timestamp 付き拡張: `push_rx_mulaw_with_ts(payload, rtp_timestamp)`）
+3. **Q3**: B2BUA モードでも同様にステレオ録音するか？（A-leg RX/TX + B-leg RX/TX で 4ch になる可能性）
+   - **回答: 4ch にしない。レッグごとに 2ch × 2本、合成は後段（Rust 内）**
+
+### B2BUA 録音方式
+
+```
+B2BUA 通話
+    ↓
+┌─────────────────────────────────────────────────────┐
+│  A-leg Recorder          B-leg Recorder            │
+│  ┌─────────────┐         ┌─────────────┐           │
+│  │ a_leg.wav   │         │ b_leg.wav   │           │
+│  │ L=RX, R=TX  │         │ L=RX, R=TX  │           │
+│  │ (2ch stereo)│         │ (2ch stereo)│           │
+│  └─────────────┘         └─────────────┘           │
+└─────────────────────────────────────────────────────┘
+    ↓ 終話時
+┌─────────────────────────────────────────────────────┐
+│  tokio::spawn(async {                              │
+│      merge_stereo_files(                           │
+│          "a_leg.wav",                              │
+│          "b_leg.wav",                              │
+│          "merged.wav"                              │
+│      )                                             │
+│  })                                                │
+└─────────────────────────────────────────────────────┘
+    ↓
+BYE 応答は即時（合成完了を待たない）
+```
+
+#### 後段合成の詳細
+
+- **合成方式**: Rust 内で `hound` crate を使用（ffmpeg 不要）
+- **タイミング**: 終話後に `tokio::spawn` で非同期実行
+- **出力**: `merged.wav`（4ch: A-leg L/R + B-leg L/R、または 2ch ダウンミックス）
+- **フォールバック**: 合成失敗時は個別ファイルのみ残す
+
+### 設計判断
+
+| 項目 | 決定 | 理由 |
+|------|------|------|
+| バッファ単位 | 20ms (160 samples) | RTP フレームサイズと一致 |
+| 無音値 | 0 (PCM i16) | μ-law 0xFF 相当 |
+| チャンネル割当 | L=RX, R=TX | 一般的なコールセンター録音慣例 |
+| flush 方式 | interval 固定 | 既存再生 tick と統一、実装シンプル |
+| API | 維持 + timestamp 拡張 | 後方互換、将来の精度向上に備える |
+| B2BUA 録音 | 2ch × 2本 + 後段合成 | 4ch は再生環境依存、分離の方が柔軟 |
+| 後段合成 | Rust 内 (hound) | 外部依存なし、非同期で遅延回避 |
+
+### リスク/ロールバック観点
+
+| リスク | 影響度 | 軽減策 |
+|--------|--------|--------|
+| タイミングずれ | 中 | バッファ深さで吸収（100ms 程度） |
+| CPU 負荷増 | 低 | 既存 tick と統合、追加処理は軽微 |
+| ロールバック | 低 | `channels: 1` に戻すだけ |
+
+---
+
+## Step-38: 着信応答遅延（Ring Duration）— Issue #58
+
+### 状態: 未着手
+
+### 背景・課題
+
+現状は INVITE 受信後、`100 Trying` → `180 Ringing` → `200 OK` を **一切の遅延なく連続送信** しており、電話が鳴る間もなく即オフフックする。人間が応答しているような自然な振る舞いにするため、180 Ringing 送信後に設定可能な待機時間を挿入する。
+
+**現状のコード** (`src/session/session.rs` INVITE 処理部):
+```
+SessionOut::SipSend100  ← 即時
+SessionOut::SipSend180  ← 即時
+SessionOut::SipSend200  ← 即時（遅延なし）
+```
+
+### ゴール
+
+- 180 Ringing と 200 OK の間に設定可能な遅延を挿入する
+- デフォルト 3 秒、環境変数で変更可能
+- 待機中の CANCEL/BYE で安全に中断できる
+
+### 仕様
+
+詳細仕様: [spec/issue-58_ring-duration.md](../spec/issue-58_ring-duration.md)
+
+#### 変更後のシーケンス
+
+```
+     Caller (PBX)                       本システム
+        |                                   |
+        |--- INVITE ----------------------> |
+        |                                   |
+        |<-- 100 Trying ------------------  | ← 即時
+        |<-- 180 Ringing -----------------  | ← 即時
+        |                                   |
+        |    ... RING_DURATION_MS 経過 ...   |
+        |                                   |
+        |<-- 200 OK ----------------------  | ← 遅延後
+        |--- ACK -------------------------> |
+```
+
+#### 環境変数
+
+| 変数名 | 型 | デフォルト | 最小 | 最大 | 備考 |
+|--------|-----|-----------|------|------|------|
+| `RING_DURATION_MS` | u64 | `3000` | `0` | `10000` | 0 で即応答（現行互換）|
+
+- パース失敗時: デフォルト値にフォールバック + warn ログ
+- 範囲外の値: 上限/下限にクランプ + warn ログ
+
+#### 適用条件
+
+- **着信 (inbound)**: 遅延を適用する
+- **発信 (outbound_mode=true)**: 遅延を適用しない（即時応答）
+
+#### Ringback tone
+
+- **暫定**: 本システムからの RTP Ringback tone 生成は行わない。180 Ringing で PBX 側がローカル呼出音を生成する前提
+- **将来検討**: 問題があれば Early Media（183 Session Progress + RTP 送出）を検討
+
+### 境界条件
+
+#### 待機中の CANCEL 受信
+
+待機を中断し、200 OK を送出せずセッション終了する。
+実装方針: `tokio::select!` で `sleep` と `SessionIn::SipCancel` を競合させる。
+
+```
+     Caller                             本システム
+        |--- INVITE ------------------>  |
+        |<-- 100 Trying --------------  |
+        |<-- 180 Ringing -------------  |
+        |                               | (待機中...)
+        |--- CANCEL ------------------>  |
+        |<-- 200 OK (for CANCEL) -----  |
+        |<-- 487 Request Terminated --  |
+        |                               | (セッション破棄)
+```
+
+#### 待機中の BYE 受信
+
+CANCEL と同様、待機を中断しセッション終了する。
+
+#### Session Timer との関係
+
+最大 10 秒 vs 最小 Session-Expires 90 秒。タイマー満了リスクなし。
+
+### DoD (Definition of Done)
+
+- [ ] `RING_DURATION_MS` 環境変数を `config.rs` に追加（デフォルト 3000、クランプ 0–10000）
+- [ ] `session.rs` の INVITE 処理で 180 送信後に `tokio::time::sleep` を挿入
+- [ ] `tokio::select!` で sleep と CANCEL/BYE を競合させる
+- [ ] `outbound_mode` 時は遅延を適用しない
+- [ ] `RING_DURATION_MS=0` で現行と同じ即時応答
+- [ ] `RING_DURATION_MS=3000` で約 3 秒の遅延を確認
+- [ ] 範囲外の値でクランプ + warn ログ出力
+- [ ] 100rel 再送は sleep 中も独立動作（SIP 層で処理、session 層に影響なし）
+- [ ] 既存テスト通過
+
+### 対象パス
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `src/config.rs` | `RING_DURATION_MS` 環境変数の読み取り、クランプ、フォールバック |
+| `src/session/session.rs` | INVITE 処理: 180 → sleep → 200 OK。`select!` で CANCEL/BYE 中断 |
+
+### 質問事項（Codex 向け）— 回答済み
+
+1. **Q1**: 3 秒固定でよいか、通話ごとに動的に変えたい要件はあるか？
+   - **回答: 暫定は固定 3 秒。`RING_DURATION_MS` 環境変数で config 可能にする**
+2. **Q2**: 180 Ringback tone を本システム側から RTP で送出する必要があるか？
+   - **回答: 暫定は不要（180 Ringing のみ）。問題があれば Early Media を検討**
+3. **Q3**: 100rel の場合、PRACK 受信を待ってから遅延カウント開始とするか？
+   - **回答: 遅延対象は 200 OK のみ。100 Trying / 180 Ringing は即時送信**
+4. **Q4**: 上限は何秒が妥当か？
+   - **回答: 10 秒。30 秒は長すぎる**
+
+### 設計判断
+
+| 項目 | 決定 | 理由 |
+|------|------|------|
+| 遅延対象 | 200 OK のみ | 100/180 は即時が SIP の慣例 |
+| デフォルト値 | 3000ms | Issue #58 の暫定値 |
+| 上限 | 10000ms | PBX 側 INVITE timeout（通常 30 秒以上）に対して十分な余裕 |
+| Ringback tone | 不要（暫定） | PBX 側ローカル生成で十分。問題時は Early Media 検討 |
+| CANCEL 処理 | `select!` で競合 | tokio の標準パターン、既存コードと整合 |
+
+### リスク/ロールバック観点
+
+| リスク | 影響度 | 軽減策 |
+|--------|--------|--------|
+| CANCEL 処理漏れで遅延後に 200 OK 送出 | 高 | `select!` で CANCEL/BYE と sleep を競合。テストで検証 |
+| PBX 側 INVITE タイムアウト | 低 | 上限 10 秒。PBX 側は通常 30 秒以上 |
+| 設定値パース失敗 | 低 | フォールバック + warn ログ。パニックしない |
+| ロールバック | 低 | `RING_DURATION_MS=0` で現行互換に即復帰 |
+
+---
+
 ## 凡例
 
 | 状態 | 意味 |
@@ -4337,6 +4792,11 @@ if !rtp_listener_started {
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|---------|
+| 2026-01-28 | 3.20 | Issue #58 統合: Step-38（着信応答遅延 Ring Duration）追加、180→200 OK 間に RING_DURATION_MS 待機、デフォルト 3 秒、上限 10 秒 |
+| 2026-01-27 | 3.19 | Issue #49 更新: Step-37 Q1-Q3 回答確定、B2BUA は 2ch×2本 + Rust 内後段合成方式 |
+| 2026-01-27 | 3.18 | Issue #49 統合: Step-37（ステレオ録音 L=RX, R=TX）追加、タイムスロット同期リングバッファ方式 |
+| 2026-01-26 | 3.17 | Issue #43 更新: Step-36 完了（PoC: 照合結果ログ出力のみ、IVR 分岐反映は次ステップ） |
+| 2026-01-26 | 3.16 | Issue #43 統合: Step-36（Tsurugi DB 電話番号照合）追加、着信時に電話番号を照合し IVR 分岐判断 |
 | 2026-01-24 | 3.15 | Issue #38 統合: Step-35（発信時RTPリスナー早期起動）追加、RTPソケット確保と同時にspawn_rtp_listener起動 |
 | 2026-01-24 | 3.14 | Issue #37 更新: Step-34 実装方法確定（方法1: B2BUAモード判定を採用） |
 | 2026-01-24 | 3.13 | Issue #37 統合: Step-34（B2BUA Keepalive無音干渉修正）追加、send_silence_frame に B2BUA モード判定追加 |
@@ -4373,3 +4833,653 @@ if !rtp_listener_started {
 | 2025-12-27 | 1.2 | UAS 優先に再構成、Deferred Steps 追加、Step 番号を依存順に並び替え |
 | 2025-12-25 | 1.1 | RFC 2833 を P2 に変更、DTMF トーン検出 (Goertzel) を P0 で追加 |
 | 2025-12-25 | 1.0 | 初版作成 |
+
+---
+
+# Step-XX: Intent分類 + Router 基盤導入 (Issue #53)
+
+| 項目 | 値 |
+|------|-----|
+| **Issue** | [#53](https://github.com/MasanoriSuda/virtual_voicebot/issues/53) |
+| **関連Issue** | [#32](https://github.com/MasanoriSuda/virtual_voicebot/issues/32) |
+| **Status** | Confirmed |
+| **Last Updated** | 2026-01-27 |
+
+---
+
+## 背景・課題
+
+現状の構成: `ASR → LLM → TTS`
+
+| 問題 | 原因 |
+|------|------|
+| 「あなたの名前は？」にモデル名(gemma)を答える | LLM(gemma:27b)がSystem Promptを遵守しない |
+| 天気を聞くと25℃等の不正確な情報を返す | LLMが学習時のデータで回答し、リアルタイム情報を取得できない |
+
+System Promptの調整では改善しなかった（gemma:27b で確認済み）。
+
+---
+
+## 方針
+
+**B案: Intent分類 + Routerパターン** を採用する。
+
+```
+ASR → LLM(intent分類/JSON出力) → Router(rule-base) → 処理分岐 → TTS
+```
+
+- LLMにはintent分類のみ担当させ、応答生成とintentに応じた処理を分離する
+- `identity` はルールベース固定応答とし、LLMに応答させない（名前問題の根本回避）
+- Router基盤を作り、後続チケット(#54〜)でintentを追加できる拡張性を持たせる
+
+---
+
+## #53 のスコープ
+
+### 対象intent（2つのみ）
+
+| intent | 処理方式 | 応答例 |
+|--------|----------|--------|
+| `identity` | 固定応答（LLM不使用） | 「私はずんだもんです」 |
+| `general_chat` | LLMで応答生成 | 従来通り |
+
+### 処理フロー
+
+```
+[identity の場合]
+ASR →「あなたの名前は？」
+  → LLM(intent分類) → {"intent": "identity"}
+  → Router → 固定テキスト「私はずんだもんです」
+  → TTS
+
+[general_chat の場合]
+ASR →「徳川家康について教えて」
+  → LLM(intent分類) → {"intent": "general_chat", "query": "徳川家康について教えて"}
+  → Router → LLM(応答生成)
+  → TTS
+```
+
+### Intent分類LLMの出力形式
+
+```json
+{"intent": "identity", "query": "あなたの名前は？"}
+{"intent": "general_chat", "query": "徳川家康について教えて"}
+```
+
+---
+
+## スコープ外（後続チケット #54〜 で対応）
+
+| intent | 処理方式 | 備考 |
+|--------|----------|------|
+| `time` | システム関数（固定） | LLM不要。実装容易 |
+| `weather` | 外部API → LLM要約 | #53の天気問題を解決 |
+| `rag` | RAG検索 → LLM要約 | TBD |
+| `command` | システム制御 | 「終了して」等 |
+| `unknown` | フォールバック応答 | 分類不能時 |
+
+---
+
+## 受入条件（Acceptance Criteria）
+
+1. 「あなたの名前は？」「お名前は？」等の質問に対し、「ずんだもん」と応答すること（gemmaのモデル名を返さないこと）
+2. 「徳川家康について教えて」等の一般質問は従来通りLLMが応答すること
+3. intent分類がJSON形式で返ること
+4. 新しいintentを追加する際、Router部分の拡張のみで対応できる構造であること
+
+---
+
+## 決定事項（Resolved Questions）
+
+| # | 質問 | 決定 |
+|---|------|------|
+| 1 | identity の固定応答テキストはどこで管理するか？ | 設定ファイル（YAML）で管理。コード変更不要で編集可能にする |
+| 2 | intent分類と応答生成で同じモデルを使うか？ | 両方 gemma:4b で開始。品質が悪ければ gemma:27b に切り替える |
+| 3 | intent分類のプロンプトテンプレートの管理場所 | 外部テンプレートファイルで管理。プロンプト調整時にコード変更不要にする |
+
+---
+
+## リスク
+
+| リスク | 影響 | 緩和策 |
+|--------|------|--------|
+| intent分類の精度が低い | 名前を聞いても general_chat に分類される | プロンプト調整 + テストケース追加 |
+| LLM 2回呼び出しによるレイテンシ増加 | 応答が遅くなる | 許容済み（RTX 3090環境） |
+| gemmaがJSON形式を正しく出力しない | Router がパースに失敗 | フォールバックで general_chat 扱い |
+
+---
+
+## 備考
+
+- 実装はCodex担当へ引き継いでください
+- 本PLAN（#53）はConfirmed状態です
+
+---
+
+# Step-XX: 天気予報 intent 追加 (Issue #54)
+
+| 項目 | 値 |
+|------|-----|
+| **Issue** | [#54](https://github.com/MasanoriSuda/virtual_voicebot/issues/54) |
+| **依存** | → Issue #53（Router基盤が前提） |
+| **Status** | Confirmed |
+| **Last Updated** | 2026-01-28 |
+
+---
+
+## 概要
+
+ユーザーが「今日の天気は？」等と発話した際、天気APIからリアルタイム情報を取得し、LLMで自然文に変換してTTS→RTPで返す。
+#53 で導入するRouter基盤に `weather` intentを追加する形で実装する。
+
+---
+
+## 処理フロー
+
+```
+ASR →「今日の東京の天気は？」
+  → LLM(intent分類) → {"intent": "weather", "query": "今日の東京の天気は？", "params": {"location": "東京", "date": "today"}}
+  → Router → weather handler → 天気API（JSON取得）
+  → LLM（JSON → 自然文変換）→「東京は晴れで最高気温8度です」
+  → TTS → RTP
+
+ASR →「明日の天気は？」（場所指定なし）
+  → LLM(intent分類) → {"intent": "weather", "query": "明日の天気は？", "params": {"location": null, "date": "tomorrow"}}
+  → Router → weather handler → デフォルト地域で天気API
+  → LLM →「明日は曇りで最高気温6度の予報です」
+  → TTS → RTP
+```
+
+---
+
+## 天気API
+
+| 項目 | 内容 |
+|------|------|
+| API | 気象庁API（非公式） |
+| 認証 | 不要 |
+| レスポンス | JSON（気温、天気、降水確率等） |
+| デフォルト地域 | 日本（設定ファイルで管理） |
+| 対応時間範囲 | 今日のみ |
+
+---
+
+## Intent分類の拡張
+
+#53 のintent分類プロンプトに `weather` を追加：
+
+```json
+{"intent": "weather", "query": "今日の天気は？", "params": {"location": "東京", "date": "today"}}
+{"intent": "weather", "query": "大阪の天気は？", "params": {"location": "大阪"}}
+```
+
+---
+
+## 受入条件（Acceptance Criteria）
+
+1. 「今日の天気は？」等の発話で、リアルタイムの天気情報をTTSで返すこと
+2. 地域を指定した場合、該当地域の天気を返すこと
+3. 地域指定なしの場合、デフォルト地域の天気を返すこと
+4. 天気APIが応答しない場合、エラーメッセージをTTSで返すこと（例：「天気情報を取得できませんでした」）
+5. 気温が現実的な値であること（#53 で報告された25℃問題が解消されること）
+
+---
+
+## 決定事項（Resolved Questions）
+
+| # | 質問 | 決定 |
+|---|------|------|
+| 1 | どの天気APIを使うか？ | 気象庁API（非公式）。無料・キー不要・日本語対応 |
+| 2 | デフォルト地域は？ | 日本（設定ファイルで管理） |
+| 3 | 対応する時間範囲は？ | 今日のみ |
+
+---
+
+## リスク
+
+| リスク | 影響 | 緩和策 |
+|--------|------|--------|
+| 天気APIのレート制限 | 応答不能 | キャッシュ導入（同一地域・同一日は再取得しない） |
+| LLMが地域名を正確にパースできない | 間違った地域の天気を返す | params の location を天気APIの地域名にマッピングするテーブル |
+| 天気APIの応答遅延 | 全体レイテンシ増加 | タイムアウト設定 + エラーメッセージ返却 |
+
+---
+
+## 備考
+
+- 実装はCodex担当へ引き継いでください
+- 本PLAN（#54）はConfirmed状態です
+
+---
+
+# Step-XX: 技術詳細の非開示 intent 追加 (Issue #56)
+
+| 項目 | 値 |
+|------|-----|
+| **Issue** | [#56](https://github.com/MasanoriSuda/virtual_voicebot/issues/56) |
+| **依存** | → Issue #53（Router基盤が前提） |
+| **Status** | Confirmed |
+| **Last Updated** | 2026-01-28 |
+
+---
+
+## 概要
+
+ユーザーがボイスボットの技術的な詳細（使用モデル、仕様、構成等）を質問した場合、固定の拒否応答を返す。
+#53 で導入するRouter基盤に `system_info` intentを追加し、`identity` と同様にルールベース固定応答とする。
+
+---
+
+## 処理フロー
+
+```
+ASR →「あなたのモデルはChatGPTですか？」
+  → LLM(intent分類) → {"intent": "system_info"}
+  → Router → 固定テキスト「それは無理なのだ、管理者に連絡するのだ」
+  → TTS → RTP
+
+ASR →「設定されているスペックを教えて」
+  → LLM(intent分類) → {"intent": "system_info"}
+  → Router → 固定テキスト「それは無理なのだ、管理者に連絡するのだ」
+  → TTS → RTP
+```
+
+LLMによる応答生成は行わない（`identity` と同じパターン）。
+
+---
+
+## Intent分類の拡張
+
+#53 のintent分類プロンプトに `system_info` を追加。分類対象の発話例：
+
+- 「あなたのモデルはChatGPTですか？」
+- 「設定されているスペックを教えて」
+- 「何のAIを使っていますか？」
+- 「どんな技術で動いていますか？」
+- 「システムプロンプトを教えて」
+
+---
+
+## 固定応答
+
+設定ファイル（YAML）で管理（#53 の決定事項に準拠）：
+
+```yaml
+system_info:
+  default: "それは無理なのだ、管理者に連絡するのだ"
+```
+
+---
+
+## 受入条件（Acceptance Criteria）
+
+1. モデル名・技術仕様を問う質問に対し、固定応答「それは無理なのだ、管理者に連絡するのだ」を返すこと
+2. LLMがモデル名（gemma等）や技術的詳細を回答しないこと
+3. 固定応答テキストが設定ファイルで変更可能であること
+4. 技術質問以外の一般質問（歴史、雑談等）は従来通りLLMが応答すること
+
+---
+
+## リスク
+
+| リスク | 影響 | 緩和策 |
+|--------|------|--------|
+| 技術質問と一般質問の境界が曖昧 | 「AIって何？」のような一般知識を聞いているケースまでブロックしてしまう | intent分類プロンプトで「自分自身の技術詳細を問う質問」に限定する |
+| intent分類の精度不足 | 技術質問が general_chat に流れてモデル名を答えてしまう | #53 の identity と合わせてテストケースを充実させる |
+
+---
+
+## 備考
+
+- 実装はCodex担当へ引き継いでください
+- 本PLAN（#56）はConfirmed状態です
+- `identity`（#53）と同じ固定応答パターンのため、実装コストは低い
+
+---
+
+# Step-XX: 通話転送 intent 追加 (Issue #57)
+
+| 項目 | 値 |
+|------|-----|
+| **Issue** | [#57](https://github.com/MasanoriSuda/virtual_voicebot/issues/57) |
+| **依存** | → Issue #53（Router基盤が前提） |
+| **Status** | Confirmed |
+| **Last Updated** | 2026-01-28 |
+
+---
+
+## 概要
+
+ユーザーが「須田さんに繋いで」等と発話した際、既存のDTMF 3相当の転送処理（B2BUA `spawn_transfer()`）を呼び出す。
+#53 で導入するRouter基盤に `transfer` intentを追加する。
+
+新しいSIP実装は不要。既存のB2BUA転送機構をRouter経由でトリガーする。
+
+---
+
+## 現行の転送機構（既存実装）
+
+現在、DTMF 3を検知すると以下の処理が実行される：
+
+```
+DTMF 3 検知 → spawn_transfer()
+  → TTS「転送します」→ RTP
+  → 環境変数で指定した転送先にINVITE送信（B2BUA）
+  → 200 OK + ACK → RTPブリッジ（A-leg ↔ B-leg）
+```
+
+関連ファイル：
+- `src/session/b2bua.rs` — `spawn_transfer()`, `run_transfer()`
+- `src/sip/b2bua_bridge.rs` — B2BUAブリッジ
+- `src/config.rs` — 転送先URI（環境変数）
+
+---
+
+## #57 で追加する処理フロー
+
+```
+ASR →「須田さんに繋いでください」
+  → LLM(intent分類) → {"intent": "transfer", "params": {"person": "須田"}}
+  → Router → transfer handler
+    → 名前マッピングテーブルから転送先を解決
+    → 既存の spawn_transfer() を呼び出し（DTMF 3 と同じコードパス）
+    → TTS →「おつなぎします」→ RTP
+    → B2BUA転送実行
+```
+
+```
+ASR →「田中さんお願いします」
+  → LLM(intent分類) → {"intent": "transfer", "params": {"person": "田中"}}
+  → Router → transfer handler
+    → 名前マッピングテーブルに該当なし
+    → TTS →「申し訳ありません、その方の連絡先が見つかりません」→ RTP
+```
+
+---
+
+## 転送先マッピング
+
+設定ファイル（YAML）で管理（#53 の決定事項に準拠）：
+
+```yaml
+transfer:
+  confirm_message: "おつなぎします"
+  not_found_message: "申し訳ありません、その方の連絡先が見つかりません"
+  directory:
+    須田:
+      aliases: ["すださん", "須田さん", "すだ", "菅田さん", "菅田", "すがたさん", "すがた"]
+      # 転送先は環境変数 TRANSFER_TARGET で指定済みのポートを使用
+```
+
+暫定対応として「須田さん」のみ対応。転送先ポートは既存の環境変数で指定する。
+
+---
+
+## Intent分類の拡張
+
+#53 のintent分類プロンプトに `transfer` を追加：
+
+```json
+{"intent": "transfer", "query": "須田さんに繋いで", "params": {"person": "須田"}}
+{"intent": "transfer", "query": "すださんお願いします", "params": {"person": "須田"}}
+```
+
+---
+
+## 受入条件（Acceptance Criteria）
+
+1. 「須田さんに繋いで」「すださんお願い」等の発話で、既存のDTMF 3相当の転送処理が実行されること
+2. 転送前にTTSで案内を返すこと
+3. マッピングテーブルに存在しない名前の場合、エラーメッセージを返すこと
+4. 転送先の名前表記揺れ（「すださん」「須田さん」「すだ」）に対応すること
+5. 転送先は既存の環境変数で指定したポートに転送されること
+
+---
+
+## 決定事項（Resolved Questions）
+
+| # | 質問 | 決定 |
+|---|------|------|
+| 1 | 転送失敗時の挙動は？ | 既存DTMF 3転送と同じ（`TRANSFER_FAIL_WAV_PATH` 再生） |
+| 2 | 将来の複数人対応は？ | 人物ごとに内線宛先を変える構想あり。要件を聞いて内線の宛先を振り分けたい。将来チケットで対応 |
+
+---
+
+## リスク
+
+| リスク | 影響 | 緩和策 |
+|--------|------|--------|
+| LLMが人名を正確にパースできない | 転送先の名前解決に失敗 | aliasesで表記揺れを吸収 |
+| 転送先不在 | ユーザーが放置される | 既存の転送失敗時WAV再生（`TRANSFER_FAIL_WAV_PATH`）で案内 |
+
+---
+
+## 備考
+
+- 実装はCodex担当へ引き継いでください
+- 本PLAN（#57）はConfirmed状態です
+- 新しいSIP実装は不要。既存の `spawn_transfer()` を再利用する
+- 暫定対応として「須田さん」のみ。人物追加はYAMLへの追記で可能
+
+---
+
+# Step-XX: LINE通知機能 (Issue #61)
+
+| 項目 | 値 |
+|------|-----|
+| **Issue** | [#61](https://github.com/MasanoriSuda/virtual_voicebot/issues/61) |
+| **依存** | なし |
+| **Status** | Confirmed |
+| **Last Updated** | 2026-01-29 |
+
+---
+
+## 概要
+
+incoming（着信）時にLINE Messaging APIを使用して通知する機能を追加する。
+
+| 通知種別 | トリガー | 内容 |
+|----------|----------|------|
+| 着信通知 | INVITE受領時 | 発信者番号（user部）、時刻（JST） |
+| 不在着信通知 | CANCEL受領時 | 発信者番号（user部）、時刻（JST） |
+| 通話終了通知 | BYE受領時 | 発信者番号（user部）、通話時間 |
+
+---
+
+## 処理フロー
+
+```
+[着信時]
+INVITE受領 → session: 180 Ringing送信
+           → session→app: CallRinging { call_id, from, timestamp }
+           → app: LINE通知（非同期spawn）
+
+[切断時（CANCEL）]
+CANCEL受領 → session→app: CallEnded { call_id, from, reason: Cancel, timestamp }
+           → app: LINE通知（非同期spawn）
+
+[切断時（BYE）]
+BYE受領 → session→app: CallEnded { call_id, from, reason: Bye, duration_sec }
+        → app: LINE通知（非同期spawn）
+```
+
+---
+
+## 通知内容フォーマット
+
+```
+【着信】
+着信あり
+発信者: 0312345678
+時刻: 2026-01-29 18:30:45
+
+【不在着信（CANCEL）】
+不在着信
+発信者: 0312345678
+時刻: 2026-01-29 18:30:45
+
+【通話終了（BYE）】
+通話終了
+発信者: 0312345678
+通話時間: 03:25
+```
+
+---
+
+## From番号の抽出ロジック
+
+```
+入力: sip:0312345678@example.com → 抽出: 0312345678
+入力: tel:+81312345678           → 抽出: +81312345678
+```
+
+- `sip:` プレフィックスを除去
+- `@` 以降を除去
+- `tel:` 形式にも対応
+
+---
+
+## イベント設計
+
+### 新規イベント（session→app）
+
+```rust
+/// 着信開始（INVITE受領・180 Ringing送信時）
+pub struct CallRinging {
+    pub call_id: String,
+    pub from: String,        // 抽出済みの発信者番号
+    pub timestamp: DateTime<Jst>,
+}
+```
+
+### 既存イベント拡張（session→app）
+
+```rust
+pub enum EndReason {
+    Bye,      // 通話後の正常切断
+    Cancel,   // 応答前切断（不在着信）
+    Timeout,  // タイムアウト（既存）
+    Error,    // エラー（既存）
+}
+
+pub struct CallEnded {
+    pub call_id: String,
+    pub from: String,
+    pub reason: EndReason,
+    pub duration_sec: Option<u64>,  // BYE時のみ有効
+    pub timestamp: DateTime<Jst>,
+}
+```
+
+---
+
+## 責務配置
+
+```
+app/
+├─ mod.rs
+├─ notification.rs   # NotificationPort + LineAdapter
+└─ ...
+```
+
+### NotificationPort（trait）
+
+```rust
+#[async_trait]
+pub trait NotificationPort: Send + Sync {
+    async fn notify_ringing(&self, from: &str, timestamp: DateTime<Jst>);
+    async fn notify_missed(&self, from: &str, timestamp: DateTime<Jst>);
+    async fn notify_ended(&self, from: &str, duration_sec: u64);
+}
+```
+
+### LineAdapter
+
+- LINE Messaging API（Push Message）を使用
+- エンドポイント: `https://api.line.me/v2/bot/message/push`
+- 失敗時: `warn!` ログのみ、リトライなし
+
+---
+
+## 環境変数
+
+| 変数名 | 説明 | 必須 |
+|--------|------|------|
+| `LINE_CHANNEL_ACCESS_TOKEN` | Messaging API のチャネルアクセストークン | Yes |
+| `LINE_USER_ID` | 通知先ユーザーID | Yes |
+| `LINE_NOTIFY_ENABLED` | 通知有効/無効（デフォルト: `true`） | No |
+
+---
+
+## 重複排除
+
+```rust
+struct NotificationState {
+    ringing_notified: bool,
+    ended_notified: bool,
+}
+// セッション単位で保持、1通話1イベント1通知を保証
+```
+
+---
+
+## 非機能要件
+
+| 項目 | 仕様 |
+|------|------|
+| 通知方式 | 非同期（`tokio::spawn`） |
+| タイムアウト | 5秒 |
+| リトライ | なし |
+| 失敗時 | `warn!` ログのみ |
+| タイムゾーン | JST固定 |
+
+---
+
+## ドキュメント変更
+
+### design.md §6.2 への追記
+
+```diff
+ [session → app]     CallStarted/PcmReceived/CallEnded/SessionTimeout : 通話状態の通知
++[session → app]     CallRinging : 着信開始の通知（INVITE受領・180送信時）
+```
+
+### session.md §5 への追記
+
+```diff
+ - app出力: `SessionOut::CallStarted` / `PcmReceived` / `CallEnded` / `SessionTimeout`
++- app出力: `SessionOut::CallRinging` : 着信開始（INVITE受領・180 Ringing送信時）
+```
+
+---
+
+## 受入条件（Acceptance Criteria）
+
+1. INVITE受領時にLINE通知が送信される（発信者番号・時刻JST）
+2. CANCEL受領時に「不在着信」通知が送信される
+3. BYE受領時に「通話終了」通知が送信される（通話時間含む）
+4. From番号は `sip:user@host` から `user` 部分のみ抽出される
+5. 同一通話で同種通知が2回以上送信されない
+6. LINE通知失敗時、通話処理に影響しない
+7. `LINE_NOTIFY_ENABLED=false` で通知無効化
+8. 環境変数未設定時、panicせずログ出力して通知機能を無効化
+
+---
+
+## リスク
+
+| リスク | 影響 | 緩和策 |
+|--------|------|--------|
+| LINE API障害 | 通知欠落 | best effort許容、ログで追跡 |
+| rate limit | 大量着信時に通知失敗 | MVP許容、将来キュー化検討 |
+| トークン漏洩 | セキュリティリスク | ログにトークンを出さない |
+
+**即時ロールバック**: `LINE_NOTIFY_ENABLED=false`
+
+---
+
+## 備考
+
+- 実装はCodex担当へ引き継いでください
+- 本PLAN（#61）はConfirmed状態です
+- LINE Notify はサービス終了済みのため、Messaging API を使用

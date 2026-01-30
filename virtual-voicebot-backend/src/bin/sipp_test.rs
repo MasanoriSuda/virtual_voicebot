@@ -36,8 +36,13 @@ struct TestCase {
 
 #[derive(Debug, Clone)]
 enum TestKind {
-    CargoTest { cargo_target: String },
-    SippCompose { compose_file: PathBuf, scenario_rel: Option<String> },
+    CargoTest {
+        cargo_target: String,
+    },
+    SippCompose {
+        compose_file: PathBuf,
+        scenario_rel: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -189,15 +194,15 @@ fn load_cases(
             validate_test_id(&case.id)?;
             let kind = match case.kind.as_str() {
                 "cargo_test" => {
-                    let cargo_target = case.cargo_target.ok_or_else(|| {
-                        format!("cargo_target is required for {}", case.id)
-                    })?;
+                    let cargo_target = case
+                        .cargo_target
+                        .ok_or_else(|| format!("cargo_target is required for {}", case.id))?;
                     TestKind::CargoTest { cargo_target }
                 }
                 "sipp_compose" => {
-                    let compose_file = case.compose_file.ok_or_else(|| {
-                        format!("compose_file is required for {}", case.id)
-                    })?;
+                    let compose_file = case
+                        .compose_file
+                        .ok_or_else(|| format!("compose_file is required for {}", case.id))?;
                     let compose_path = resolve_path(&category_dir, &compose_file);
                     let scenario_rel = match case.scenario.as_ref() {
                         Some(scenario) => {
@@ -266,9 +271,7 @@ fn ensure_unique_ids(cases: &[TestCase]) -> Result<(), Box<dyn std::error::Error
         if let Some(existing) = seen.insert(&case.id, case) {
             return Err(format!(
                 "duplicate test id {} in {} and {}",
-                case.id,
-                existing.category_rel,
-                case.category_rel
+                case.id, existing.category_rel, case.category_rel
             )
             .into());
         }
@@ -361,22 +364,21 @@ fn group_by_category(cases: &[TestCase]) -> HashMap<String, Vec<TestCase>> {
 
 fn run_case(root: &Path, run_id: &str, case: &TestCase, case_dir: &Path) -> CaseResult {
     match &case.kind {
-        TestKind::CargoTest { cargo_target } => {
-            run_cargo_test(root, case, cargo_target, case_dir)
-        }
+        TestKind::CargoTest { cargo_target } => run_cargo_test(root, case, cargo_target, case_dir),
         TestKind::SippCompose {
             compose_file,
             scenario_rel,
-        } => run_sipp_compose(run_id, case, compose_file, scenario_rel.as_deref(), case_dir),
+        } => run_sipp_compose(
+            run_id,
+            case,
+            compose_file,
+            scenario_rel.as_deref(),
+            case_dir,
+        ),
     }
 }
 
-fn run_cargo_test(
-    root: &Path,
-    case: &TestCase,
-    cargo_target: &str,
-    case_dir: &Path,
-) -> CaseResult {
+fn run_cargo_test(root: &Path, case: &TestCase, cargo_target: &str, case_dir: &Path) -> CaseResult {
     let mut cmd = Command::new("cargo");
     cmd.arg("test").arg("-q").arg("--test").arg(cargo_target);
     cmd.current_dir(root);
@@ -429,9 +431,7 @@ fn run_sipp_compose(
     scenario_rel: Option<&str>,
     case_dir: &Path,
 ) -> CaseResult {
-    let compose_dir = compose_file
-        .parent()
-        .unwrap_or_else(|| Path::new("."));
+    let compose_dir = compose_file.parent().unwrap_or_else(|| Path::new("."));
 
     let mut cmd = Command::new("docker");
     cmd.arg("compose")

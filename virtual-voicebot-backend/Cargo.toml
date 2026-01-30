@@ -14,6 +14,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 toml = "0.8"
 nom = "7"
 aws-config = "1"
@@ -23,6 +24,7 @@ rand = "0.8"
 rustls = "0.21"
 rustls-pemfile = "1"
 tokio-rustls = "0.24"
+tsubakuro-rust-core = "0.7.0"
 
 [dev-dependencies]
 tempfile = "3"
