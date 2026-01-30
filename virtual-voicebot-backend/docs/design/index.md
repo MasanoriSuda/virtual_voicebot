@@ -40,7 +40,8 @@ design/
 
 | ID | 名称 | ステータス | 対応IT | 概要 |
 |----|------|----------|--------|------|
-| - | （未作成） | - | - | - |
+| [BD-001](basic/BD-001_architecture.md) | システムアーキテクチャ | Approved | - | モジュール構成・データフロー |
+| [BD-002](basic/BD-002_app-layer.md) | App層設計 | Approved | - | app レイヤ I/F・イベントフロー |
 
 → 詳細は [basic/](basic/) を参照
 
@@ -50,7 +51,13 @@ design/
 
 | ID | 名称 | ステータス | 対応UT | 概要 |
 |----|------|----------|--------|------|
-| - | （未作成） | - | - | - |
+| [DD-001](detail/DD-001_tech-stack.md) | 技術スタック | Approved | - | 言語・依存クレート・開発ツール |
+| [DD-002](detail/DD-002_modules.md) | モジュール設計 | Approved | - | 責務分離・レイヤ構造・RFC準拠 |
+| [DD-003](detail/DD-003_sip.md) | SIPモジュール | Approved | - | SIPプロトコル処理・トランザクション |
+| [DD-004](detail/DD-004_rtp.md) | RTPモジュール | Approved | - | RTP/RTCP処理 |
+| [DD-005](detail/DD-005_session.md) | Sessionモジュール | Approved | - | コール制御・セッション管理 |
+| [DD-006](detail/DD-006_ai.md) | AIモジュール | Approved | - | ASR/LLM/TTS連携 |
+| [DD-007](detail/DD-007_recording.md) | Recordingモジュール | Approved | - | 録音生成・配信 |
 
 → 詳細は [detail/](detail/) を参照
 
