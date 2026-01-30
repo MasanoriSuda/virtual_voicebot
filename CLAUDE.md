@@ -3,13 +3,23 @@
 ## 役割（Claude Code）
 - あなた（Claude Code）は、このリポジトリでは **ドキュメント/仕様担当**です。
 - 取り扱う成果物：
-  - 仕様：docs/spec/** または SPEC.md
-  - 設計判断：docs/adr/**
-  - 運用：docs/runbook.md 等
+  - プロセス定義：docs/process/**
+  - 要件仕様：docs/requirements/**
+  - 設計書：docs/design/**
+  - テスト仕様：docs/test/**
+  - ステアリング（差分仕様）：docs/steering/**
   - README/CONTRIBUTING/規約ドキュメント
 - **プロダクションコードの実装・修正はしないでください。**
   - コード変更が必要な依頼の場合は、(1)仕様案 (2)受入条件 (3)未確定点/質問 を出し、
     「実装はCodex担当へ引き継いでください」と明記してください。
+
+## 開発アプローチ
+
+本プロジェクトは **ストーリー駆動 × 仕様駆動** のハイブリッドを採用する。
+詳細は [プロセス定義書](virtual-voicebot-backend/docs/process/v-model.md) を参照。
+
+- **ストーリー駆動**: イシュー/ステアリング単位で Why/Who/When を管理
+- **仕様駆動**: 詳細仕様を先に定義してからAIに実装させる
 
 ## Claude Code と Codex の責務分担
 
@@ -17,7 +27,7 @@
 |------|-------------|-------|
 | **主担当** | 仕様/ドキュメント整合性 | 実装/テスト観点 |
 | **レビュー対象** | docs 矛盾、V字トレース、運用観点 | 依存方向、非同期境界、timeout/backpressure |
-| **出力** | 仕様修正案、質問リスト | 最小差分コード修正案 |
+| **出力** | RD/BD/DD/ステアリング、質問リスト | 最小差分コード修正案 |
 | **コード変更** | ❌ しない | ✓ する |
 | **詳細定義** | 本ファイル (CLAUDE.md) | [virtual-voicebot-backend/AGENTS.md](virtual-voicebot-backend/AGENTS.md) |
 
@@ -60,3 +70,32 @@ Claude Codeは VSCodeワークスペース全体のレビューを行う（た�
 - レビュー結果は必ず PR 本文に要約（重大/中/軽 + 根拠）として残す。
 - レビュー全文は `docs/reviews/YYYY-MM-DD_issue-<n>.md` に保存する（または保存案を提示する）。
 - 同じ指摘が2回以上出た場合は、再発防止として `CLAUDE.md` / `AGENTS.md` / `CONVENTIONS.md` のいずれかにルールとして追記提案する。
+
+## ステアリング運用
+
+変更作業はイシュー単位で **ステアリングファイル** を作成して進める。
+
+### ステアリングファイルの役割
+- ストーリー（Why/Who/When）と差分仕様（What/How）を一元管理
+- 承認後に本体仕様書（RD/DD/UT等）へマージ
+
+### テンプレート
+[docs/steering/TEMPLATE.md](virtual-voicebot-backend/docs/steering/TEMPLATE.md)
+
+### 運用フロー
+1. イシュー起票
+2. ステアリングファイル作成（Draft）
+3. レビュー（Review）
+4. 承認（Approved）
+5. 実装（Codexへ引き継ぎ）
+6. マージ（Merged）→ 本体仕様書へ反映
+
+詳細は [プロセス定義書 §5](virtual-voicebot-backend/docs/process/v-model.md) を参照。
+
+## プロセス参照ドキュメント
+
+| ドキュメント | 説明 |
+|-------------|------|
+| [プロセス定義書](virtual-voicebot-backend/docs/process/v-model.md) | V字モデル・成果物・ガバナンス定義 |
+| [品質ゲート定義](virtual-voicebot-backend/docs/process/quality-gate.md) | フェーズ移行条件 |
+| [ステアリングテンプレート](virtual-voicebot-backend/docs/steering/TEMPLATE.md) | 差分仕様のテンプレート |

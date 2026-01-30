@@ -11,79 +11,115 @@
 
 ---
 
-## 1. ドキュメント階層
+## 1. ドキュメント階層（新構造）
 
-### 1.1 永続的ドキュメント (`docs/`)
+### 1.1 プロセス定義 (`docs/process/`)
 
-バックエンドの「何を作るか」「どう作るか」を定義する恒久的なドキュメント。基本設計・方針が変わらない限り更新しない。
-
-| ファイル | 内容 |
-|---------|------|
-| [design.md](docs/design.md) | アーキテクチャ設計（正本） |
-| [sip.md](docs/sip.md) | SIP 詳細設計 |
-| [rtp.md](docs/rtp.md) | RTP 詳細設計 |
-| [session.md](docs/session.md) | Session 詳細設計 |
-| [app.md](docs/app.md) | App 層設計（I/F 正本） |
-| [ai.md](docs/ai.md) | AI 連携設計（I/F 正本） |
-| [recording.md](docs/recording.md) | 録音設計 |
-| [tests.md](docs/tests.md) | テスト計画・受入条件（AC 正本） |
-| [gap-analysis.md](docs/gap-analysis.md) | RFC 準拠ギャップ分析 |
-
-### 1.2 統合ドキュメント (`docs/`)
-
-仕様・設計・開発ガイドを統合した包括的なドキュメント。
+V字モデル・品質ゲート・トレーサビリティを定義する。
 
 | ファイル | 内容 |
 |---------|------|
-| [PRD.md](docs/PRD.md) | プロダクト要求仕様書 |
-| [FDD.md](docs/FDD.md) | 機能設計書 |
-| [TSD.md](docs/TSD.md) | 技術仕様書 |
-| [DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md) | 開発ガイドライン |
+| [v-model.md](docs/process/v-model.md) | プロセス定義書（V字モデル・ガバナンス） |
+| [quality-gate.md](docs/process/quality-gate.md) | 品質ゲート定義 |
+| traceability.md | トレーサビリティマトリクス（作成予定） |
 
-### 1.3 作業単位のドキュメント (`docs/impl/`)
+### 1.2 ステアリング (`docs/steering/`)
 
-特定の開発作業における「今回何をするか」を定義する一時的なファイル。
+イシュー単位の差分仕様。ストーリー（Why/Who/When）+ 仕様（What/How）を一元管理。
 
 | ファイル | 内容 |
 |---------|------|
-| [PLAN.md](docs/impl/PLAN.md) | 実装ステップ計画 |
-| [TODO.md](docs/impl/TODO.md) | 実装バックログ |
+| [TEMPLATE.md](docs/steering/TEMPLATE.md) | ステアリングテンプレート |
+| STEER-xxx.md | イシューごとの差分仕様 |
+
+### 1.3 本体仕様書（作成予定）
+
+| ディレクトリ | 内容 |
+|-------------|------|
+| docs/requirements/ | 要件仕様書（RD） |
+| docs/design/basic/ | 基本設計書（BD） |
+| docs/design/detail/ | 詳細設計書（DD） |
+| docs/test/unit/ | 単体テスト仕様（UT） |
+| docs/test/integration/ | 結合テスト仕様（IT） |
+| docs/test/system/ | システムテスト仕様（ST） |
+
+### 1.4 旧ドキュメント（移行予定 → `docs/archive/`）
+
+| ファイル | 内容 | 移行先 |
+|---------|------|--------|
+| [PRD.md](docs/PRD.md) | プロダクト要求仕様書 | docs/requirements/ |
+| [FDD.md](docs/FDD.md) | 機能設計書 | docs/design/ |
+| [TSD.md](docs/TSD.md) | 技術仕様書 | docs/design/detail/ |
+| [design.md](docs/design.md) | アーキテクチャ設計 | docs/design/basic/ |
+| [tests.md](docs/tests.md) | テスト計画 | docs/test/ |
 
 ---
 
-## 2. 開発プロセス
+## 2. タスク別コンテキストナビゲーション
 
-### 2.1 新規機能開発
+### 2.1 SIP関連の作業
 
-1. **影響分析**: 既存 `docs/*.md` を読み、影響範囲を特定
-2. **ドキュメント更新**: 変更が必要な正本を先に更新
-3. **承認取得**: ドキュメント更新後、確認・承認を得てから実装
-4. **実装**: ドキュメントに沿ってコードを書く
-5. **品質チェック**: lint / 型チェック / テスト
+参照すべきドキュメント（この順で読む）:
+1. [docs/steering/STEER-xxx.md](docs/steering/) （該当ステアリングがあれば）
+2. docs/requirements/RD-001_sip-uas.md（作成予定）
+3. docs/design/detail/DD-001_sip.md（作成予定）
+4. 旧: [docs/sip.md](docs/sip.md)
 
-### 2.2 ドキュメント駆動の原則
+### 2.2 AI連携の作業
 
-- **仕様/責務/依存方向** に関わる変更は、必ず `docs/*.md` を先に更新
-- コードが docs と矛盾する場合、**正は docs** とし、コードを追従させる
-- 1ファイルごとに作成・更新し、各段階で承認を得る
+参照すべきドキュメント:
+1. [docs/steering/STEER-xxx.md](docs/steering/) （該当ステアリングがあれば）
+2. docs/requirements/RD-002_ai-dialog.md（作成予定）
+3. docs/design/detail/DD-005_ai.md（作成予定）
+4. 旧: [docs/ai.md](docs/ai.md)
+
+### 2.3 録音機能の作業
+
+参照すべきドキュメント:
+1. [docs/steering/STEER-xxx.md](docs/steering/) （該当ステアリングがあれば）
+2. docs/requirements/RD-003_recording.md（作成予定）
+3. docs/design/detail/DD-006_recording.md（作成予定）
+4. 旧: [docs/recording.md](docs/recording.md)
 
 ---
 
-## 3. 正本と優先順位
+## 3. 開発プロセス（ステアリング運用）
 
-矛盾がある場合は以下の順で優先（[DOCS_POLICY.md](../docs/DOCS_POLICY.md) §3.4 参照）:
+### 3.1 新規機能・変更の流れ
 
-1. **I/F 詳細**: `app.md` / `ai.md` / `tests.md` が `design.md` より優先
-2. **docs/*.md** > `src/*/README.md`
-3. **design.md** > 個別モジュール設計
+1. **イシュー起票**: GitHub Issue を作成
+2. **ステアリング作成**: [TEMPLATE.md](docs/steering/TEMPLATE.md) をコピーして差分仕様を記述
+3. **レビュー**: アーキテクト・POが確認
+4. **承認**: 実装GOの判断
+5. **実装**: Codexへ引き継ぎ（ステアリングをコンテキストとして渡す）
+6. **マージ**: 差分を本体仕様書（RD/DD/UT等）へ反映
+
+### 3.2 ドキュメント駆動の原則
+
+- **仕様/責務/依存方向** に関わる変更は、必ずステアリングを先に作成
+- コードがステアリング/docs と矛盾する場合、**正はステアリング/docs** とし、コードを追従させる
+- 各段階で承認を得る（段取りを記録）
+
+詳細は [プロセス定義書](docs/process/v-model.md) を参照。
 
 ---
 
-## 4. コーディング規約
+## 4. 正本と優先順位
+
+矛盾がある場合は以下の順で優先:
+
+1. **ステアリング**（該当イシューの作業中）
+2. **本体仕様書**（RD/BD/DD/UT/IT/ST）
+3. **旧ドキュメント**（PRD/FDD/TSD等）
+4. `src/*/README.md`
+
+---
+
+## 5. コーディング規約
 
 詳細は [DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md) を参照。
 
-### 4.1 品質チェック
+### 5.1 品質チェック
 
 ```bash
 cargo fmt --check
@@ -91,12 +127,12 @@ cargo clippy -- -D warnings
 cargo test
 ```
 
-### 4.2 セキュリティ
+### 5.2 セキュリティ
 
 - 音声・文字起こし・LLM 入出力は PII になりうる前提で扱う
 - ログに原文（全文）を出さない（デバッグフラグで限定的に）
 
-### 4.3 ID 規約
+### 5.3 ID 規約
 
 - すべての主要ログ/イベントに `call_id` を付与（必須）
 - **MVP**: `call_id == session_id`（design.md §13.1 参照）
@@ -104,42 +140,28 @@ cargo test
 
 ---
 
-## 5. 図表・ダイアグラム
-
-### 5.1 記載場所
-
-設計図やダイアグラムは関連する永続ドキュメントに直接記載。独立した `diagrams/` フォルダは作成しない。
-
-### 5.2 記述形式（優先順）
-
-1. **Mermaid 記法**（推奨）: Markdown に直接書ける、バージョン管理が容易
-2. **アスキーアート**: シンプルな図表向け
-3. **画像ファイル**: 複雑な図のみ `docs/images/` に配置
-
----
-
 ## 6. 参照リンク
 
-### 6.1 開発ドキュメント
+### 6.1 プロセス定義
+
+| ドキュメント | 内容 |
+|-------------|------|
+| [v-model.md](docs/process/v-model.md) | プロセス定義書 |
+| [quality-gate.md](docs/process/quality-gate.md) | 品質ゲート定義 |
+| [TEMPLATE.md](docs/steering/TEMPLATE.md) | ステアリングテンプレート |
+
+### 6.2 開発ドキュメント
 
 | ドキュメント | 内容 |
 |-------------|------|
 | [AGENTS.md](AGENTS.md) | AI/Codex 向け実装詳細 |
-| [design.md](docs/design.md) | アーキテクチャ設計 |
 | [DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md) | 開発ガイドライン |
 
-### 6.2 仕様ドキュメント
+### 6.3 旧仕様ドキュメント（移行予定）
 
 | ドキュメント | 内容 |
 |-------------|------|
 | [PRD.md](docs/PRD.md) | プロダクト要求仕様書 |
 | [FDD.md](docs/FDD.md) | 機能設計書 |
 | [TSD.md](docs/TSD.md) | 技術仕様書 |
-
-### 6.3 共通ドキュメント
-
-| ドキュメント | 内容 |
-|-------------|------|
-| [/DOCS_POLICY.md](../docs/DOCS_POLICY.md) | ドキュメントポリシー |
-| [/DOCS_INDEX.md](../docs/DOCS_INDEX.md) | ドキュメント一覧 |
-| [/STYLE.md](../STYLE.md) | プロジェクト共通スタイル |
+| [design.md](docs/design.md) | アーキテクチャ設計 |
