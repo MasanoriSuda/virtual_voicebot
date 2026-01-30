@@ -39,7 +39,6 @@ impl Config {
     /// let _sip_port = cfg.sip_port;
     /// ```
     pub fn from_env() -> Result<Self> {
-    pub fn from_env() -> Result<Self> {
         let sip_bind_ip = std::env::var("SIP_BIND_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
         let sip_port = std::env::var("SIP_PORT")
             .ok()

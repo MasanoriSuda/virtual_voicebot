@@ -798,7 +798,6 @@ impl SipCore {
     /// // let events = core.handle_invite(req, headers, peer);
     /// // assert!(matches!(events.as_slice(), [SipEvent::IncomingInvite{ .. }]) || events.is_empty());
     /// ```
-    —
     fn handle_invite(
         &mut self,
         req: SipRequest,
