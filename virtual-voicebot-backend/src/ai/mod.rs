@@ -20,8 +20,10 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_transcribe as transcribe;
 
 use crate::config;
+use crate::error::ai::{AsrError, IntentError, LlmError, TtsError, WeatherError};
 use crate::ports::ai::{
-    AiFuture, AiPort, AsrChunk, ChatMessage, Role, SerInputPcm, SerOutcome, SerPort, WeatherQuery,
+    AiFuture, AsrChunk, AsrPort, ChatMessage, IntentPort, LlmPort, Role, SerInputPcm, SerOutcome,
+    SerPort, TtsPort, WeatherPort, WeatherQuery,
 };
 
 #[derive(Serialize)]
@@ -252,7 +254,7 @@ impl DefaultAiPort {
     }
 }
 
-impl AiPort for DefaultAiPort {
+impl AsrPort for DefaultAiPort {
     /// Transcribes a sequence of ASR audio chunks for a given call and returns the resulting transcript.
     ///
     /// # Parameters
@@ -275,29 +277,65 @@ impl AiPort for DefaultAiPort {
         &self,
         call_id: String,
         chunks: Vec<AsrChunk>,
-    ) -> AiFuture<Result<String>> {
-        Box::pin(async move { asr::transcribe_chunks(&call_id, &chunks).await })
+    ) -> AiFuture<Result<String, AsrError>> {
+        Box::pin(async move {
+            asr::transcribe_chunks(&call_id, &chunks)
+                .await
+                .map_err(|e| AsrError::TranscriptionFailed(e.to_string()))
+        })
     }
+}
 
-    fn classify_intent(&self, text: String) -> AiFuture<Result<String>> {
-        Box::pin(async move { intent::classify_intent(text).await })
+impl IntentPort for DefaultAiPort {
+    fn classify_intent(&self, text: String) -> AiFuture<Result<String, IntentError>> {
+        Box::pin(async move {
+            intent::classify_intent(text)
+                .await
+                .map_err(|e| IntentError::ClassificationFailed(e.to_string()))
+        })
     }
+}
 
-    fn generate_answer(&self, messages: Vec<ChatMessage>) -> AiFuture<Result<String>> {
-        Box::pin(async move { llm::generate_answer(messages).await })
+impl LlmPort for DefaultAiPort {
+    fn generate_answer(&self, messages: Vec<ChatMessage>) -> AiFuture<Result<String, LlmError>> {
+        Box::pin(async move {
+            llm::generate_answer(messages)
+                .await
+                .map_err(|e| LlmError::GenerationFailed(e.to_string()))
+        })
     }
+}
 
-    fn handle_weather(&self, query: WeatherQuery) -> AiFuture<Result<String>> {
-        Box::pin(async move { weather::handle_weather(query).await })
+impl WeatherPort for DefaultAiPort {
+    fn handle_weather(&self, query: WeatherQuery) -> AiFuture<Result<String, WeatherError>> {
+        Box::pin(async move {
+            weather::handle_weather(query)
+                .await
+                .map_err(|e| WeatherError::QueryFailed(e.to_string()))
+        })
     }
+}
 
-    fn synth_to_wav(&self, text: String, path: Option<String>) -> AiFuture<Result<String>> {
-        Box::pin(async move { tts::synth_to_wav(&text, path.as_deref()).await })
+impl TtsPort for DefaultAiPort {
+    fn synth_to_wav(
+        &self,
+        text: String,
+        path: Option<String>,
+    ) -> AiFuture<Result<std::path::PathBuf, TtsError>> {
+        Box::pin(async move {
+            tts::synth_to_wav(&text, path.as_deref())
+                .await
+                .map(std::path::PathBuf::from)
+                .map_err(|e| TtsError::SynthesisFailed(e.to_string()))
+        })
     }
 }
 
 impl SerPort for DefaultAiPort {
-    fn analyze(&self, input: SerInputPcm) -> AiFuture<SerOutcome> {
+    fn analyze(
+        &self,
+        input: SerInputPcm,
+    ) -> AiFuture<Result<SerOutcome, crate::error::ai::SerError>> {
         Box::pin(async move { ser::analyze(input).await })
     }
 }

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config;
-use crate::ports::ai::{Emotion, SerError, SerInputPcm, SerResult};
+use crate::error::ai::SerError;
+use crate::ports::ai::{Emotion, SerInputPcm, SerOutcome, SerResult};
 
 #[derive(Serialize)]
 struct SerRequest<'a> {
@@ -25,8 +26,8 @@ struct SerResponse {
 /// If the configured SER URL is empty, returns the same result as `dummy_result(input)`.
 /// If `input.pcm` is empty, returns a `SerResult` with `Emotion::Unknown` and `confidence` 0.0.
 /// Otherwise, sends `input` to the configured SER HTTP endpoint and:
-/// - on HTTP/network errors or JSON parse errors, returns a `SerError` containing the `session_id` and a descriptive `reason`,
-/// - on non-success HTTP status, returns a `SerError` whose `reason` includes the status code and response body,
+/// - on HTTP/network errors or JSON parse errors, returns a `SerError` describing the failure,
+/// - on non-success HTTP status, returns a `SerError` whose message includes the status code and response body,
 /// - on success, returns a `SerResult` with the mapped `Emotion`, `confidence` (defaulting to 0.0 if missing), and optional `arousal`/`valence`.
 ///
 /// # Examples
@@ -49,13 +50,13 @@ struct SerResponse {
 ///         let _ = result;
 ///     }
 ///     Err(err) => {
-///         // err.session_id and err.reason describe the failure
+///         // err contains the failure reason
 ///         let _ = err;
 ///     }
 /// }
 /// # });
 /// ```
-pub async fn analyze(input: SerInputPcm) -> std::result::Result<SerResult, SerError> {
+pub async fn analyze(input: SerInputPcm) -> std::result::Result<SerOutcome, SerError> {
     let ser_url = config::ai_config().ser_url.as_deref().unwrap_or("");
     if ser_url.trim().is_empty() {
         return Ok(dummy_result(input));
@@ -79,34 +80,30 @@ pub async fn analyze(input: SerInputPcm) -> std::result::Result<SerResult, SerEr
         pcm: input.pcm.as_slice(),
     };
 
-    let client = super::http_client(config::timeouts().ai_http).map_err(|e| SerError {
-        session_id: input.session_id.clone(),
-        reason: format!("ser client error: {e}"),
-    })?;
+    let client = super::http_client(config::timeouts().ai_http)
+        .map_err(|e| SerError::AnalysisFailed(format!("ser client error: {e}")))?;
 
     let resp = client
         .post(ser_url)
         .json(&request)
         .send()
         .await
-        .map_err(|e| SerError {
-            session_id: input.session_id.clone(),
-            reason: format!("ser http error: {e}"),
-        })?;
+        .map_err(|e| SerError::AnalysisFailed(format!("ser http error: {e}")))?;
 
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(SerError {
-            session_id: input.session_id.clone(),
-            reason: format!("ser http status {}: {}", status.as_u16(), body),
-        });
+        return Err(SerError::AnalysisFailed(format!(
+            "ser http status {}: {}",
+            status.as_u16(),
+            body
+        )));
     }
 
-    let response: SerResponse = resp.json().await.map_err(|e| SerError {
-        session_id: input.session_id.clone(),
-        reason: format!("ser response parse error: {e}"),
-    })?;
+    let response: SerResponse = resp
+        .json()
+        .await
+        .map_err(|e| SerError::AnalysisFailed(format!("ser response parse error: {e}")))?;
 
     let emotion = map_emotion(response.emotion.as_deref().unwrap_or("unknown"));
     let confidence = response.confidence.unwrap_or(0.0);

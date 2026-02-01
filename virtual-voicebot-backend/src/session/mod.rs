@@ -2,13 +2,18 @@
 
 pub mod b2bua;
 mod capture;
+pub mod ingest_manager;
+pub mod recording_manager;
+pub mod rtp_stream_manager;
 pub mod session;
+pub mod state_machine;
 mod timers;
 pub mod types;
 pub mod writing;
 
 #[allow(unused_imports)]
-pub use session::{Session, SessionHandle};
+pub use session::{Session, SessionCoordinator, SessionHandle};
+pub use state_machine::SessionStateMachine;
 pub use types::SessionRegistry;
 #[allow(unused_imports)]
 pub use types::{MediaConfig, Sdp, SessionIn, SessionMap, SessionOut};

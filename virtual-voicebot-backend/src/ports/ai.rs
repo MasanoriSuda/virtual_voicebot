@@ -1,84 +1,30 @@
-use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
 
-/// チャンク入力（μ-law）をまとめて ASR するための簡易I/F（MVPでは一括まとめて既存ASRを呼ぶ）。
-#[derive(Debug, Clone)]
-pub struct AsrChunk {
-    pub pcm_mulaw: Vec<u8>,
-    pub end: bool,
-}
+pub mod asr;
+pub mod intent;
+pub mod llm;
+pub mod ser;
+pub mod tts;
+pub mod types;
+pub mod weather;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    User,
-    Assistant,
-}
+pub use asr::AsrPort;
+pub use intent::IntentPort;
+pub use llm::LlmPort;
+pub use ser::SerPort;
+pub use tts::TtsPort;
+pub use types::{
+    AsrChunk, ChatMessage, Emotion, Intent, Role, SerInputPcm, SerOutcome, SerResult, WeatherQuery,
+    WeatherResponse,
+};
+pub use weather::WeatherPort;
 
-#[derive(Debug, Clone)]
-pub struct ChatMessage {
-    pub role: Role,
-    pub content: String,
-}
+pub use crate::error::ai::{AsrError, IntentError, LlmError, SerError, TtsError, WeatherError};
 
 pub type AiFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
-/// app 層が依存する AI ポート（外部I/Oは実装側に閉じ込める）。
-pub trait AiPort: Send + Sync {
-    fn transcribe_chunks(&self, call_id: String, chunks: Vec<AsrChunk>)
-        -> AiFuture<Result<String>>;
-    fn classify_intent(&self, text: String) -> AiFuture<Result<String>>;
-    fn generate_answer(&self, messages: Vec<ChatMessage>) -> AiFuture<Result<String>>;
-    fn handle_weather(&self, query: WeatherQuery) -> AiFuture<Result<String>>;
-    fn synth_to_wav(&self, text: String, path: Option<String>) -> AiFuture<Result<String>>;
-}
+/// Aggregate trait for bundling AI services.
+pub trait AiServices: AsrPort + IntentPort + LlmPort + WeatherPort + TtsPort + SerPort {}
 
-#[derive(Debug, Clone)]
-pub struct SerInputPcm {
-    pub session_id: String,
-    pub stream_id: String,
-    pub pcm: Vec<i16>,
-    pub sample_rate: u32,
-    pub channels: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Emotion {
-    Neutral,
-    Happy,
-    Sad,
-    Angry,
-    Unknown,
-}
-
-#[derive(Debug, Clone)]
-pub struct SerResult {
-    pub session_id: String,
-    pub stream_id: String,
-    pub emotion: Emotion,
-    pub confidence: f32,
-    pub arousal: Option<f32>,
-    pub valence: Option<f32>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SerError {
-    pub session_id: String,
-    pub reason: String,
-}
-
-pub type SerOutcome = std::result::Result<SerResult, SerError>;
-
-pub trait SerPort: Send + Sync {
-    fn analyze(&self, input: SerInputPcm) -> AiFuture<SerOutcome>;
-}
-
-pub trait AiSerPort: AiPort + SerPort {}
-
-impl<T: AiPort + SerPort> AiSerPort for T {}
-
-#[derive(Debug, Clone)]
-pub struct WeatherQuery {
-    pub location: String,
-    pub date: Option<String>,
-}
+impl<T> AiServices for T where T: AsrPort + IntentPort + LlmPort + WeatherPort + TtsPort + SerPort {}

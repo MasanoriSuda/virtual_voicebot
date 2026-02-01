@@ -1,18 +1,13 @@
-use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, FixedOffset};
 use reqwest::Client;
 
-pub type NotificationFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+use crate::ports::notification::{CallEndedNotifier, MissedCallNotifier, RingingNotifier};
 
-pub trait NotificationPort: Send + Sync {
-    fn notify_ringing(&self, from: String, timestamp: DateTime<FixedOffset>) -> NotificationFuture;
-    fn notify_missed(&self, from: String, timestamp: DateTime<FixedOffset>) -> NotificationFuture;
-    fn notify_ended(&self, from: String, duration_sec: u64) -> NotificationFuture;
-}
+pub use crate::ports::notification::NotificationFuture;
+pub use crate::ports::notification::NotificationService as NotificationPort;
 
 #[derive(Clone, Debug, Default)]
 pub struct NoopNotification;
@@ -35,7 +30,7 @@ impl NoopNotification {
     }
 }
 
-impl NotificationPort for NoopNotification {
+impl RingingNotifier for NoopNotification {
     /// Handle a ringing event without performing any action.
     ///
     /// This no-op implementation accepts a sender and timestamp but does not send any notification
@@ -58,7 +53,9 @@ impl NotificationPort for NoopNotification {
     ) -> NotificationFuture {
         Box::pin(async move { Ok(()) })
     }
+}
 
+impl MissedCallNotifier for NoopNotification {
     /// No-op handler for missed-call notifications that ignores the event.
     ///
     /// # Returns
@@ -80,7 +77,9 @@ impl NotificationPort for NoopNotification {
     ) -> NotificationFuture {
         Box::pin(async move { Ok(()) })
     }
+}
 
+impl CallEndedNotifier for NoopNotification {
     /// Notify that a call has ended for a given sender and duration.
     ///
     /// Returns a future that resolves to `Ok(())` on success.
@@ -181,7 +180,7 @@ impl LineAdapter {
     }
 }
 
-impl NotificationPort for LineAdapter {
+impl RingingNotifier for LineAdapter {
     /// Send a LINE push notification for an incoming call.
     ///
     /// The `from` value is normalized to `"unknown"` when it is empty or only whitespace.
@@ -221,7 +220,9 @@ impl NotificationPort for LineAdapter {
         );
         self.push_message(text)
     }
+}
 
+impl MissedCallNotifier for LineAdapter {
     /// Send a missed-call notification for the given sender at the specified timestamp.
     ///
     /// Empty or whitespace-only `from` values are normalized to `"unknown"`. The notification
@@ -261,7 +262,9 @@ impl NotificationPort for LineAdapter {
         );
         self.push_message(text)
     }
+}
 
+impl CallEndedNotifier for LineAdapter {
     /// Sends a "call ended" notification containing the caller identifier and the call duration.
     ///
     /// # Parameters

@@ -92,9 +92,10 @@ So that 変更が局所化され、テストが容易になる
 | 項目 | 値 |
 |------|-----|
 | 実装者 | Codex |
-| 実装日 | - |
+| 実装日 | 2026-02-01 |
 | 指示者 | @MasanoriSuda |
 | 指示内容 | "本ステアリングに基づき実装" |
+| 進捗 | Phase 1: AI/Notification Port 分割・ドメインエラー導入・compat 追加／Phase 2: entities 新設、SessionCoordinator+StateMachine 分離、Session 録音/ingest/rtp を manager へ移管、sip/core 分割（core.rs 抽出・types/codec/transport 参照へ移行）（進行中） |
 | コードレビュー | - |
 
 ### 3.6 マージ
@@ -848,4 +849,3 @@ Codex への引き継ぎ事項：
 | 2026-01-31 | §5 アーキテクチャ原則追加（レイヤー構造、DDD、EDA、デザインパターン） | Claude Code |
 | 2026-01-31 | §5 を BD-003 へ昇格、CONVENTIONS.md 新設、本セクションは参照に簡略化 | Claude Code |
 | 2026-02-01 | Codex レビュー指摘対応（Refs #85）: Actor Model 矛盾解消、adapters/ 二重所属修正、call_id 移行方針追記、WeatherError/SerError 追加、Call::state() getter 追記 | Claude Code |
-
