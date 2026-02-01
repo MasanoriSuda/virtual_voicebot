@@ -49,7 +49,7 @@ Frontend 管理画面のコンポーネント構成、画面遷移、データ�
 └─────────────────────────────────────────────────────────────┘
                               ▲
                               │ POST /api/ingest/call
-                              │ GET /recordings/{id}
+                              │ GET recordingUrl (Backend発行)
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                        Backend                               │
@@ -211,7 +211,7 @@ User                      Frontend                    Backend
   │                          │                           │
   │  再生ボタン クリック       │                           │
   │ ───────────────────────> │                           │
-  │                          │  GET /recordings/{id}     │
+  │                          │  GET {recordingUrl}       │
   │                          │  Range: bytes=0-          │
   │                          │ ─────────────────────────>│
   │                          │                           │
@@ -222,6 +222,10 @@ User                      Frontend                    Backend
   │  <AudioPlayer>           │                           │
   │ <─────────────────────── │                           │
 ```
+
+> **Note**: `recordingUrl` は Backend が `POST /api/ingest/call` で通知する完全URL。
+> 将来的に署名付きURL（signed URL）となる可能性があるため、Frontend は固定パスを構築せず、
+> 受信した URL をそのまま使用する。
 
 ---
 
@@ -265,8 +269,8 @@ model Transcript {
 |--------|------|--------|------|
 | Call | JSON → DB | Local DB | 通話メタ情報 |
 | Transcript | JSON（3種） | Local DB | 文字起こし |
-| Recording | WAV | Backend (S3等) | 録音ファイル本体 |
-| KPI | JSON | Backend API | Dashboard 集計値 |
+| Recording | WAV | Backend (`recordingUrl`) | 録音ファイル本体 |
+| KPI | JSON | **MVP: モック** / post-MVP: Backend API | Dashboard 集計値 |
 
 ---
 
@@ -319,17 +323,21 @@ model Transcript {
 | 400 | リクエスト不正 | ペイロード検証 |
 | 500 | 内部エラー | ログ確認・リトライ |
 
-### 7.2 IF-002: KPI 取得（Frontend → Backend）
+### 7.2 IF-002: KPI 取得（Frontend → Backend）【post-MVP】
+
+> **MVP での扱い**: KPI は post-MVP で API 化予定。MVP ではモック表示で UI/導線のみ検証する。
+> Frontend は静的 JSON またはフィクスチャを使用し、Backend API は呼び出さない。
 
 | 項目 | 内容 |
 |------|------|
-| エンドポイント | `GET /api/kpi` |
+| エンドポイント | `GET /api/kpi`（**post-MVP**） |
 | 呼出元 | Frontend |
 | 呼出先 | Backend |
 | プロトコル | HTTP |
 | 同期/非同期 | 同期 |
+| MVP 対応 | **モックデータ使用**（API 未実装） |
 
-#### レスポンス
+#### レスポンス（post-MVP 予定）
 
 ```json
 {
@@ -352,7 +360,8 @@ model Transcript {
 
 | 種別 | 管理方法 | 例 |
 |------|---------|-----|
-| サーバー状態 | Prisma + React Query | Call 一覧、KPI |
+| サーバー状態 | Prisma + React Query | Call 一覧 |
+| モック状態（MVP） | 静的 JSON / フィクスチャ | KPI（post-MVP で API 化） |
 | UI 状態 | React Context | サイドバー開閉、テーマ |
 | フォーム状態 | React Hook Form | フィルタ条件 |
 
@@ -361,7 +370,7 @@ model Transcript {
 | データ | キャッシュ | 更新タイミング |
 |--------|-----------|--------------|
 | Call 一覧 | stale-while-revalidate | ページ遷移時 |
-| KPI | 1分 TTL | 定期 refetch |
+| KPI | **MVP: 静的** / post-MVP: 1分 TTL | MVP: 不要 / post-MVP: 定期 refetch |
 | 録音ファイル | ブラウザキャッシュ | immutable |
 
 ---
@@ -398,8 +407,8 @@ model Transcript {
 ### 10.1 前提条件
 
 - Backend が `POST /api/ingest/call` で通話データを送信する
-- 録音ファイルは Backend から直接配信（Range 対応）
-- KPI は Backend が集計して API 提供
+- 録音ファイルは `recordingUrl`（Backend 発行）から直接取得（Range 対応）
+- KPI は **post-MVP** で Backend 集計 API 提供予定（MVP はモック表示）
 
 ### 10.2 制約
 
@@ -413,7 +422,7 @@ model Transcript {
 
 - [x] Q1: ~~文字起こしデータの形式~~ → RD-005 で解決（3点セット）
 - [x] Q2: ~~KPI 集計方法~~ → RD-005 で解決（Backend 集計）
-- [ ] Q3: KPI API のエンドポイント詳細（contract.md に追記要）
+- [x] Q3: ~~KPI API のエンドポイント詳細~~ → **post-MVP へ延期**（MVP はモック表示）
 - [ ] Q4: Transcript API（文字起こしデータ取得方法）
 
 ---
@@ -432,3 +441,4 @@ model Transcript {
 | 日付 | バージョン | 変更内容 | 作成者 |
 |------|-----------|---------|--------|
 | 2026-02-02 | 1.0 | 初版作成 | Claude Code |
+| 2026-02-02 | 1.1 | Codex P2 対応: KPI API を post-MVP へ移動、recordingUrl 直接参照に変更 | Claude Code |
