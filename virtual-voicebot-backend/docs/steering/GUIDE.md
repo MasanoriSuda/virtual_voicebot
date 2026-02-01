@@ -95,14 +95,56 @@ STEER-{イシュー番号:3桁ゼロ埋め}_{slug}.md
 
 ## 3. 作成手順（チェックリスト）
 
+### 3.0 前提条件（ガードレール）
+
+> **作業開始前に必ず確認すること**
+
+| 条件 | 確認方法 | NG時の対応 |
+|------|---------|-----------|
+| GitHub Issue が存在する | Issue 番号を確認 | Issue を先に作成 |
+| 作業ブランチが切られている | `git branch --show-current` | ブランチを作成 |
+| 作業ブランチにチェックアウト済み | 同上 | `git checkout` で切り替え |
+
+**ブランチ命名規則**:
+
+```
+feat/{issue番号}-{slug}
+fix/{issue番号}-{slug}
+refactor/{issue番号}-{slug}
+docs/{issue番号}-{slug}
+
+例:
+- feat/85-clean-architecture
+- fix/92-null-pointer
+- docs/100-api-reference
+```
+
+```bash
+# ブランチ確認コマンド
+git branch --show-current
+
+# 期待される出力例: feat/85-clean-architecture
+# NG例: main, develop, master
+```
+
+> **ガードレール**: `main` / `develop` / `master` ブランチで作業を開始してはいけない。
+> 必ず `feat/xxx-*` 等の作業ブランチに切り替えてから作業を開始すること。
+
+---
+
 ### 3.1 起票フェーズ
 
 - [ ] GitHub Issue が存在する（なければ先に作成）
 - [ ] Issue に要件・背景が記載されている
+- [ ] **作業ブランチが作成・チェックアウト済み**（§3.0 参照）
 
 ### 3.2 作成フェーズ
 
 ```bash
+# 0. ブランチ確認（main/develop でないことを確認）
+git branch --show-current
+# → feat/85-clean-architecture などであること
+
 # 1. テンプレートをコピー（Issue番号は3桁ゼロ埋め）
 cp docs/steering/TEMPLATE.md docs/steering/STEER-085_example.md
 
@@ -111,6 +153,7 @@ cp docs/steering/TEMPLATE.md docs/steering/STEER-085_example.md
 # 4. 差分仕様（What/How）を記述
 ```
 
+- [ ] **ブランチが作業ブランチであることを確認**
 - [ ] テンプレートからファイル作成（3桁ゼロ埋め）
 - [ ] メタ情報（ID, タイトル, 関連Issue）を記入
 - [ ] §2 ストーリー（背景・目的・ユーザーストーリー）を記述
@@ -313,6 +356,23 @@ Refs #85
 
 > 矛盾発見時は、どちらが正しいか判断せず、まず承認者に報告すること。
 
+### Q6: main ブランチで作業を始めてしまったら？
+
+**A**: 以下の手順でリカバリする：
+
+```bash
+# 1. 変更を一時退避
+git stash
+
+# 2. 作業ブランチを作成・切り替え
+git checkout -b feat/85-clean-architecture
+
+# 3. 退避した変更を復元
+git stash pop
+```
+
+> **予防策**: 作業開始時に必ず `git branch --show-current` でブランチを確認する習慣をつける。
+
 ---
 
 ## 8. 参照
@@ -334,6 +394,7 @@ Refs #85
 |------|-----------|---------|--------|
 | 2026-02-01 | 0.1 | 初版ドラフト作成 | Claude Code |
 | 2026-02-01 | 0.2 | 運用開始品質へ整備 | Claude Code |
+| 2026-02-01 | 0.3 | ブランチ確認ガードレール追加 | Claude Code |
 
 ### 変更履歴（0.2）
 
@@ -352,4 +413,14 @@ Refs #85
 - §7 Q1: 外部挙動変更時は MUST である旨を追記
 - §7 Q5: 「ステアリングが正」を「承認済み優先＋承認者裁定＋統一してから進む」に修正
 - ステータスを Draft → Active に変更
+
+### 変更履歴（0.3）
+
+- §3.0: 前提条件（ガードレール）を新設
+  - ブランチ命名規則（feat/fix/refactor/docs）を定義
+  - main/develop/master での作業開始を禁止
+  - ブランチ確認コマンド例を追加
+- §3.1: 「作業ブランチが作成・チェックアウト済み」をチェック項目に追加
+- §3.2: ブランチ確認コマンドをコード例に追加
+- §7 Q6: main ブランチで作業を始めた場合のリカバリ手順を追加
 
