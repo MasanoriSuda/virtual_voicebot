@@ -21,15 +21,15 @@
 - **ストーリー駆動**: イシュー/ステアリング単位で Why/Who/When を管理
 - **仕様駆動**: 詳細仕様を先に定義してからAIに実装させる
 
-## Claude Code と Codex の責務分担
+## AI エージェントの責務分担
 
-| 観点 | Claude Code | Codex |
-|------|-------------|-------|
-| **主担当** | 仕様/ドキュメント整合性 | 実装/テスト観点 |
-| **レビュー対象** | docs 矛盾、V字トレース、運用観点 | 依存方向、非同期境界、timeout/backpressure |
-| **出力** | RD/BD/DD/ステアリング、質問リスト | 最小差分コード修正案 |
-| **コード変更** | ❌ しない | ✓ する |
-| **詳細定義** | 本ファイル (CLAUDE.md) | [virtual-voicebot-backend/AGENTS.md](virtual-voicebot-backend/AGENTS.md) |
+| 観点 | Claude Code | Codex | CodeRabbit |
+|------|-------------|-------|------------|
+| **主担当** | 仕様/ドキュメント整合性 | 実装/テスト | コードレビュー |
+| **レビュー対象** | docs 矛盾、V字トレース、運用観点 | 依存方向、非同期境界、timeout/backpressure | コード品質、セキュリティ、パフォーマンス |
+| **出力** | RD/BD/DD/ステアリング、質問リスト | 最小差分コード修正案 | PR コメント、改善提案 |
+| **コード変更** | ❌ しない | ✓ する | ❌ しない（指摘のみ） |
+| **詳細定義** | 本ファイル (CLAUDE.md) | [virtual-voicebot-backend/AGENTS.md](virtual-voicebot-backend/AGENTS.md) | GitHub App 設定 |
 
 ## 合意（チケット）ゲート
 - **合意（チケット参照）が確認できない限り、作業を開始しないでください。**
@@ -88,7 +88,8 @@ Claude Codeは VSCodeワークスペース全体のレビューを行う（た�
 3. レビュー（Review）
 4. 承認（Approved）
 5. 実装（Codexへ引き継ぎ）
-6. マージ（Merged）→ 本体仕様書へ反映
+6. コードレビュー（CodeRabbit が自動実施）
+7. マージ（Merged）→ 本体仕様書へ反映
 
 詳細は [プロセス定義書 §5](virtual-voicebot-backend/docs/process/v-model.md) を参照。
 

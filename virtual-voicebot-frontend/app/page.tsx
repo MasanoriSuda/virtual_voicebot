@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation"
+import { DashboardContent } from "@/components/dashboard-content"
 
-export default function HomePage() {
-  redirect("/calls")
+export default function DashboardPage() {
+  return <DashboardContent />
 }

@@ -1,0 +1,1490 @@
+#![allow(dead_code)]
+// session.rs
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use chrono::{DateTime, FixedOffset, Local, Timelike, Utc};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
+use tokio::time::{interval, Duration, Instant, MissedTickBehavior};
+
+use crate::session::b2bua;
+use crate::session::state_machine::SessionStateMachine;
+use crate::session::types::Sdp;
+use crate::session::types::*;
+use crate::sip::{parse_name_addr, parse_uri};
+
+use crate::app::{AppEvent, EndReason};
+use crate::config;
+use crate::http::ingest::IngestPort;
+use crate::recording;
+use crate::recording::storage::StoragePort;
+use crate::rtp::codec::mulaw_to_linear16;
+use crate::rtp::tx::RtpTxHandle;
+use crate::session::capture::AudioCapture;
+use crate::session::timers::SessionTimers;
+use anyhow::Error;
+use log::{debug, info, warn};
+use serde_json::json;
+
+const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
+const PLAYBACK_FRAME_INTERVAL: Duration = Duration::from_millis(20);
+const TRANSFER_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
+
+const INTRO_MORNING_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_morning.wav"
+);
+const INTRO_AFTERNOON_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_afternoon.wav"
+);
+const INTRO_EVENING_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_evening.wav"
+);
+const IVR_INTRO_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr.wav");
+const VOICEBOT_INTRO_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_intro_ivr_1.wav");
+const IVR_INTRO_AGAIN_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_intro_ivr_again.wav"
+);
+const IVR_SENDAI_WAV_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sendai.wav");
+const IVR_INVALID_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_invalid.wav");
+const TRANSFER_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_try_transfer.wav"
+);
+const TRANSFER_FAIL_WAV_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zundamon_transfer_fail.wav"
+);
+
+/// Returns the appropriate intro WAV path for a given hour in 24-hour time.
+///
+/// Returns the static path for morning (5–11), afternoon (12–16), or evening (all other hours).
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(intro_wav_path_for_hour(7), INTRO_MORNING_WAV_PATH);
+/// assert_eq!(intro_wav_path_for_hour(14), INTRO_AFTERNOON_WAV_PATH);
+/// assert_eq!(intro_wav_path_for_hour(3), INTRO_EVENING_WAV_PATH);
+/// ```
+fn intro_wav_path_for_hour(hour: u32) -> &'static str {
+    match hour {
+        5..=11 => INTRO_MORNING_WAV_PATH,
+        12..=16 => INTRO_AFTERNOON_WAV_PATH,
+        _ => INTRO_EVENING_WAV_PATH,
+    }
+}
+
+fn get_intro_wav_path() -> &'static str {
+    let hour = Local::now().hour();
+    intro_wav_path_for_hour(hour)
+}
+
+/// Extracts a candidate user identifier or telephone number from a SIP `To`/`From`-style header string.
+///
+/// Attempts to parse a name-addr or raw URI and returns the URI user component when present;
+/// for `tel:` URIs it returns the telephone host (digits) if non-empty. Returns `None` when no
+/// suitable user/telephone could be parsed.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(extract_user_from_to("Alice <sip:alice@example.com>"), Some("alice".to_string()));
+/// assert_eq!(extract_user_from_to("<tel:+819012345678>"), Some("+819012345678".to_string()));
+/// assert_eq!(extract_user_from_to("sip:anon@example.com;tag=123"), Some("anon".to_string()));
+/// assert_eq!(extract_user_from_to("invalid"), None);
+/// ```
+fn extract_user_from_to(value: &str) -> Option<String> {
+    if let Ok(name_addr) = parse_name_addr(value) {
+        if name_addr.uri.scheme.eq_ignore_ascii_case("tel") {
+            if !name_addr.uri.host.trim().is_empty() {
+                return Some(name_addr.uri.host);
+            }
+        }
+        if let Some(user) = name_addr.uri.user {
+            return Some(user);
+        }
+    }
+    let trimmed = value.trim();
+    let addr = if let Some(start) = trimmed.find('<') {
+        if let Some(end) = trimmed[start + 1..].find('>') {
+            &trimmed[start + 1..start + 1 + end]
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    };
+    let addr = addr.split(';').next().unwrap_or(addr).trim();
+    let uri = parse_uri(addr).ok()?;
+    if uri.scheme.eq_ignore_ascii_case("tel") {
+        if !uri.host.trim().is_empty() {
+            return Some(uri.host);
+        }
+    }
+    uri.user
+}
+
+/// Extracts the notification identifier from a SIP name-addr string.
+///
+/// The identifier is the user portion of a SIP URI or the host of a `tel:` URI when present;
+/// returns an empty string if no candidate is found.
+///
+/// # Examples
+///
+/// ```
+/// let v = extract_notify_from("Alice <sip:alice@example.com>");
+/// assert_eq!(v, "alice");
+///
+/// let v = extract_notify_from("<tel:+819012345678>");
+/// assert_eq!(v, "+819012345678");
+///
+/// let v = extract_notify_from("invalid");
+/// assert_eq!(v, "");
+/// ```
+fn extract_notify_from(value: &str) -> String {
+    extract_user_from_to(value).unwrap_or_default()
+}
+
+/// Get the current time in Japan Standard Time (UTC+9).
+///
+/// # Examples
+///
+/// ```
+/// let ts = now_jst();
+/// // Offset is +9 hours (32400 seconds)
+/// assert_eq!(ts.offset().local_minus_utc(), 9 * 3600);
+/// ```
+fn now_jst() -> DateTime<FixedOffset> {
+    let offset = FixedOffset::east_opt(9 * 3600).unwrap();
+    Utc::now().with_timezone(&offset)
+}
+
+#[derive(Clone)]
+pub struct SessionHandle {
+    pub tx_in: UnboundedSender<SessionIn>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IvrAction {
+    EnterVoicebot,
+    PlaySendai,
+    Transfer,
+    ReplayMenu,
+    Invalid,
+}
+
+fn ivr_action_for_digit(digit: char) -> IvrAction {
+    match digit {
+        '1' => IvrAction::EnterVoicebot,
+        '2' => IvrAction::PlaySendai,
+        '3' => IvrAction::Transfer,
+        '9' => IvrAction::ReplayMenu,
+        _ => IvrAction::Invalid,
+    }
+}
+
+fn ivr_state_after_action(state: IvrState, action: IvrAction) -> IvrState {
+    match (state, action) {
+        (IvrState::IvrMenuWaiting, IvrAction::EnterVoicebot) => IvrState::VoicebotIntroPlaying,
+        _ => state,
+    }
+}
+
+#[derive(Debug)]
+struct PlaybackState {
+    frames: Vec<Vec<u8>>,
+    index: usize,
+}
+
+pub struct SessionCoordinator {
+    state_machine: SessionStateMachine,
+    call_id: CallId,
+    from_uri: String,
+    to_uri: String,
+    ingest: crate::session::ingest_manager::IngestManager,
+    recording_base_url: Option<String>,
+    storage_port: Arc<dyn StoragePort>,
+    peer_sdp: Option<Sdp>,
+    local_sdp: Option<Sdp>,
+    session_out_tx: UnboundedSender<(CallId, SessionOut)>,
+    tx_in: UnboundedSender<SessionIn>,
+    app_tx: UnboundedSender<AppEvent>,
+    media_cfg: MediaConfig,
+    rtp: crate::session::rtp_stream_manager::RtpStreamManager,
+    recording: crate::session::recording_manager::RecordingManager,
+    started_at: Option<Instant>,
+    started_wall: Option<std::time::SystemTime>,
+    rtp_last_sent: Option<Instant>,
+    a_leg_rtp_started: bool,
+    timers: SessionTimers,
+    sending_audio: bool,
+    playback: Option<PlaybackState>,
+    // バッファ/タイマ
+    speaking: bool,
+    capture: AudioCapture,
+    intro_sent: bool,
+    ivr_state: IvrState,
+    ivr_timeout_stop: Option<oneshot::Sender<()>>,
+    b_leg: Option<b2bua::BLeg>,
+    transfer_cancel: Option<oneshot::Sender<()>>,
+    transfer_announce_stop: Option<oneshot::Sender<()>>,
+    ring_delay_cancel: Option<oneshot::Sender<()>>,
+    pending_answer: Option<Sdp>,
+    outbound_mode: bool,
+    outbound_answered: bool,
+    outbound_sent_180: bool,
+    outbound_sent_183: bool,
+    invite_rejected: bool,
+    session_expires: Option<Duration>,
+    session_refresher: Option<SessionRefresher>,
+}
+
+impl SessionCoordinator {
+    pub fn spawn(
+        call_id: CallId,
+        from_uri: String,
+        to_uri: String,
+        session_out_tx: UnboundedSender<(CallId, SessionOut)>,
+        app_tx: UnboundedSender<AppEvent>,
+        media_cfg: MediaConfig,
+        rtp_tx: RtpTxHandle,
+        ingest_url: Option<String>,
+        recording_base_url: Option<String>,
+        ingest_port: Arc<dyn IngestPort>,
+        storage_port: Arc<dyn StoragePort>,
+    ) -> SessionHandle {
+        let (tx_in, rx_in) = tokio::sync::mpsc::unbounded_channel();
+        let call_id_clone = call_id.clone();
+        let mut s = Self {
+            state_machine: SessionStateMachine::new(),
+            call_id,
+            from_uri,
+            to_uri,
+            ingest: crate::session::ingest_manager::IngestManager::new(ingest_url, ingest_port),
+            recording_base_url,
+            storage_port,
+            peer_sdp: None,
+            local_sdp: None,
+            session_out_tx,
+            tx_in: tx_in.clone(),
+            app_tx,
+            media_cfg,
+            rtp: crate::session::rtp_stream_manager::RtpStreamManager::new(rtp_tx),
+            recording: crate::session::recording_manager::RecordingManager::new(call_id_clone),
+            started_at: None,
+            started_wall: None,
+            rtp_last_sent: None,
+            a_leg_rtp_started: false,
+            timers: SessionTimers::new(Duration::from_secs(0)),
+            sending_audio: false,
+            playback: None,
+            speaking: false,
+            capture: AudioCapture::new(config::vad_config().clone()),
+            intro_sent: false,
+            ivr_state: IvrState::default(),
+            ivr_timeout_stop: None,
+            b_leg: None,
+            transfer_cancel: None,
+            transfer_announce_stop: None,
+            ring_delay_cancel: None,
+            pending_answer: None,
+            outbound_mode: false,
+            outbound_answered: false,
+            outbound_sent_180: false,
+            outbound_sent_183: false,
+            invite_rejected: false,
+            session_expires: None,
+            session_refresher: None,
+        };
+        tokio::spawn(async move {
+            s.run(rx_in).await;
+        });
+        SessionHandle { tx_in }
+    }
+
+    /// Runs the session's main event loop, processing incoming `SessionIn` events,
+    /// periodic playback ticks, timers, media, SIP/B2BUA actions, IVR flow, and
+    /// performing cleanup when the input channel closes or the session ends.
+    ///
+    /// This method drives the session state machine: it receives events from the
+    /// provided `UnboundedReceiver<SessionIn>`, advances the internal `SessState`,
+    /// handles playback and recording, manages RTP and SIP interactions, and emits
+    /// outgoing actions via the session's configured channels. The loop exits when
+    /// the receiver is closed; recorders are stopped after the loop finishes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tokio::sync::mpsc::UnboundedReceiver;
+    ///
+    /// // In an async context where `session` and `rx` are available:
+    /// async fn run_session_example(mut session: crate::session::Session, rx: UnboundedReceiver<crate::session::SessionIn>) {
+    ///     // This will run until `rx` is closed or the session ends.
+    ///     session.run(rx).await;
+    /// }
+    /// ```
+    async fn run(&mut self, mut rx: UnboundedReceiver<SessionIn>) {
+        let mut playback_tick = interval(PLAYBACK_FRAME_INTERVAL);
+        playback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                _ = playback_tick.tick() => {
+                    if self.playback.is_some() {
+                        self.step_playback();
+                    }
+                }
+                maybe_ev = rx.recv() => {
+                    let Some(ev) = maybe_ev else { break; };
+                    let current_state = self.state_machine.state();
+                    let next_state = self.state_machine.next_state(&ev);
+                    let mut advance_state = true;
+                    match (current_state, ev) {
+                        (SessState::Idle, SessionIn::SipInvite { offer, session_timer, .. }) => {
+                            self.peer_sdp = Some(offer);
+                            if let Some(timer) = session_timer {
+                                self.update_session_expires(timer);
+                            }
+                            let answer = self.build_answer_pcmu8k();
+                            self.local_sdp = Some(answer.clone());
+                            self.outbound_mode = false;
+                            self.outbound_answered = false;
+                            self.outbound_sent_180 = false;
+                            self.outbound_sent_183 = false;
+                            self.invite_rejected = false;
+                            self.stop_ring_delay();
+                            if config::outbound_config().enabled {
+                                let outbound_cfg = config::outbound_config();
+                                let registrar = config::registrar_config();
+                                let user =
+                                    extract_user_from_to(self.to_uri.as_str()).unwrap_or_default();
+                                let skip_outbound = registrar
+                                    .map(|cfg| cfg.user == user)
+                                    .unwrap_or(false);
+                                if !skip_outbound {
+                                    let target = outbound_cfg.resolve_number(user.as_str());
+                                    if outbound_cfg.domain.is_empty()
+                                        || registrar.is_none()
+                                        || target.is_none()
+                                    {
+                                        warn!(
+                                            "[session {}] outbound disabled (missing config)",
+                                            self.call_id
+                                        );
+                                        let _ = self.session_out_tx.send((
+                                            self.call_id.clone(),
+                                            SessionOut::SipSendError {
+                                                code: 503,
+                                                reason: "Service Unavailable".to_string(),
+                                            },
+                                        ));
+                                        self.invite_rejected = true;
+                                        advance_state = false;
+                                    } else {
+                                        self.outbound_mode = true;
+                                        self.ivr_state = IvrState::Transferring;
+                                        if let Some(number) = target {
+                                            self.transfer_cancel = Some(b2bua::spawn_outbound(
+                                                self.call_id.clone(),
+                                                number,
+                                                self.tx_in.clone(),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            if advance_state {
+                                let _ = self
+                                    .session_out_tx
+                                    .send((self.call_id.clone(), SessionOut::SipSend100));
+                                if !self.outbound_mode {
+                                    let _ = self
+                                        .session_out_tx
+                                        .send((self.call_id.clone(), SessionOut::SipSend180));
+                                    let from = extract_notify_from(self.from_uri.as_str());
+                                    let _ = self.app_tx.send(AppEvent::CallRinging {
+                                        call_id: self.call_id.clone(),
+                                        from,
+                                        timestamp: now_jst(),
+                                    });
+                                    let ring_duration = config::ring_duration();
+                                    if ring_duration.is_zero() {
+                                        let _ = self.session_out_tx.send((
+                                            self.call_id.clone(),
+                                            SessionOut::SipSend200 { answer },
+                                        ));
+                                    } else {
+                                        self.pending_answer = Some(answer);
+                                        self.start_ring_delay(ring_duration);
+                                    }
+                                }
+                            }
+                        }
+                        (_, SessionIn::RingDurationElapsed) => {
+                            if self.outbound_mode || self.invite_rejected {
+                                continue;
+                            }
+                            if let Some(answer) = self.pending_answer.take() {
+                                let _ = self.session_out_tx.send((
+                                    self.call_id.clone(),
+                                    SessionOut::SipSend200 { answer },
+                                ));
+                            }
+                        }
+                        (SessState::Early, SessionIn::SipAck) => {
+                            // 相手SDPからRTP宛先を確定して送信開始
+                            if self.intro_sent {
+                                advance_state = false;
+                            }
+                            if self.invite_rejected {
+                                advance_state = false;
+                            }
+                            if !advance_state {
+                                continue;
+                            }
+                            self.started_at = Some(Instant::now());
+                            self.started_wall = Some(std::time::SystemTime::now());
+                            if let Err(e) = self.recording.start_main() {
+                                warn!(
+                                    "[session {}] failed to start recorder: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            if let Err(e) = self.recording.start_b_leg() {
+                                warn!(
+                                    "[session {}] failed to start b-leg recorder: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                            if !self.ensure_a_leg_rtp_started() {
+                                advance_state = false;
+                                continue;
+                            }
+                            self.capture.reset();
+                            self.intro_sent = true;
+
+                            self.align_rtp_clock();
+
+                            let caller = extract_user_from_to(self.from_uri.as_str());
+                            let _ = self.app_tx.send(AppEvent::CallStarted {
+                                call_id: self.call_id.clone(),
+                                caller,
+                            });
+
+                            if !self.outbound_mode {
+                                self.ivr_state = IvrState::IvrMenuWaiting;
+                                if let Err(e) = self.start_playback(&[IVR_INTRO_WAV_PATH]) {
+                                    warn!(
+                                        "[session {}] failed to send IVR intro wav: {:?}",
+                                        self.call_id, e
+                                    );
+                                    self.reset_ivr_timeout();
+                                } else {
+                                    info!(
+                                        "[session {}] sent IVR intro wav {}",
+                                        self.call_id, IVR_INTRO_WAV_PATH
+                                    );
+                                }
+                            }
+
+                            self.start_keepalive_timer();
+                            self.start_session_timer_if_needed();
+                        }
+                        (SessState::Established, SessionIn::MediaRtpIn { payload, .. }) => {
+                            debug!(
+                                "[session {}] RTP payload received len={}",
+                                self.call_id,
+                                payload.len()
+                            );
+                            let payload_len = payload.len();
+                            self.recording.push_rx(&payload);
+                            if self.ivr_state == IvrState::B2buaMode {
+                                if let Some(b_leg) = &self.b_leg {
+                                    self.rtp.send_payload(&b_leg.rtp_key, payload.clone());
+                                }
+                                self.recording.push_b_leg_tx(&payload);
+                            } else if self.ivr_state == IvrState::VoicebotMode {
+                                if let Some(buffer) = self.capture.ingest(&payload) {
+                                    info!(
+                                        "[session {}] buffered audio ready for app ({} bytes)",
+                                        self.call_id,
+                                        buffer.len()
+                                    );
+                                    let pcm_linear16: Vec<i16> = buffer
+                                        .iter()
+                                        .map(|&b| mulaw_to_linear16(b))
+                                        .collect();
+                                    let _ = self.app_tx.send(AppEvent::AudioBuffered {
+                                        call_id: self.call_id.clone(),
+                                        pcm_mulaw: buffer,
+                                        pcm_linear16,
+                                    });
+                                    self.capture.start();
+                                }
+                            }
+                            let _ = self.session_out_tx.send((
+                                self.call_id.clone(),
+                                SessionOut::Metrics {
+                                    name: "rtp_in",
+                                    value: payload_len as i64,
+                                },
+                            ));
+                        }
+                        (SessState::Established, SessionIn::Dtmf { digit }) => {
+                            info!("[session {}] DTMF received: '{}'", self.call_id, digit);
+                            if self.ivr_state == IvrState::VoicebotIntroPlaying {
+                                info!(
+                                    "[session {}] ignoring DTMF during voicebot intro",
+                                    self.call_id
+                                );
+                                continue;
+                            }
+                            if self.ivr_state != IvrState::IvrMenuWaiting {
+                                debug!(
+                                    "[session {}] ignoring DTMF in {:?}",
+                                    self.call_id, self.ivr_state
+                                );
+                                continue;
+                            }
+                            self.cancel_playback();
+                            self.stop_ivr_timeout();
+                            let action = ivr_action_for_digit(digit);
+                            match action {
+                                IvrAction::EnterVoicebot => {
+                                    info!(
+                                        "[session {}] starting voicebot intro",
+                                        self.call_id
+                                    );
+                                    if let Err(e) = self.start_playback(&[VOICEBOT_INTRO_WAV_PATH])
+                                    {
+                                        warn!(
+                                            "[session {}] voicebot intro failed: {:?}",
+                                            self.call_id, e
+                                        );
+                                        self.ivr_state = IvrState::VoicebotMode;
+                                        self.capture.reset();
+                                        self.capture.start();
+                                    } else {
+                                        self.ivr_state =
+                                            ivr_state_after_action(self.ivr_state, action);
+                                    }
+                                }
+                                IvrAction::PlaySendai => {
+                                    info!("[session {}] playing sendai info", self.call_id);
+                                    if let Err(e) = self.start_playback(&[
+                                        IVR_SENDAI_WAV_PATH,
+                                        IVR_INTRO_AGAIN_WAV_PATH,
+                                    ]) {
+                                        warn!(
+                                            "[session {}] failed to play sendai flow: {:?}",
+                                            self.call_id, e
+                                        );
+                                        self.reset_ivr_timeout();
+                                    }
+                                }
+                                IvrAction::Transfer => {
+                                    if self.transfer_cancel.is_some() || self.b_leg.is_some() {
+                                        warn!(
+                                            "[session {}] transfer already active",
+                                            self.call_id
+                                        );
+                                        self.reset_ivr_timeout();
+                                        continue;
+                                    }
+                                    info!(
+                                        "[session {}] initiating transfer to B-leg",
+                                        self.call_id
+                                    );
+                                    self.ivr_state = IvrState::Transferring;
+                                    if let Err(e) = self.start_playback(&[TRANSFER_WAV_PATH]) {
+                                        warn!(
+                                            "[session {}] failed to play transfer wav: {:?}",
+                                            self.call_id, e
+                                        );
+                                    }
+                                    self.start_transfer_announce();
+                                    self.transfer_cancel = Some(b2bua::spawn_transfer(
+                                        self.call_id.clone(),
+                                        self.tx_in.clone(),
+                                    ));
+                                }
+                                IvrAction::ReplayMenu => {
+                                    info!("[session {}] replaying IVR menu", self.call_id);
+                                    if let Err(e) =
+                                        self.start_playback(&[IVR_INTRO_AGAIN_WAV_PATH])
+                                    {
+                                        warn!(
+                                            "[session {}] failed to replay IVR menu: {:?}",
+                                            self.call_id, e
+                                        );
+                                        self.reset_ivr_timeout();
+                                    }
+                                }
+                                IvrAction::Invalid => {
+                                    info!("[session {}] invalid DTMF: '{}'", self.call_id, digit);
+                                    if let Err(e) = self.start_playback(&[
+                                        IVR_INVALID_WAV_PATH,
+                                        IVR_INTRO_AGAIN_WAV_PATH,
+                                    ]) {
+                                        warn!(
+                                            "[session {}] failed to play invalid flow: {:?}",
+                                            self.call_id, e
+                                        );
+                                        self.reset_ivr_timeout();
+                                    }
+                                }
+                            }
+                        }
+                        (_, SessionIn::B2buaEstablished { b_leg }) => {
+                            info!(
+                                "[session {}] B-leg established, entering B2BUA mode",
+                                self.call_id
+                            );
+                            self.transfer_cancel = None;
+                            self.stop_transfer_announce();
+                            self.cancel_playback();
+                            self.stop_ivr_timeout();
+                            self.ivr_state = IvrState::B2buaMode;
+                            self.b_leg = Some(b_leg);
+                            self.recording.ensure_b_leg();
+                            if self.recording.is_started() {
+                                if let Err(e) = self.recording.start_b_leg() {
+                                    warn!(
+                                        "[session {}] failed to start b-leg recorder: {:?}",
+                                        self.call_id, e
+                                    );
+                                }
+                            }
+                            if let Some(b_leg) = &self.b_leg {
+                                self.rtp.start(
+                                    b_leg.rtp_key.clone(),
+                                    b_leg.remote_rtp_addr,
+                                    0,
+                                    0x22334455,
+                                    0,
+                                    0,
+                                );
+                            }
+                            let _ = self.ensure_a_leg_rtp_started();
+                            if self.outbound_mode && !self.outbound_answered {
+                                if let Some(answer) = self.local_sdp.clone() {
+                                    let _ = self.session_out_tx.send((
+                                        self.call_id.clone(),
+                                        SessionOut::SipSend200 { answer },
+                                    ));
+                                    self.outbound_answered = true;
+                                }
+                            }
+                        }
+                        (_, SessionIn::B2buaFailed { reason, status }) => {
+                            warn!(
+                                "[session {}] transfer failed: {}",
+                                self.call_id, reason
+                            );
+                            self.transfer_cancel = None;
+                            self.stop_transfer_announce();
+                            if self.outbound_mode {
+                                let code = status.unwrap_or(503);
+                                let _ = self.session_out_tx.send((
+                                    self.call_id.clone(),
+                                    SessionOut::SipSendError {
+                                        code,
+                                        reason: "Service Unavailable".to_string(),
+                                    },
+                                ));
+                                self.outbound_mode = false;
+                                self.invite_rejected = true;
+                            } else {
+                                self.ivr_state = IvrState::IvrMenuWaiting;
+                                self.b_leg = None;
+                                if let Err(e) = self.start_playback(&[
+                                    TRANSFER_FAIL_WAV_PATH,
+                                    IVR_INTRO_AGAIN_WAV_PATH,
+                                ]) {
+                                    warn!(
+                                        "[session {}] failed to play transfer fail flow: {:?}",
+                                        self.call_id, e
+                                    );
+                                    self.reset_ivr_timeout();
+                                }
+                            }
+                        }
+                        (_, SessionIn::BLegRtp { payload }) => {
+                            if self.ivr_state == IvrState::B2buaMode {
+                                self.align_rtp_clock();
+                                self.recording.push_tx(&payload);
+                                self.recording.push_b_leg_rx(&payload);
+                                self.rtp.send_payload(&self.call_id, payload);
+                                self.rtp_last_sent = Some(Instant::now());
+                            }
+                        }
+                        (_, SessionIn::BLegBye) => {
+                            info!(
+                                "[session {}] B-leg BYE received, ending call",
+                                self.call_id
+                            );
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(false).await;
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            self.send_bye_to_a_leg();
+                            self.stop_recorders();
+                            self.send_ingest("ended").await;
+                            self.rtp.stop(&self.call_id);
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            self.send_call_ended(EndReason::Bye);
+                        }
+                        (_, SessionIn::B2buaRinging) => {
+                            if self.outbound_mode
+                                && !self.outbound_sent_180
+                                && !self.outbound_sent_183
+                            {
+                                let _ = self.session_out_tx.send((
+                                    self.call_id.clone(),
+                                    SessionOut::SipSend180,
+                                ));
+                                self.outbound_sent_180 = true;
+                            }
+                        }
+                        (_, SessionIn::B2buaEarlyMedia) => {
+                            if !self.outbound_mode || self.invite_rejected {
+                                continue;
+                            }
+                            self.ivr_state = IvrState::B2buaMode;
+                            if !self.ensure_a_leg_rtp_started() {
+                                continue;
+                            }
+                            if !self.outbound_sent_183 {
+                                if let Some(answer) = self.local_sdp.clone() {
+                                    let _ = self.session_out_tx.send((
+                                        self.call_id.clone(),
+                                        SessionOut::SipSend183 { answer },
+                                    ));
+                                    self.outbound_sent_183 = true;
+                                }
+                            }
+                        }
+                        (_, SessionIn::TransferAnnounce) => {
+                            if self.ivr_state == IvrState::Transferring && self.playback.is_none()
+                            {
+                                if let Err(e) = self.start_playback(&[TRANSFER_WAV_PATH]) {
+                                    warn!(
+                                        "[session {}] failed to replay transfer wav: {:?}",
+                                        self.call_id, e
+                                    );
+                                }
+                            }
+                        }
+                        (SessState::Established, SessionIn::SipReInvite { session_timer, .. }) => {
+                            if let Some(timer) = session_timer {
+                                self.update_session_expires(timer);
+                            }
+                            let answer = match self.local_sdp.clone() {
+                                Some(answer) => answer,
+                                None => {
+                                    let answer = self.build_answer_pcmu8k();
+                                    self.local_sdp = Some(answer.clone());
+                                    answer
+                                }
+                            };
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
+                        }
+                        (SessState::Established, SessionIn::MediaTimerTick) => {
+                            self.recording.flush_tick();
+                            if let Err(e) = self.send_silence_frame().await {
+                                warn!("[session {}] silence send failed: {:?}", self.call_id, e);
+                            }
+                        }
+                        (_, SessionIn::SipCancel) => {
+                            info!("[session {}] CANCEL received, terminating early", self.call_id);
+                            self.invite_rejected = true;
+                            self.stop_ring_delay();
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(true).await;
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            self.rtp.stop(&self.call_id);
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            let _ = self.session_out_tx.send((
+                                self.call_id.clone(),
+                                SessionOut::SipSendError {
+                                    code: 487,
+                                    reason: "Request Terminated".to_string(),
+                                },
+                            ));
+                            self.stop_recorders();
+                            self.send_call_ended(EndReason::Cancel);
+                        }
+                        (_, SessionIn::SipBye) => {
+                            self.stop_ring_delay();
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(true).await;
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            self.rtp.stop(&self.call_id);
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::SipSendBye200));
+                            self.stop_recorders();
+                            self.send_ingest("ended").await;
+                            self.send_call_ended(EndReason::Bye);
+                        }
+                        (_, SessionIn::SipTransactionTimeout { call_id: _ }) => {
+                            warn!("[session {}] transaction timeout notified", self.call_id);
+                        }
+                        (SessState::Established, SessionIn::AppBotAudioFile { path }) => {
+                            if let Err(e) = self.start_playback(&[path.as_str()]) {
+                                warn!(
+                                    "[session {}] failed to send app audio: {:?}",
+                                    self.call_id, e
+                                );
+                            }
+                        }
+                        (_, SessionIn::AppHangup) => {
+                            warn!("[session {}] app requested hangup", self.call_id);
+                            self.stop_ring_delay();
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(true).await;
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            self.stop_recorders();
+                            self.send_ingest("ended").await;
+                            self.rtp.stop(&self.call_id);
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::SipSendBye200));
+                            self.send_call_ended(EndReason::AppHangup);
+                        }
+                        (_, SessionIn::AppTransferRequest { person }) => {
+                            if self.transfer_cancel.is_some() || self.b_leg.is_some() {
+                                warn!(
+                                    "[session {}] transfer already active (person={})",
+                                    self.call_id, person
+                                );
+                                continue;
+                            }
+                            info!(
+                                "[session {}] transfer requested by app (person={})",
+                                self.call_id, person
+                            );
+                            self.cancel_playback();
+                            self.stop_ivr_timeout();
+                            self.ivr_state = IvrState::Transferring;
+                            self.transfer_cancel = Some(b2bua::spawn_transfer(
+                                self.call_id.clone(),
+                                self.tx_in.clone(),
+                            ));
+                        }
+                        (_, SessionIn::SipSessionExpires { timer }) => {
+                            self.update_session_expires(timer);
+                        }
+                        (_, SessionIn::IvrTimeout) => {
+                            if self.ivr_state == IvrState::IvrMenuWaiting {
+                                info!(
+                                    "[session {}] IVR timeout, replaying menu",
+                                    self.call_id
+                                );
+                                self.stop_ivr_timeout();
+                                if let Err(e) = self.start_playback(&[IVR_INTRO_AGAIN_WAV_PATH]) {
+                                    warn!(
+                                        "[session {}] failed to replay IVR menu: {:?}",
+                                        self.call_id, e
+                                    );
+                                    self.reset_ivr_timeout();
+                                }
+                            }
+                        }
+                        (_, SessionIn::SessionRefreshDue) => {
+                            if let (Some(expires), Some(SessionRefresher::Uas)) =
+                                (self.session_expires, self.session_refresher)
+                            {
+                                let _ = self.session_out_tx.send((
+                                    self.call_id.clone(),
+                                    SessionOut::SipSendUpdate { expires },
+                                ));
+                                self.update_session_expires(SessionTimerInfo {
+                                    expires,
+                                    refresher: SessionRefresher::Uas,
+                                });
+                            }
+                        }
+                        (_, SessionIn::SessionTimerFired) => {
+                            warn!("[session {}] session timer fired", self.call_id);
+                            self.stop_ring_delay();
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(true).await;
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            self.stop_recorders();
+                            self.send_ingest("ended").await;
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::AppSessionTimeout));
+                            self.send_call_ended(EndReason::Timeout);
+                        }
+                        (_, SessionIn::Abort(e)) => {
+                            warn!("call {} abort: {e:?}", self.call_id);
+                            self.stop_ring_delay();
+                            self.cancel_transfer();
+                            self.shutdown_b_leg(true).await;
+                            self.cancel_playback();
+                            self.stop_keepalive_timer();
+                            self.stop_session_timer();
+                            self.stop_ivr_timeout();
+                            self.stop_recorders();
+                            self.send_ingest("failed").await;
+                            self.rtp.stop(&self.call_id);
+                            let _ = self
+                                .session_out_tx
+                                .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                            self.send_call_ended(EndReason::Error);
+                        }
+                        _ => { /* それ以外は無視 or ログ */ }
+                    }
+                    if advance_state {
+                        self.state_machine.apply(next_state);
+                    }
+                }
+            }
+        }
+        self.stop_recorders();
+    }
+
+    /// Builds a local SDP using PCMU/8000 with the session's configured local IP and port.
+    ///
+    /// The produced `Sdp` is configured for PCMU at 8000 Hz and targets the `media_cfg` local
+    /// IP address and port of this session.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Given a `session` with a valid `media_cfg`, produce a PCMU/8000 SDP answer:
+    /// let sdp = session.build_answer_pcmu8k();
+    /// ```
+    fn build_answer_pcmu8k(&self) -> Sdp {
+        // PCMU/8000 でローカル SDP を組み立て
+        Sdp::pcmu(self.media_cfg.local_ip.clone(), self.media_cfg.local_port)
+    }
+
+    /// Emit an AppEvent::CallEnded to the application channel containing call metadata.
+    ///
+    /// The event includes the call ID, the extracted caller identifier (`from`), the provided
+    /// `reason`, the call duration in seconds if the call had started, and a JST timestamp.
+    ///
+    /// # Parameters
+    ///
+    /// - `reason`: the EndReason value describing why the call ended; this is forwarded in the event.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // Assuming `session` is a Session instance and `EndReason` is in scope:
+    /// session.send_call_ended(EndReason::Bye);
+    /// ```
+    fn send_call_ended(&self, reason: EndReason) {
+        let from = extract_notify_from(self.from_uri.as_str());
+        let timestamp = now_jst();
+        let duration_sec = self.started_at.map(|started| started.elapsed().as_secs());
+        let _ = self.app_tx.send(AppEvent::CallEnded {
+            call_id: self.call_id.clone(),
+            from,
+            reason,
+            duration_sec,
+            timestamp,
+        });
+    }
+
+    /// Returns the peer RTP destination IP address and port.
+    ///
+    /// If a peer SDP is present, returns its IP and port. If no peer SDP is available,
+    /// returns the default address `"0.0.0.0"` and port `0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Given a Session with peer_sdp set to ("192.0.2.1", 49152),
+    /// // `peer_rtp_dst()` will return ("192.0.2.1".to_string(), 49152u16).
+    /// ```
+    fn peer_rtp_dst(&self) -> (String, u16) {
+        if let Some(sdp) = &self.peer_sdp {
+            (sdp.ip.clone(), sdp.port)
+        } else {
+            ("0.0.0.0".to_string(), 0)
+        }
+    }
+
+    fn ensure_a_leg_rtp_started(&mut self) -> bool {
+        if self.a_leg_rtp_started {
+            return true;
+        }
+        let (ip, port) = self.peer_rtp_dst();
+        let dst_addr: SocketAddr = match format!("{ip}:{port}").parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                warn!(
+                    "[session {}] invalid RTP destination {}:{} ({:?})",
+                    self.call_id, ip, port, e
+                );
+                return false;
+            }
+        };
+        self.rtp
+            .start(self.call_id.clone(), dst_addr, 0, 0x12345678, 0, 0);
+        let _ = self.session_out_tx.send((
+            self.call_id.clone(),
+            SessionOut::RtpStartTx {
+                dst_ip: ip,
+                dst_port: port,
+                pt: 0,
+            },
+        ));
+        self.a_leg_rtp_started = true;
+        true
+    }
+
+    fn align_rtp_clock(&mut self) {
+        if let Some(last) = self.rtp_last_sent {
+            let gap_samples = (last.elapsed().as_secs_f64() * 8000.0) as u32;
+            self.rtp.adjust_timestamp(&self.call_id, gap_samples);
+        }
+    }
+
+    /// keepalive タイマを開始する（挙動は従来と同じ。20ms ごとに TimerTick を送る）
+    fn start_keepalive_timer(&mut self) {
+        self.timers
+            .start_keepalive(self.tx_in.clone(), KEEPALIVE_INTERVAL);
+    }
+
+    /// keepalive タイマを停止する（存在する場合のみ）
+    fn stop_keepalive_timer(&mut self) {
+        self.timers.stop_keepalive();
+    }
+
+    /// Session Timer（RFC 4028 準拠）。設定がある場合のみ開始する。
+    fn start_session_timer_if_needed(&mut self) {
+        let Some(expires) = self.session_expires else {
+            return;
+        };
+        if expires.is_zero() {
+            return;
+        }
+        let refresh_after = self.refresh_after(expires);
+        self.timers
+            .start_session_timer(self.tx_in.clone(), expires, refresh_after);
+    }
+
+    fn stop_session_timer(&mut self) {
+        self.timers.stop_session_timer();
+    }
+
+    fn update_session_expires(&mut self, timer: SessionTimerInfo) {
+        self.session_expires = Some(timer.expires);
+        self.session_refresher = Some(timer.refresher);
+        let refresh_after = self.refresh_after(timer.expires);
+        self.timers
+            .update_session_expires(timer.expires, self.tx_in.clone(), refresh_after);
+    }
+
+    fn refresh_after(&self, expires: Duration) -> Option<Duration> {
+        if self.session_refresher != Some(SessionRefresher::Uas) {
+            return None;
+        }
+        let total_ms = expires.as_millis();
+        if total_ms == 0 {
+            return None;
+        }
+        let refresh_ms = total_ms.saturating_mul(8) / 10;
+        if refresh_ms == 0 {
+            return None;
+        }
+        let refresh_ms = std::cmp::min(refresh_ms, u64::MAX as u128) as u64;
+        Some(Duration::from_millis(refresh_ms))
+    }
+
+    fn start_ivr_timeout(&mut self) {
+        let timeout = config::ivr_timeout();
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let tx = self.tx_in.clone();
+        self.ivr_timeout_stop = Some(stop_tx);
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::time::sleep(timeout) => {
+                    let _ = tx.send(SessionIn::IvrTimeout);
+                }
+                _ = &mut stop_rx => {}
+            }
+        });
+    }
+
+    fn reset_ivr_timeout(&mut self) {
+        self.stop_ivr_timeout();
+        self.start_ivr_timeout();
+    }
+
+    fn stop_ivr_timeout(&mut self) {
+        if let Some(stop) = self.ivr_timeout_stop.take() {
+            let _ = stop.send(());
+        }
+    }
+
+    fn cancel_transfer(&mut self) {
+        if let Some(cancel) = self.transfer_cancel.take() {
+            let _ = cancel.send(());
+        }
+        self.stop_transfer_announce();
+    }
+
+    fn start_transfer_announce(&mut self) {
+        self.stop_transfer_announce();
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let tx = self.tx_in.clone();
+        self.transfer_announce_stop = Some(stop_tx);
+        tokio::spawn(async move {
+            let mut tick = interval(TRANSFER_ANNOUNCE_INTERVAL);
+            tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            tick.tick().await;
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        let _ = tx.send(SessionIn::TransferAnnounce);
+                    }
+                    _ = &mut stop_rx => {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    fn stop_transfer_announce(&mut self) {
+        if let Some(stop) = self.transfer_announce_stop.take() {
+            let _ = stop.send(());
+        }
+    }
+
+    async fn shutdown_b_leg(&mut self, send_bye: bool) {
+        if let Some(mut b_leg) = self.b_leg.take() {
+            if send_bye {
+                if let Err(e) = b_leg.send_bye().await {
+                    warn!("[session {}] B-leg BYE failed: {:?}", self.call_id, e);
+                }
+            }
+            b_leg.shutdown();
+            self.rtp.stop(&b_leg.rtp_key);
+        }
+    }
+
+    fn send_bye_to_a_leg(&self) {
+        let _ = self
+            .session_out_tx
+            .send((self.call_id.clone(), SessionOut::SipSendBye));
+    }
+
+    fn peer_rtp_addr(&self) -> Option<SocketAddr> {
+        let peer = self.peer_sdp.as_ref()?;
+        format!("{}:{}", peer.ip, peer.port).parse().ok()
+    }
+
+    fn start_playback(&mut self, paths: &[&str]) -> Result<(), Error> {
+        let Some(_dst) = self.peer_rtp_addr() else {
+            return Ok(());
+        };
+        self.cancel_playback();
+        self.stop_ivr_timeout();
+        let mut frames = Vec::new();
+        for path in paths {
+            let mut loaded = self.storage_port.load_wav_as_pcmu_frames(path)?;
+            frames.append(&mut loaded);
+        }
+        if frames.is_empty() {
+            anyhow::bail!("no frames");
+        }
+        self.align_rtp_clock();
+        self.sending_audio = true;
+        self.playback = Some(PlaybackState { frames, index: 0 });
+        Ok(())
+    }
+
+    fn step_playback(&mut self) {
+        let Some(mut state) = self.playback.take() else {
+            return;
+        };
+        if state.index >= state.frames.len() {
+            self.finish_playback(true);
+            return;
+        }
+        let frame = state.frames[state.index].clone();
+        state.index += 1;
+        self.recording.push_tx(&frame);
+        self.rtp.send_payload(&self.call_id, frame);
+        self.rtp_last_sent = Some(Instant::now());
+        if state.index < state.frames.len() {
+            self.playback = Some(state);
+        } else {
+            self.finish_playback(true);
+        }
+    }
+
+    fn finish_playback(&mut self, restart_ivr_timeout: bool) {
+        self.playback = None;
+        self.sending_audio = false;
+        if self.ivr_state == IvrState::VoicebotIntroPlaying {
+            self.ivr_state = IvrState::VoicebotMode;
+            self.capture.reset();
+            self.capture.start();
+        }
+        if restart_ivr_timeout && self.ivr_state == IvrState::IvrMenuWaiting {
+            self.reset_ivr_timeout();
+        }
+    }
+
+    fn cancel_playback(&mut self) {
+        if self.playback.is_some() {
+            info!("[session {}] playback cancelled", self.call_id);
+        }
+        self.finish_playback(false);
+    }
+
+    fn start_ring_delay(&mut self, duration: Duration) {
+        if self.ring_delay_cancel.is_some() {
+            return;
+        }
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        self.ring_delay_cancel = Some(stop_tx);
+        let tx = self.tx_in.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::time::sleep(duration) => {
+                    let _ = tx.send(SessionIn::RingDurationElapsed);
+                }
+                _ = &mut stop_rx => {}
+            }
+        });
+    }
+
+    fn stop_ring_delay(&mut self) {
+        if let Some(stop) = self.ring_delay_cancel.take() {
+            let _ = stop.send(());
+        }
+        self.pending_answer = None;
+    }
+
+    fn stop_recorders(&mut self) {
+        self.recording.stop_and_merge();
+    }
+
+    async fn send_silence_frame(&mut self) -> Result<(), Error> {
+        if self.peer_sdp.is_none() {
+            return Ok(());
+        }
+        if self.ivr_state == IvrState::B2buaMode {
+            return Ok(());
+        }
+        if self.sending_audio {
+            return Ok(());
+        }
+
+        self.align_rtp_clock();
+
+        let frame = vec![0xFFu8; 160]; // μ-law silence
+        self.rtp.send_payload(&self.call_id, frame);
+        self.rtp_last_sent = Some(Instant::now());
+        Ok(())
+    }
+
+    async fn send_ingest(&mut self, status: &str) {
+        if !self.ingest.should_post() {
+            return;
+        }
+        let started_at = self.started_wall.unwrap_or_else(std::time::SystemTime::now);
+        let ended_at = std::time::SystemTime::now();
+        let duration_sec = self.started_at.map(|s| s.elapsed().as_secs()).unwrap_or(0);
+        let recording_dir = self.recording.relative_path();
+        let recording_url = self
+            .recording_base_url
+            .as_ref()
+            .map(|base| recording::recording_url(base, &recording_dir));
+
+        let payload = json!({
+            "callId": self.call_id,
+            "from": self.from_uri,
+            "to": self.to_uri,
+            "startedAt": humantime::format_rfc3339(started_at).to_string(),
+            "endedAt": humantime::format_rfc3339(ended_at).to_string(),
+            "status": status,
+            "summary": "",
+            "durationSec": duration_sec,
+            "recording": recording_url.as_ref().map(|url| json!({
+                "recordingUrl": url,
+                "durationSec": duration_sec,
+                "sampleRate": self.recording.sample_rate(),
+                "channels": self.recording.channels()
+            })),
+        });
+
+        self.ingest.post_once(payload).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intro_path_matches_time_window() {
+        assert_eq!(intro_wav_path_for_hour(5), INTRO_MORNING_WAV_PATH);
+        assert_eq!(intro_wav_path_for_hour(11), INTRO_MORNING_WAV_PATH);
+        assert_eq!(intro_wav_path_for_hour(12), INTRO_AFTERNOON_WAV_PATH);
+        assert_eq!(intro_wav_path_for_hour(16), INTRO_AFTERNOON_WAV_PATH);
+        assert_eq!(intro_wav_path_for_hour(17), INTRO_EVENING_WAV_PATH);
+        assert_eq!(intro_wav_path_for_hour(4), INTRO_EVENING_WAV_PATH);
+    }
+
+    #[test]
+    fn ivr_action_maps_digit() {
+        assert_eq!(ivr_action_for_digit('1'), IvrAction::EnterVoicebot);
+        assert_eq!(ivr_action_for_digit('2'), IvrAction::PlaySendai);
+        assert_eq!(ivr_action_for_digit('3'), IvrAction::Transfer);
+        assert_eq!(ivr_action_for_digit('9'), IvrAction::ReplayMenu);
+        assert_eq!(ivr_action_for_digit('5'), IvrAction::Invalid);
+    }
+
+    #[test]
+    fn ivr_state_transitions() {
+        assert_eq!(
+            ivr_state_after_action(IvrState::IvrMenuWaiting, IvrAction::EnterVoicebot),
+            IvrState::VoicebotIntroPlaying
+        );
+        assert_eq!(
+            ivr_state_after_action(IvrState::IvrMenuWaiting, IvrAction::ReplayMenu),
+            IvrState::IvrMenuWaiting
+        );
+    }
+
+    struct DummyIngestPort;
+
+    impl IngestPort for DummyIngestPort {
+        fn post(
+            &self,
+            _url: String,
+            _payload: serde_json::Value,
+        ) -> crate::http::ingest::IngestFuture<anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct DummyStoragePort;
+
+    impl StoragePort for DummyStoragePort {
+        fn load_wav_as_pcmu_frames(&self, _path: &str) -> anyhow::Result<Vec<Vec<u8>>> {
+            Ok(vec![vec![0xFF; 160]])
+        }
+    }
+
+    fn build_test_session(storage_port: Arc<dyn StoragePort>) -> SessionCoordinator {
+        let (session_out_tx, _session_out_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (app_tx, _app_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_in, _rx_in) = tokio::sync::mpsc::unbounded_channel();
+        SessionCoordinator {
+            state_machine: SessionStateMachine::new(),
+            call_id: "test-call".to_string(),
+            from_uri: "sip:from@example.com".to_string(),
+            to_uri: "sip:to@example.com".to_string(),
+            ingest: crate::session::ingest_manager::IngestManager::new(
+                None,
+                Arc::new(DummyIngestPort),
+            ),
+            recording_base_url: None,
+            storage_port,
+            peer_sdp: Some(Sdp::pcmu("127.0.0.1", 10000)),
+            local_sdp: None,
+            session_out_tx,
+            tx_in,
+            app_tx,
+            media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
+            rtp: crate::session::rtp_stream_manager::RtpStreamManager::new(RtpTxHandle::new()),
+            recording: crate::session::recording_manager::RecordingManager::new("test-call"),
+            started_at: None,
+            started_wall: None,
+            rtp_last_sent: None,
+            a_leg_rtp_started: false,
+            timers: SessionTimers::new(Duration::from_secs(0)),
+            sending_audio: false,
+            playback: None,
+            speaking: false,
+            capture: AudioCapture::new(config::vad_config().clone()),
+            intro_sent: false,
+            ivr_state: IvrState::default(),
+            ivr_timeout_stop: None,
+            b_leg: None,
+            transfer_cancel: None,
+            transfer_announce_stop: None,
+            ring_delay_cancel: None,
+            pending_answer: None,
+            outbound_mode: false,
+            outbound_answered: false,
+            outbound_sent_180: false,
+            outbound_sent_183: false,
+            invite_rejected: false,
+            session_expires: None,
+            session_refresher: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_playback_clears_state() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        session.start_playback(&["dummy.wav"]).unwrap();
+        assert!(session.playback.is_some());
+        assert!(session.sending_audio);
+        session.cancel_playback();
+        assert!(session.playback.is_none());
+        assert!(!session.sending_audio);
+    }
+
+    #[tokio::test]
+    async fn keepalive_silence_skipped_in_b2bua() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        assert!(session.rtp_last_sent.is_none());
+        session.send_silence_frame().await.unwrap();
+        assert!(session.rtp_last_sent.is_some());
+
+        session.rtp_last_sent = None;
+        session.ivr_state = IvrState::B2buaMode;
+        session.send_silence_frame().await.unwrap();
+        assert!(session.rtp_last_sent.is_none());
+    }
+}
