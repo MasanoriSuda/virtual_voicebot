@@ -229,7 +229,7 @@
 ### 6.2 データ永続化
 
 - **方式**: Frontend 側で Server Sync 機構を構築
-- **保存先**: Frontend ローカル DB（SQLite / PostgreSQL 等）
+- **保存先**: Frontend ローカル DB（PostgreSQL）
 - **同期タイミング**: Backend からの `POST /api/ingest/call` 受信時
 
 ### 6.3 依存関係
@@ -289,3 +289,4 @@
 |------|-----------|---------|--------|
 | 2026-02-02 | 1.0 | 初版作成 | Claude Code |
 | 2026-02-02 | 1.1 | Q1〜Q4 解決、データ形式・KPIソース・永続化方式を明記 | Claude Code |
+| 2026-02-02 | 1.2 | #62 対応: DB を PostgreSQL に確定 | Claude Code |
