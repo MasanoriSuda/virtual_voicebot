@@ -43,6 +43,7 @@ design/
 | [BD-001](basic/BD-001_architecture.md) | システムアーキテクチャ | Approved | - | モジュール構成・データフロー |
 | [BD-002](basic/BD-002_app-layer.md) | App層設計 | Approved | - | app レイヤ I/F・イベントフロー |
 | [BD-003](basic/BD-003_clean-architecture.md) | **クリーンアーキテクチャ設計原則** | **Approved** | - | レイヤー構造・DDD・EDA・デザインパターン |
+| [BD-004](basic/BD-004_call-routing-db.md) | 着信ルーティング・IVR DB設計 | **Draft** | - | 発信者分類・アクションコード・IVRフロー |
 
 → 詳細は [basic/](basic/) を参照
 
