@@ -33,7 +33,7 @@ Issue #52 および #65 のレビューにより、以下の課題が特定さ�
 
 ### 2.2 目的
 
-- **クリーンアーキテクチャ + Actor Model** への段階的移行
+- **クリーンアーキテクチャ + tokio channel ベースモデル** への段階的移行（§8.1 決定事項参照）
 - インターフェース分離原則（ISP）に準拠したトレイト設計
 - ドメインモデル（エンティティ層）の明確化
 - テスタビリティの向上
@@ -144,7 +144,7 @@ So that 変更が局所化され、テストが容易になる
 #### レイヤー構造
 
 ```
-Frameworks & Drivers  (infrastructure/, adapters/)
+Frameworks & Drivers  (infrastructure/)
         ↓
 Interface Adapters    (adapters/)
         ↓
@@ -152,6 +152,8 @@ Application Rules     (app/, session/)
         ↓
 Enterprise Rules      (entities/, domain/)
 ```
+
+> **Note**: `adapters/` は Interface Adapters 層に属する。`infrastructure/` は Frameworks & Drivers 層（SIP/RTP スタック、外部ライブラリ直接利用）に属する。
 
 #### 5.1.2 主要原則（詳細は BD-003 参照）
 
@@ -239,9 +241,11 @@ pub trait AiPort: Send + Sync {
 ```rust
 // src/ports/asr.rs
 pub trait AsrPort: Send + Sync {
+    /// Phase 1: call_id は String で受け取る（後方互換）
+    /// Phase 2 以降: CallId 値オブジェクトへ移行予定（§6.3.4 参照）
     fn transcribe_chunks(
         &self,
-        call_id: String,
+        call_id: String,  // TODO(Phase2): CallId に変更
         chunks: Vec<AsrChunk>,
     ) -> AiFuture<Result<String, AsrError>>;
 }
@@ -334,6 +338,26 @@ pub enum TtsError {
     #[error("Voice not found")]
     VoiceNotFound,
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum WeatherError {
+    #[error("Weather query failed: {0}")]
+    QueryFailed(String),
+    #[error("Location not found")]
+    LocationNotFound,
+    #[error("Service unavailable")]
+    ServiceUnavailable,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SerError {
+    #[error("SER analysis failed: {0}")]
+    AnalysisFailed(String),
+    #[error("Audio format invalid")]
+    InvalidFormat,
+    #[error("Model not loaded")]
+    ModelNotLoaded,
+}
 ```
 
 ---
@@ -397,6 +421,11 @@ pub enum EndReason {
 
 impl Call {
     pub fn new(id: CallId, from: Participant, to: Participant) -> Self { ... }
+
+    /// 現在の状態を取得
+    pub fn state(&self) -> &CallState {
+        &self.state
+    }
 
     /// 状態遷移（不変条件を強制）
     pub fn transition(&mut self, to_state: CallState) -> Result<(), CallError> {
@@ -537,7 +566,7 @@ impl SessionStateMachine {
     }
 
     pub fn state(&self) -> &CallState {
-        &self.call.state
+        self.call.state()  // Call::state() getter を使用
     }
 
     pub fn call(&self) -> &Call {
@@ -818,4 +847,5 @@ Codex への引き継ぎ事項：
 | 2026-01-31 | Q1〜Q4 決定事項反映 | Claude Code |
 | 2026-01-31 | §5 アーキテクチャ原則追加（レイヤー構造、DDD、EDA、デザインパターン） | Claude Code |
 | 2026-01-31 | §5 を BD-003 へ昇格、CONVENTIONS.md 新設、本セクションは参照に簡略化 | Claude Code |
+| 2026-02-01 | Codex レビュー指摘対応（Refs #85）: Actor Model 矛盾解消、adapters/ 二重所属修正、call_id 移行方針追記、WeatherError/SerError 追加、Call::state() getter 追記 | Claude Code |
 
