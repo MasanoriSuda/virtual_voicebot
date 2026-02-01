@@ -1,4 +1,4 @@
-# STEER-052: クリーンアーキテクチャ移行（ISP準拠 + ファイル分割）
+# STEER-085: クリーンアーキテクチャ移行（ISP準拠 + ファイル分割）
 
 ---
 
@@ -6,10 +6,10 @@
 
 | 項目 | 値 |
 |------|-----|
-| ID | STEER-052 |
+| ID | STEER-085 |
 | タイトル | クリーンアーキテクチャ移行（ISP準拠 + ファイル分割） |
 | ステータス | Draft |
-| 関連Issue | #52, #65 |
+| 関連Issue | #52, #65, #85 |
 | 優先度 | P0 |
 | 作成日 | 2026-01-31 |
 
@@ -692,9 +692,9 @@ pub trait NotificationService: RingingNotifier + MissedCallNotifier + CallEndedN
 
 | From | To | 関係 |
 |------|-----|------|
-| Issue #52 | STEER-052 | 起票 |
-| Issue #65 | STEER-052 | 起票 |
-| STEER-052 | DD-010 | 詳細設計 |
+| Issue #52 | STEER-085 | 起票 |
+| Issue #65 | STEER-085 | 起票 |
+| STEER-085 | DD-010 | 詳細設計 |
 | DD-010 | UT-010 | 単体テスト |
 
 ---

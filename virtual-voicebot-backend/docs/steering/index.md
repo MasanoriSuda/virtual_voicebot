@@ -24,7 +24,7 @@
 STEER-{イシュー番号}_{slug}.md
 
 例:
-- STEER-052_clean-architecture.md
+- STEER-085_clean-architecture.md
 - STEER-080_cancel-handling.md
 ```
 
@@ -34,7 +34,7 @@ STEER-{イシュー番号}_{slug}.md
 
 | ID | タイトル | ステータス | 関連Issue | 優先度 | 概要 |
 |----|---------|----------|----------|--------|------|
-| [STEER-052](STEER-052_clean-architecture.md) | クリーンアーキテクチャ移行（ISP準拠 + ファイル分割） | Draft | #52, #65 | P0 | ISP準拠トレイト設計、エンティティ層新設、sip/mod.rs分割、Session分離 |
+| [STEER-085](STEER-085_clean-architecture.md) | クリーンアーキテクチャ移行（ISP準拠 + ファイル分割） | Draft | #52, #65, #85 | P0 | ISP準拠トレイト設計、エンティティ層新設、sip/mod.rs分割、Session分離 |
 
 ---
 
@@ -46,6 +46,12 @@ STEER-{イシュー番号}_{slug}.md
 | Review | レビュー中 |
 | Approved | 承認済み（実装待ち） |
 | Merged | 本体仕様書へマージ完了 |
+
+---
+
+## 運用ガイド
+
+ステアリングの作成・運用手順は [GUIDE.md](GUIDE.md) を参照すること。
 
 ---
 

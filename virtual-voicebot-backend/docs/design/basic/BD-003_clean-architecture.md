@@ -381,7 +381,7 @@ src/
 |-------------|------|
 | [BD-001](BD-001_architecture.md) | システムアーキテクチャ（モジュール構成） |
 | [BD-002](BD-002_app-layer.md) | App層設計 |
-| [STEER-052](../steering/STEER-052_clean-architecture.md) | クリーンアーキテクチャ移行ステアリング |
+| [STEER-085](../steering/STEER-085_clean-architecture.md) | クリーンアーキテクチャ移行ステアリング |
 | [CONVENTIONS.md](../../../CONVENTIONS.md) | 開発規約（本原則のサマリ） |
 
 ---
@@ -390,5 +390,5 @@ src/
 
 | 日付 | バージョン | 変更内容 | 作成者 |
 |------|-----------|---------|--------|
-| 2026-01-31 | 1.0 | 初版作成（STEER-052 §5 より昇格） | @MasanoriSuda + Claude Code |
+| 2026-01-31 | 1.0 | 初版作成（STEER-085 §5 より昇格） | @MasanoriSuda + Claude Code |
 

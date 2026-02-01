@@ -237,7 +237,7 @@ pub enum AsrError {
 | ドキュメント | 内容 |
 |-------------|------|
 | [BD-003](docs/design/basic/BD-003_clean-architecture.md) | クリーンアーキテクチャ設計原則（正式版） |
-| [STEER-052](docs/steering/STEER-052_clean-architecture.md) | クリーンアーキテクチャ移行ステアリング |
+| [STEER-085](docs/steering/STEER-085_clean-architecture.md) | クリーンアーキテクチャ移行ステアリング |
 | [CLAUDE.md](../CLAUDE.md) | Claude Code の役割定義 |
 | [AGENTS.md](AGENTS.md) | Codex の役割定義 |
 
