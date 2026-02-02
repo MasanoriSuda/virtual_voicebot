@@ -50,10 +50,10 @@ pub(crate) fn mulaw_to_linear16(mu: u8) -> i16 {
 }
 
 fn linear16_to_mulaw(sample: i16) -> u8 {
-    const BIAS: i16 = 0x84;
-    const MAX: i16 = 0x7FFF;
+    const BIAS: i32 = 0x84;
+    const MAX: i32 = 0x7FFF;
 
-    let mut pcm = sample;
+    let mut pcm = sample as i32;
     let sign = if pcm < 0 {
         pcm = -pcm;
         0x80

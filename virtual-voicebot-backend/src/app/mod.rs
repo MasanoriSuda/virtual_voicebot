@@ -16,7 +16,7 @@ use crate::app::router::{
 };
 use crate::config;
 use crate::db::port::PhoneLookupPort;
-use crate::ports::ai::{AiSerPort, AsrChunk, ChatMessage, Role, SerInputPcm, WeatherQuery};
+use crate::ports::ai::{AiServices, AsrChunk, ChatMessage, Role, SerInputPcm, WeatherQuery};
 use crate::session::SessionOut;
 
 pub use notification::{LineAdapter, NoopNotification, NotificationPort as AppNotificationPort};
@@ -103,7 +103,7 @@ pub enum EndReason {
 /// use tokio::sync::mpsc::UnboundedSender;
 /// // assume necessary types and implementations are in scope
 /// let (session_tx, _session_rx) = tokio::sync::mpsc::unbounded_channel();
-/// let ai_port: std::sync::Arc<dyn AiSerPort> = /* ... */;
+/// let ai_port: std::sync::Arc<dyn AiServices> = /* ... */;
 /// let phone_lookup: std::sync::Arc<dyn PhoneLookupPort> = /* ... */;
 /// let notification_port: std::sync::Arc<dyn NotificationPort> = /* ... */;
 /// let tx: UnboundedSender<AppEvent> = spawn_app_worker(
@@ -118,7 +118,7 @@ pub enum EndReason {
 pub fn spawn_app_worker(
     call_id: String,
     session_out_tx: UnboundedSender<(String, SessionOut)>,
-    ai_port: Arc<dyn AiSerPort>,
+    ai_port: Arc<dyn AiServices>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
     notification_port: Arc<dyn NotificationPort>,
 ) -> UnboundedSender<AppEvent> {
@@ -141,7 +141,7 @@ struct AppWorker {
     rx: UnboundedReceiver<AppEvent>,
     active: bool,
     history: Vec<ChatMessage>,
-    ai_port: Arc<dyn AiSerPort>,
+    ai_port: Arc<dyn AiServices>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
     router: Router,
     notification_port: Arc<dyn NotificationPort>,
@@ -157,95 +157,95 @@ struct NotificationState {
 
 impl AppWorker {
     /// Creates a new AppWorker initialized for the given call.
-    
+
     ///
-    
+
     /// The returned worker is inactive, has an empty chat history, a fresh Router,
-    
+
     /// and a default NotificationState ready to track ringing/missed/ended notifications.
-    
+
     ///
-    
+
     /// # Parameters
-    
+
     ///
-    
+
     /// - `call_id`: identifier for the call this worker will manage.
-    
+
     /// - `session_out_tx`: channel to send SessionOut updates back to the session.
-    
+
     /// - `rx`: receiver for AppEvent messages destined for this worker.
-    
+
     /// - `ai_port`: AI service port (transcription, NLU, TTS, etc.).
-    
+
     /// - `phone_lookup`: phone lookup service port.
-    
+
     /// - `notification_port`: notification service used to emit ringing/missed/ended notifications.
-    
+
     ///
-    
+
     /// # Returns
-    
+
     ///
-    
+
     /// A configured `AppWorker` instance ready to be spawned.
-    
+
     ///
-    
+
     /// # Examples
-    
+
     ///
-    
+
     /// ```
-    
+
     /// use std::sync::Arc;
-    
+
     /// use tokio::sync::mpsc::unbounded_channel;
-    
+
     ///
-    
+
     /// // Create channels
-    
+
     /// let (session_tx, _session_rx) = unbounded_channel::<(String, crate::session::SessionOut)>();
-    
+
     /// let (_event_tx, event_rx) = unbounded_channel::<crate::app::AppEvent>();
-    
+
     ///
-    
+
     /// // Placeholder implementations for required ports would be provided in real code.
-    
+
     /// // Here we show the shape of the call; replace `ai_impl` and `phone_impl` with real Arcs.
-    
-    /// let ai_impl: Arc<dyn crate::ports::AiSerPort> = Arc::new(crate::notification::NoopNotification); // placeholder
-    
+
+    /// let ai_impl: Arc<dyn crate::ports::ai::AiServices> = Arc::new(crate::notification::NoopNotification); // placeholder
+
     /// let phone_impl: Arc<dyn crate::ports::PhoneLookupPort> = Arc::new(crate::notification::NoopNotification); // placeholder
-    
+
     /// let notif_impl: Arc<dyn crate::notification::NotificationPort> = Arc::new(crate::notification::NoopNotification);
-    
+
     ///
-    
+
     /// let worker = crate::app::AppWorker::new(
-    
+
     ///     "call-123".to_string(),
-    
+
     ///     session_tx,
-    
+
     ///     event_rx,
-    
+
     ///     ai_impl,
-    
+
     ///     phone_impl,
-    
+
     ///     notif_impl,
-    
+
     /// );
-    
+
     /// ```
     fn new(
         call_id: String,
         session_out_tx: UnboundedSender<(String, SessionOut)>,
         rx: UnboundedReceiver<AppEvent>,
-        ai_port: Arc<dyn AiSerPort>,
+        ai_port: Arc<dyn AiServices>,
         phone_lookup: Arc<dyn PhoneLookupPort>,
         notification_port: Arc<dyn NotificationPort>,
     ) -> Self {
@@ -429,7 +429,7 @@ impl AppWorker {
                 );
             }
             Err(err) => {
-                log::warn!("[app {call_id}] SER failed: {}", err.reason);
+                log::warn!("[app {call_id}] SER failed: {err}");
             }
         }
 
@@ -456,7 +456,9 @@ impl AppWorker {
                 Ok(bot_wav) => {
                     let _ = self.session_out_tx.send((
                         self.call_id.clone(),
-                        SessionOut::AppSendBotAudioFile { path: bot_wav },
+                        SessionOut::AppSendBotAudioFile {
+                            path: bot_wav.to_string_lossy().to_string(),
+                        },
                     ));
                 }
                 Err(e) => {
@@ -527,7 +529,9 @@ impl AppWorker {
                         Ok(bot_wav) => {
                             let _ = self.session_out_tx.send((
                                 self.call_id.clone(),
-                                SessionOut::AppSendBotAudioFile { path: bot_wav },
+                                SessionOut::AppSendBotAudioFile {
+                                    path: bot_wav.to_string_lossy().to_string(),
+                                },
                             ));
                         }
                         Err(e) => {
@@ -544,7 +548,9 @@ impl AppWorker {
                         Ok(bot_wav) => {
                             let _ = self.session_out_tx.send((
                                 self.call_id.clone(),
-                                SessionOut::AppSendBotAudioFile { path: bot_wav },
+                                SessionOut::AppSendBotAudioFile {
+                                    path: bot_wav.to_string_lossy().to_string(),
+                                },
                             ));
                         }
                         Err(e) => {
@@ -571,7 +577,9 @@ impl AppWorker {
             Ok(bot_wav) => {
                 let _ = self.session_out_tx.send((
                     self.call_id.clone(),
-                    SessionOut::AppSendBotAudioFile { path: bot_wav },
+                    SessionOut::AppSendBotAudioFile {
+                        path: bot_wav.to_string_lossy().to_string(),
+                    },
                 ));
             }
             Err(e) => {

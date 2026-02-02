@@ -1,7 +1,10 @@
 mod ai;
 mod app;
+mod compat;
 mod config;
 mod db;
+mod entities;
+mod error;
 mod http;
 mod logging;
 mod media;
