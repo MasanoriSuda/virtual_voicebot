@@ -464,6 +464,9 @@ SIP INVITE 受信
 ### 8.1 前提条件
 
 - PostgreSQL を使用（#62 決定事項）
+- **環境構成方針**
+  - 開発環境: Frontend / Backend / PostgreSQL すべてローカル（同一 PC or 同一ラズパイ、Docker 不使用）
+  - 本番環境: 安定後 AWS に展開（マネージド DB 等を検討）
 - Backend は Rust + SQLx でDB接続
 - SIP INVITE から Caller ID を取得可能
 
@@ -520,3 +523,4 @@ SIP INVITE 受信
 | 2026-02-02 | 1.1 | VB/VR（ボイスボット録音なし/あり）追加、IB追加、録音オプション対応表追加 | Claude Code |
 | 2026-02-02 | 1.2 | Codex 指摘による Open Questions 追加（Q8〜Q12） | Claude Code |
 | 2026-02-02 | 1.3 | Q8〜Q12 解決: SQLx migrate、優先度、責務分離、循環チェック、E.164正規化 | Claude Code |
+| 2026-02-02 | 1.4 | 環境構成方針: 開発=ローカル（PC/ラズパイ）、本番=AWS | Claude Code |
