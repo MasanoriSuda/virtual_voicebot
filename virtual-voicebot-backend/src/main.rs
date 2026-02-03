@@ -1,6 +1,5 @@
 mod ai;
 mod app;
-mod compat;
 mod config;
 mod db;
 mod entities;
@@ -24,9 +23,7 @@ use tokio::sync::mpsc::unbounded_channel;
 use crate::app::{AppNotificationPort, LineAdapter, NoopNotification};
 use crate::db::{NoopPhoneLookup, PhoneLookupPort, TsurugiAdapter};
 use crate::rtp::tx::RtpTxHandle;
-use crate::session::{
-    spawn_session, MediaConfig, SessionIn, SessionMap, SessionOut, SessionRegistry,
-};
+use crate::session::{spawn_session, MediaConfig, SessionIn, SessionOut, SessionRegistry};
 use crate::sip::{b2bua_bridge, SipConfig, SipCore, SipEvent};
 use crate::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendRequest};
 
@@ -66,10 +63,9 @@ async fn main() -> anyhow::Result<()> {
     let recording_base_url = cfg.recording_base_url;
 
     // --- セッションとRTPポート管理の共有マップ ---
-    let session_map: SessionMap = Arc::new(Mutex::new(HashMap::new()));
-    let session_registry = SessionRegistry::new(session_map.clone());
+    let session_registry = SessionRegistry::new();
     let rtp_port_map: RtpPortMap = Arc::new(Mutex::new(HashMap::new()));
-    let mut rtp_handles: HashMap<String, RtpTxHandle> = HashMap::new();
+    let mut rtp_handles: HashMap<crate::session::types::CallId, RtpTxHandle> = HashMap::new();
 
     // packet層 → SIP処理ループ へのチャネル
     let (sip_tx, mut sip_rx) = unbounded_channel::<SipInput>();
@@ -101,8 +97,8 @@ async fn main() -> anyhow::Result<()> {
 
     // packetループ起動（UDP受信 → SIP/RTP振り分け → セッションへ）
     {
-        let session_map_for_packet = session_map.clone();
         let rtp_port_map_for_packet = rtp_port_map.clone();
+        let session_registry_for_packet = session_registry.clone();
         tokio::spawn(async move {
             if let Err(e) = run_packet_loop(
                 sip_sock,
@@ -110,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
                 rtp_sock,
                 sip_tx,
                 sip_send_rx,
-                session_map_for_packet,
+                session_registry_for_packet,
                 rtp_port_map_for_packet,
                 None,
             )
@@ -209,7 +205,8 @@ async fn main() -> anyhow::Result<()> {
                                 recording_base_url,
                                 ingest_port.clone(),
                                 storage_port.clone(),
-                            );
+                            )
+                            .await;
 
                             {
                                 let mut map = rtp_port_map.lock().unwrap();
@@ -230,7 +227,7 @@ async fn main() -> anyhow::Result<()> {
                             offer,
                             session_timer,
                         } => {
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
                                 let _ = sess_tx.send(SessionIn::SipReInvite {
                                     offer,
                                     session_timer,
@@ -239,30 +236,30 @@ async fn main() -> anyhow::Result<()> {
                         }
                         SipEvent::Ack { call_id } => {
                             log::info!("[main] ACK for call_id={}", call_id);
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
                                 let _ = sess_tx.send(SessionIn::SipAck);
                             }
                         }
                         SipEvent::Cancel { call_id } => {
                             log::info!("[main] CANCEL for call_id={}", call_id);
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
                                 let _ = sess_tx.send(SessionIn::SipCancel);
                             }
                         }
                         SipEvent::Bye { call_id } => {
                             log::info!("[main] BYE for call_id={}", call_id);
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
                                 let _ = sess_tx.send(SessionIn::SipBye);
                             }
                         }
                         SipEvent::SessionRefresh { call_id, timer } => {
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
                                 let _ = sess_tx.send(SessionIn::SipSessionExpires { timer });
                             }
                         }
                         SipEvent::TransactionTimeout { call_id } => {
                             log::warn!("[main] TransactionTimeout for call_id={}", call_id);
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
                                 let _ =
                                     sess_tx.send(SessionIn::SipTransactionTimeout { call_id });
                             }
@@ -281,27 +278,27 @@ async fn main() -> anyhow::Result<()> {
                     }
                     SessionOut::RtpStopTx => {
                         if let Some(handle) = rtp_handles.remove(&call_id) {
-                            handle.stop(&call_id);
+                            handle.stop(call_id.as_str());
                         }
                     }
                     SessionOut::AppSessionTimeout => {
                         log::warn!("[main] session timer fired for call_id={}", call_id);
                         if let Some(handle) = rtp_handles.remove(&call_id) {
-                            handle.stop(&call_id);
+                            handle.stop(call_id.as_str());
                         }
                     }
                     SessionOut::AppSendBotAudioFile { path } => {
-                        if let Some(sess_tx) = session_registry.get(&call_id) {
+                        if let Some(sess_tx) = session_registry.get(&call_id).await {
                             let _ = sess_tx.send(SessionIn::AppBotAudioFile { path });
                         }
                     }
                     SessionOut::AppRequestHangup => {
-                        if let Some(sess_tx) = session_registry.get(&call_id) {
+                        if let Some(sess_tx) = session_registry.get(&call_id).await {
                             let _ = sess_tx.send(SessionIn::AppHangup);
                         }
                     }
                     SessionOut::AppRequestTransfer { person } => {
-                        if let Some(sess_tx) = session_registry.get(&call_id) {
+                        if let Some(sess_tx) = session_registry.get(&call_id).await {
                             let _ = sess_tx.send(SessionIn::AppTransferRequest { person });
                         }
                     }

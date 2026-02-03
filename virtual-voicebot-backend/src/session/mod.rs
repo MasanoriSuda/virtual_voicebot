@@ -17,6 +17,6 @@ pub use session::{Session, SessionCoordinator, SessionHandle};
 pub use state_machine::SessionStateMachine;
 pub use types::SessionRegistry;
 #[allow(unused_imports)]
-pub use types::{MediaConfig, Sdp, SessionIn, SessionMap, SessionOut};
+pub use types::{MediaConfig, Sdp, SessionIn, SessionOut};
 #[allow(unused_imports)]
 pub use writing::{spawn_call, spawn_session};

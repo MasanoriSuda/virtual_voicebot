@@ -50,6 +50,16 @@
 | 9 | UseCase 層の不明確 | app 層と session 層の責務が曖昧 | UseCase を明確に分離 | BD-003 §2.1 |
 | 10 | エラー型の設計 | anyhow::Error が多用 | ドメイン固有エラー型を定義 | AGENTS.md §5 |
 
+### 2.3 Phase 1 実装後レビュー（Codex 2026-02-03）
+
+| # | 指摘 | 重要度 | 違反規約 | 根拠 |
+|---|------|--------|----------|------|
+| 11 | session が app に依存（AppEvent/EndReason 直接参照） | 重大 | BD-003 §2.3（依存方向） | coordinator.rs:17, mod.rs:10, sip_handler.rs:4 |
+| 12 | session が http に依存（IngestPort が http 層） | 重大 | BD-003 §2.3（境界逆転） | coordinator.rs:19, ingest.rs:9 |
+| 13 | HttpIngestPort::post が毎回 Client 生成 | 軽 | パフォーマンス | ingest.rs:23-28 |
+
+> **備考**: #1（SessionRegistry 巨大Mutex）、#2（CallId 二重定義）、#6（RTP parser）は既存指摘として Phase 2/3 で対応予定
+
 ---
 
 ## 3. 現状と理想の対比
@@ -257,14 +267,126 @@ pub fn parse_rtp(data: &[u8]) -> Result<RtpPacket, RtpParseError> {
 
 ---
 
+### 3.7 session → app 依存方向違反（指摘 #11）
+
+**現状:**
+```rust
+// coordinator.rs:17
+use crate::app::AppEvent;
+
+// mod.rs:10
+use crate::app::EndReason;
+
+// sip_handler.rs:4
+use crate::app::AppEvent;
+```
+
+**違反:**
+- BD-003 §2.3「依存方向: app → session が正」
+- session が app に依存すると循環依存のリスク
+
+**あるべき姿:**
+```rust
+// ports/session_events.rs または session/events.rs に定義
+pub enum SessionEvent {
+    CallEnded { call_id: CallId, reason: EndReason },
+    // ...
+}
+
+// app 側で From/adapter で受け取る
+impl From<SessionEvent> for AppEvent {
+    fn from(event: SessionEvent) -> Self { ... }
+}
+```
+
+**最小差分案:**
+- AppEvent を `ports/` または `session::events` へ移動
+- app 側が From/adapter で受け取る設計に変更
+
+---
+
+### 3.8 session → http 境界逆転（指摘 #12）
+
+**現状:**
+```rust
+// coordinator.rs:19
+use crate::http::IngestPort;
+
+// ingest.rs:9
+// IngestPort が http 層に定義されている
+```
+
+**違反:**
+- BD-003 §2.3「Port は内側（domain/session）、Adapter は外側（http）」
+- session が http に依存すると境界が逆転
+
+**あるべき姿:**
+```rust
+// ports/ingest.rs に Port（trait）を定義
+pub trait IngestPort: Send + Sync {
+    async fn post(&self, data: IngestData) -> Result<(), IngestError>;
+}
+
+// http/ingest_adapter.rs に実装
+pub struct HttpIngestAdapter { ... }
+impl IngestPort for HttpIngestAdapter { ... }
+```
+
+**最小差分案:**
+- IngestPort を `ports/` に移動
+- http 側は実装（adapter）として依存
+
+---
+
+### 3.9 HttpIngestPort Client 再利用（指摘 #13）
+
+**現状:**
+```rust
+// ingest.rs:23-28
+pub async fn post(&self, data: IngestData) -> Result<()> {
+    let client = reqwest::Client::new();  // 毎回生成
+    // ...
+}
+```
+
+**問題:**
+- 接続プール再利用が効かない
+- パフォーマンス低下
+
+**あるべき姿:**
+```rust
+pub struct HttpIngestAdapter {
+    client: reqwest::Client,  // 保持して再利用
+    base_url: String,
+}
+
+impl HttpIngestAdapter {
+    pub fn new(base_url: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            base_url,
+        }
+    }
+}
+```
+
+---
+
 ## 4. 対応優先度
 
-### Phase 1: BD-004 実装前に必須
+### Phase 1: BD-004 実装前に必須（AC-1..4 完了 / AC-5 未確認）
+
+| # | 対応 | 理由 | 工数目安 | 状態 |
+|---|------|------|---------|------|
+| 4 | SessionCoordinator 分割 | IVR ロジック追加先を確保 | 大 | ✅ |
+| 3 | SessionStateMachine 改修 | IVR 状態管理に必要 | 中 | ✅ |
+
+### Phase 1.5: 依存方向修正（重大指摘対応）
 
 | # | 対応 | 理由 | 工数目安 |
 |---|------|------|---------|
-| 4 | SessionCoordinator 分割 | IVR ロジック追加先を確保 | 大 |
-| 3 | SessionStateMachine 改修 | IVR 状態管理に必要 | 中 |
+| 11 | session → app 依存解消 | 依存方向ルール違反（重大） | 中 |
+| 12 | session → http 依存解消 | 境界逆転（重大） | 中 |
 
 ### Phase 2: 品質向上
 
@@ -273,6 +395,7 @@ pub fn parse_rtp(data: &[u8]) -> Result<RtpPacket, RtpParseError> {
 | 1 | SessionRegistry Actor化 | パフォーマンス・デッドロック防止 | 中 |
 | 2 | CallId 統一 | DDD 境界明確化 | 小 |
 | 5 | AsrError 導入 | エラーハンドリング改善 | 小 |
+| 13 | HttpIngestAdapter Client 再利用 | パフォーマンス改善 | 小 |
 
 ### Phase 3: 将来対応可
 
@@ -285,7 +408,7 @@ pub fn parse_rtp(data: &[u8]) -> Result<RtpPacket, RtpParseError> {
 
 ## 5. 受入条件（Acceptance Criteria）
 
-### Phase 1
+### Phase 1（AC-1..4 完了 / AC-5 未確認）
 
 - [x] AC-1: SessionCoordinator が 500 行以下になっている
 - [x] AC-2: IVR ロジックが `session/services/ivr_service.rs` に分離されている
@@ -294,21 +417,34 @@ pub fn parse_rtp(data: &[u8]) -> Result<RtpPacket, RtpParseError> {
 - [ ] AC-5: 既存のテストが全て pass する
   - 備考: `recording_http_e2e` がローカルで PermissionDenied のため未確認
 
+### Phase 1.5（依存方向修正）
+
+- [x] AC-10: session 層が app 層に直接依存していない（AppEvent/EndReason が ports/ または session::events に移動）
+- [x] AC-11: session 層が http 層に直接依存していない（IngestPort が ports/ に移動）
+
 ### Phase 2
 
-- [ ] AC-6: SessionRegistry が Actor パターンで実装されている
-- [ ] AC-7: CallId が entities/identifiers.rs のみに定義されている
-- [ ] AC-8: AsrPort が AsrError を返す設計になっている
-- [ ] AC-9: AiPort が AsrPort にリネームされている
+- [x] AC-6: SessionRegistry が Actor パターンで実装されている
+- [x] AC-7: CallId が entities/identifiers.rs のみに定義されている
+- [x] AC-8: AsrPort が AsrError を返す設計になっている
+- [x] AC-9: AiPort が AsrPort にリネームされている
+- [x] AC-12: HttpIngestAdapter が reqwest::Client を保持して再利用している
 
 ---
 
-## 6. 決定事項
+## 6. 決定事項・未確定事項
+
+### 決定済み
 
 - [x] Q1: SessionRegistry の Actor 化と DashMap 化、どちらを採用するか？
   - **決定: Actor 化**（より明確な非同期境界）
 - [x] Q2: Phase 1 と Phase 2 を同時に進めるか、Phase 1 完了後に Phase 2 に進むか？
   - **決定: Phase 1 → BD-004 → Phase 2**（段階的に進める）
+
+- [x] Q3: AppEvent を session から直接送る設計を維持するか？
+  - **決定: B) 修正する** - AppEvent を ports/ または session::events へ移動
+- [x] Q4: IngestPort を ports/ に寄せる方針で問題ないか？
+  - **決定: A) Yes** - IngestPort を ports/ に移動し、http 側は adapter として実装
 
 ---
 
@@ -329,3 +465,10 @@ pub fn parse_rtp(data: &[u8]) -> Result<RtpPacket, RtpParseError> {
 | 2026-02-03 | 1.2 | レビュー指摘対応（閾値統一、A/B併記解消、用語注記追加） | Claude Code |
 | 2026-02-03 | 1.3 | AC-9 追加（AiPort→AsrPort リネーム）、閾値500行は意図的緩和と確認 | Claude Code |
 | 2026-02-03 | 1.4 | Phase 1 実装（AC-1..AC-4 達成: coordinator分割/state_machine更新/services分離） | Codex |
+| 2026-02-03 | 1.5 | Phase 1 実装後レビュー追記（#11-13: 依存方向違反、境界逆転、Client再利用）、Phase 1.5 追加、Q3/Q4 追加 | Claude Code |
+| 2026-02-03 | 1.6 | Q3/Q4 決定（AppEvent移動、IngestPort移動） | Claude Code |
+| 2026-02-03 | 1.7 | Phase 1 見出し修正（AC-5 未確認を明記） | Claude Code |
+| 2026-02-03 | 1.8 | Phase 1.5 実装（AC-10/11/12 達成） | Codex |
+| 2026-02-03 | 1.9 | Phase 2 実装（AC-6: SessionRegistry Actor化） | Codex |
+| 2026-02-03 | 2.0 | Phase 2 実装（AC-7: CallId 統一） | Codex |
+| 2026-02-03 | 2.1 | AC-8/9 対応（AsrPort の型設計確認、AiPort 互換削除） | Codex |

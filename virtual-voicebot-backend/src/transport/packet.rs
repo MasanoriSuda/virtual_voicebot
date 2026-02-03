@@ -12,7 +12,8 @@ use tokio_rustls::TlsAcceptor;
 use crate::config;
 use crate::rtp::rtcp::RtcpEventTx;
 use crate::rtp::rx::{RawRtp, RtpReceiver};
-use crate::session::SessionMap;
+use crate::session::SessionRegistry;
+use crate::session::types::CallId;
 use crate::transport::{tls, ConnId, TransportPeer, TransportSendRequest};
 
 /// packet層 → SIP層 に渡す入力
@@ -23,7 +24,7 @@ pub struct SipInput {
 }
 
 /// RTPポート → call_id のマップ
-pub type RtpPortMap = Arc<Mutex<HashMap<u16, String>>>;
+pub type RtpPortMap = Arc<Mutex<HashMap<u16, CallId>>>;
 
 #[derive(Clone)]
 struct TcpConn {
@@ -55,8 +56,8 @@ type TcpConnMap = Arc<Mutex<HashMap<ConnId, TcpConn>>>;
 ///     let rtp_sock = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
 ///     let (sip_tx, _sip_rx) = unbounded_channel();
 ///     let (send_tx, send_rx) = tokio::sync::mpsc::unbounded_channel();
-///     // Minimal placeholders for session_map, rtp_port_map, rtcp_tx
-///     let session_map = crate::session::SessionMap::default();
+///     // Minimal placeholders for session_registry, rtp_port_map, rtcp_tx
+///     let session_registry = crate::session::SessionRegistry::new();
 ///     let rtp_port_map = crate::packet::RtpPortMap::default();
 ///     let rtcp_tx = None;
 ///
@@ -68,7 +69,7 @@ type TcpConnMap = Arc<Mutex<HashMap<ConnId, TcpConn>>>;
 ///             rtp_sock,
 ///             sip_tx,
 ///             send_rx,
-///             session_map,
+///             session_registry,
 ///             rtp_port_map,
 ///             rtcp_tx,
 ///         )
@@ -82,7 +83,7 @@ pub async fn run_packet_loop(
     rtp_sock: UdpSocket,
     sip_tx: UnboundedSender<SipInput>,
     mut sip_send_rx: tokio::sync::mpsc::UnboundedReceiver<TransportSendRequest>,
-    session_map: SessionMap,
+    session_registry: SessionRegistry,
     rtp_port_map: RtpPortMap,
     rtcp_tx: Option<RtcpEventTx>,
 ) -> std::io::Result<()> {
@@ -93,7 +94,7 @@ pub async fn run_packet_loop(
     let conn_seq = Arc::new(AtomicU64::new(1));
     let tcp_idle = config::timeouts().sip_tcp_idle;
 
-    let rtp_rx = RtpReceiver::new(session_map.clone(), rtp_port_map.clone(), rtcp_tx);
+    let rtp_rx = RtpReceiver::new(session_registry.clone(), rtp_port_map.clone(), rtcp_tx);
 
     if let Some(listener) = sip_tcp_listener {
         let sip_tx = sip_tx.clone();
@@ -216,7 +217,7 @@ async fn run_rtp_udp_loop(sock: UdpSocket, rtp_rx: RtpReceiver) -> std::io::Resu
         };
 
         // rtp レイヤへ委譲（解析と session への転送）
-        rtp_rx.handle_raw(raw);
+        rtp_rx.handle_raw(raw).await;
     }
 }
 

@@ -30,7 +30,7 @@ impl SessionCoordinator {
             }
         };
         self.rtp
-            .start(self.call_id.clone(), dst_addr, 0, 0x12345678, 0, 0);
+            .start(self.call_id.to_string(), dst_addr, 0, 0x12345678, 0, 0);
         let _ = self.session_out_tx.send((
             self.call_id.clone(),
             SessionOut::RtpStartTx {
@@ -46,7 +46,7 @@ impl SessionCoordinator {
     pub(crate) fn align_rtp_clock(&mut self) {
         if let Some(last) = self.rtp_last_sent {
             let gap_samples = (last.elapsed().as_secs_f64() * 8000.0) as u32;
-            self.rtp.adjust_timestamp(&self.call_id, gap_samples);
+            self.rtp.adjust_timestamp(self.call_id.as_str(), gap_samples);
         }
     }
 

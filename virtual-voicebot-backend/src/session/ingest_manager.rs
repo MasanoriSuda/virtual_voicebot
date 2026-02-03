@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::http::ingest::IngestPort;
+use crate::ports::ingest::IngestPort;
 
 pub struct IngestManager {
     ingest_url: Option<String>,

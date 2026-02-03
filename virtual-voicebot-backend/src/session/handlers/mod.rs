@@ -7,7 +7,7 @@ use tokio::time::Instant;
 
 use super::services::ivr_service::{ivr_action_for_digit, ivr_state_after_action, IvrAction};
 use super::SessionCoordinator;
-use crate::app::{AppEvent, EndReason};
+use crate::ports::app::{AppEvent, EndReason};
 use crate::config;
 use crate::rtp::codec::mulaw_to_linear16;
 use crate::session::b2bua;
@@ -67,7 +67,7 @@ impl SessionCoordinator {
                             self.ivr_state = IvrState::Transferring;
                             if let Some(number) = target {
                                 self.transfer_cancel = Some(b2bua::spawn_outbound(
-                                    self.call_id.clone(),
+                                    self.call_id.to_string(),
                                     number,
                                     self.tx_in.clone(),
                                 ));
@@ -85,7 +85,7 @@ impl SessionCoordinator {
                             .send((self.call_id.clone(), SessionOut::SipSend180));
                         let from = sip_handler::extract_notify_from(self.from_uri.as_str());
                         let _ = self.app_tx.send(AppEvent::CallRinging {
-                            call_id: self.call_id.clone(),
+                            call_id: self.call_id.to_string(),
                             from,
                             timestamp: sip_handler::now_jst(),
                         });
@@ -145,7 +145,7 @@ impl SessionCoordinator {
 
                 let caller = sip_handler::extract_user_from_to(self.from_uri.as_str());
                 let _ = self.app_tx.send(AppEvent::CallStarted {
-                    call_id: self.call_id.clone(),
+                    call_id: self.call_id.to_string(),
                     caller,
                 });
 
@@ -192,7 +192,7 @@ impl SessionCoordinator {
                         let pcm_linear16: Vec<i16> =
                             buffer.iter().map(|&b| mulaw_to_linear16(b)).collect();
                         let _ = self.app_tx.send(AppEvent::AudioBuffered {
-                            call_id: self.call_id.clone(),
+                            call_id: self.call_id.to_string(),
                             pcm_mulaw: buffer,
                             pcm_linear16,
                         });
@@ -267,7 +267,7 @@ impl SessionCoordinator {
                         }
                         self.start_transfer_announce();
                         self.transfer_cancel = Some(b2bua::spawn_transfer(
-                            self.call_id.clone(),
+                            self.call_id.to_string(),
                             self.tx_in.clone(),
                         ));
                     }
@@ -371,7 +371,7 @@ impl SessionCoordinator {
                     self.align_rtp_clock();
                     self.recording.push_tx(&payload);
                     self.recording.push_b_leg_rx(&payload);
-                    self.rtp.send_payload(&self.call_id, payload);
+                    self.rtp.send_payload(self.call_id.as_str(), payload);
                     self.rtp_last_sent = Some(Instant::now());
                 }
             }
@@ -386,7 +386,7 @@ impl SessionCoordinator {
                 self.send_bye_to_a_leg();
                 self.stop_recorders();
                 self.send_ingest("ended").await;
-                self.rtp.stop(&self.call_id);
+                self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
                     .send((self.call_id.clone(), SessionOut::RtpStopTx));
@@ -462,7 +462,7 @@ impl SessionCoordinator {
                 self.stop_keepalive_timer();
                 self.stop_session_timer();
                 self.stop_ivr_timeout();
-                self.rtp.stop(&self.call_id);
+                self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
                     .send((self.call_id.clone(), SessionOut::RtpStopTx));
@@ -484,7 +484,7 @@ impl SessionCoordinator {
                 self.stop_keepalive_timer();
                 self.stop_session_timer();
                 self.stop_ivr_timeout();
-                self.rtp.stop(&self.call_id);
+                self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
                     .send((self.call_id.clone(), SessionOut::RtpStopTx));
@@ -517,7 +517,7 @@ impl SessionCoordinator {
                 self.stop_ivr_timeout();
                 self.stop_recorders();
                 self.send_ingest("ended").await;
-                self.rtp.stop(&self.call_id);
+                self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
                     .send((self.call_id.clone(), SessionOut::RtpStopTx));
@@ -542,7 +542,7 @@ impl SessionCoordinator {
                 self.stop_ivr_timeout();
                 self.ivr_state = IvrState::Transferring;
                 self.transfer_cancel = Some(b2bua::spawn_transfer(
-                    self.call_id.clone(),
+                    self.call_id.to_string(),
                     self.tx_in.clone(),
                 ));
             }
@@ -605,7 +605,7 @@ impl SessionCoordinator {
                 self.stop_ivr_timeout();
                 self.stop_recorders();
                 self.send_ingest("failed").await;
-                self.rtp.stop(&self.call_id);
+                self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
                     .send((self.call_id.clone(), SessionOut::RtpStopTx));

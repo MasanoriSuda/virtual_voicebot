@@ -472,7 +472,7 @@ struct CoreHeaderSnapshot {
     via: String,
     from: String,
     to: String,
-    call_id: String,
+    call_id: CallId,
     cseq: String,
 }
 
@@ -482,7 +482,7 @@ impl CoreHeaderSnapshot {
             via: req.header_value("Via").unwrap_or("").to_string(),
             from: req.header_value("From").unwrap_or("").to_string(),
             to: req.header_value("To").unwrap_or("").to_string(),
-            call_id: req.header_value("Call-ID").unwrap_or("").to_string(),
+            call_id: CallId::new(req.header_value("Call-ID").unwrap_or("").to_string()),
             cseq: req.header_value("CSeq").unwrap_or("").to_string(),
         }
     }
@@ -1884,7 +1884,7 @@ mod tests {
         let events = core.handle_input(&cancel_input);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            SipEvent::Cancel { call_id } => assert_eq!(call_id, "call-1"),
+            SipEvent::Cancel { call_id } => assert_eq!(call_id.as_str(), "call-1"),
             other => panic!("expected Cancel event, got {:?}", other),
         }
 

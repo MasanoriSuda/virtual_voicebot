@@ -43,7 +43,7 @@ impl SessionCoordinator {
         let frame = state.frames[state.index].clone();
         state.index += 1;
         self.recording.push_tx(&frame);
-        self.rtp.send_payload(&self.call_id, frame);
+        self.rtp.send_payload(self.call_id.as_str(), frame);
         self.rtp_last_sent = Some(tokio::time::Instant::now());
         if state.index < state.frames.len() {
             self.playback = Some(state);

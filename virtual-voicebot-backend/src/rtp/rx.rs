@@ -16,7 +16,8 @@ use crate::rtp::rtcp::{
     build_rr, is_rtcp_packet, parse_rtcp_packets, RtcpEvent, RtcpEventTx, RtcpPacket,
     RtcpReceiverReport, RtcpReportBlock,
 };
-use crate::session::{SessionIn, SessionMap};
+use crate::session::{SessionIn, SessionRegistry};
+use crate::session::types::CallId;
 
 /// transport 層から受け取る RTP 生パケット
 #[derive(Debug, Clone)]
@@ -29,10 +30,10 @@ pub struct RawRtp {
 /// transport → rtp → session の受信経路ハンドラ。
 /// 役割: 生パケットをパースし、call_id を引いて session へ MediaRtpIn を送る。
 pub struct RtpReceiver {
-    session_map: SessionMap,
-    rtp_port_map: Arc<Mutex<HashMap<u16, String>>>,
-    jitter: Arc<Mutex<HashMap<String, JitterBuffer>>>,
-    dtmf: Arc<Mutex<HashMap<String, DtmfDetector>>>,
+    session_registry: SessionRegistry,
+    rtp_port_map: Arc<Mutex<HashMap<u16, CallId>>>,
+    jitter: Arc<Mutex<HashMap<CallId, JitterBuffer>>>,
+    dtmf: Arc<Mutex<HashMap<CallId, DtmfDetector>>>,
     jitter_max_reorder: u16,
     rtcp_tx: Option<RtcpEventTx>,
     rtcp_reporter: RtcpReporter,
@@ -40,14 +41,14 @@ pub struct RtpReceiver {
 
 impl RtpReceiver {
     pub fn new(
-        session_map: SessionMap,
-        rtp_port_map: Arc<Mutex<HashMap<u16, String>>>,
+        session_registry: SessionRegistry,
+        rtp_port_map: Arc<Mutex<HashMap<u16, CallId>>>,
         rtcp_tx: Option<RtcpEventTx>,
     ) -> Self {
         let config = rtp_config();
         let rtcp_reporter = RtcpReporter::new(config.rtcp_interval);
         Self {
-            session_map,
+            session_registry,
             rtp_port_map,
             jitter: Arc::new(Mutex::new(HashMap::new())),
             dtmf: Arc::new(Mutex::new(HashMap::new())),
@@ -76,7 +77,7 @@ impl RtpReceiver {
     /// // `receiver` is an existing RtpReceiver.
     /// // receiver.handle_raw(raw);
     /// ```
-    pub fn handle_raw(&self, raw: RawRtp) {
+    pub async fn handle_raw(&self, raw: RawRtp) {
         // RTCP簡易判定
         if is_rtcp_packet(&raw.data) {
             warn!(
@@ -93,7 +94,7 @@ impl RtpReceiver {
                 info!("[rtcp recv] packet {:?}", pkt);
                 if let (Some(call_id), RtcpPacket::SenderReport(sr)) = (&call_id_opt, &pkt) {
                     self.rtcp_reporter
-                        .update_sr(call_id, sr.ssrc, sr.ntp_timestamp, raw.src);
+                        .update_sr(call_id.as_str(), sr.ssrc, sr.ntp_timestamp, raw.src);
                 }
             }
             if let Some(tx) = &self.rtcp_tx {
@@ -112,17 +113,13 @@ impl RtpReceiver {
         };
 
         if let Some(call_id) = call_id_opt {
-            // 対応するセッションを探して RTP入力イベントを投げる
-            let sess_tx_opt = {
-                let map = self.session_map.lock().unwrap();
-                map.get(&call_id).cloned()
-            };
+            let sess_tx_opt = self.session_registry.get(&call_id).await;
 
             if let Some(sess_tx) = sess_tx_opt {
                 match parse_rtp_packet(&raw.data) {
                     Ok(pkt) => {
                         self.rtcp_reporter.update_rtp(
-                            &call_id,
+                            call_id.as_str(),
                             pkt.ssrc,
                             pkt.sequence_number,
                             pkt.timestamp,
@@ -136,8 +133,8 @@ impl RtpReceiver {
                             );
                             return;
                         }
-                        let frames = self.reorder(
-                            &call_id,
+        let frames = self.reorder(
+            &call_id,
                             RtpFrame {
                                 seq: pkt.sequence_number,
                                 ts: pkt.timestamp,
@@ -213,9 +210,9 @@ impl RtpReceiver {
         }
     }
 
-    fn reorder(&self, call_id: &str, frame: RtpFrame) -> Vec<RtpFrame> {
+    fn reorder(&self, call_id: &CallId, frame: RtpFrame) -> Vec<RtpFrame> {
         let mut map = self.jitter.lock().unwrap();
-        let buffer = map.entry(call_id.to_string()).or_default();
+        let buffer = map.entry(call_id.clone()).or_default();
         buffer.push(frame, self.jitter_max_reorder)
     }
 }

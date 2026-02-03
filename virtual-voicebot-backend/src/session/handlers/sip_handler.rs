@@ -1,7 +1,7 @@
 use chrono::{DateTime, FixedOffset, Utc};
 
 use super::super::SessionCoordinator;
-use crate::app::{AppEvent, EndReason};
+use crate::ports::app::{AppEvent, EndReason};
 use crate::session::types::{Sdp, SessionOut};
 use crate::sip::{parse_name_addr, parse_uri};
 
@@ -62,7 +62,7 @@ impl SessionCoordinator {
         let timestamp = now_jst();
         let duration_sec = self.started_at.map(|started| started.elapsed().as_secs());
         let _ = self.app_tx.send(AppEvent::CallEnded {
-            call_id: self.call_id.clone(),
+            call_id: self.call_id.to_string(),
             from,
             reason,
             duration_sec,

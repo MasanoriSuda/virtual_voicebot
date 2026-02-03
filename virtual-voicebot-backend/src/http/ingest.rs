@@ -1,31 +1,30 @@
 use anyhow::Result;
 use serde_json::Value;
-use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 
-pub type IngestFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
-
-pub trait IngestPort: Send + Sync {
-    fn post(&self, url: String, payload: Value) -> IngestFuture<Result<()>>;
-}
+use crate::ports::ingest::{IngestFuture, IngestPort};
 
 pub struct HttpIngestPort {
     timeout: Duration,
+    client: reqwest::Client,
 }
 
 impl HttpIngestPort {
     pub fn new(timeout: Duration) -> Self {
-        Self { timeout }
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("failed to build ingest HTTP client");
+        Self { timeout, client }
     }
 }
 
 impl IngestPort for HttpIngestPort {
     fn post(&self, url: String, payload: Value) -> IngestFuture<Result<()>> {
         let timeout = self.timeout;
+        let client = self.client.clone();
         Box::pin(async move {
-            let client = reqwest::Client::builder().timeout(timeout).build()?;
-            client.post(url).json(&payload).send().await?;
+            client.post(url).timeout(timeout).json(&payload).send().await?;
             Ok(())
         })
     }

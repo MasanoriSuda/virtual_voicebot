@@ -54,7 +54,9 @@ impl SessionCoordinator {
     }
 
     pub(crate) fn start_ring_delay(&mut self, duration: Duration) {
-        self.stop_ring_delay();
+        if let Some(cancel) = self.ring_delay_cancel.take() {
+            let _ = cancel.send(());
+        }
         let tx = self.tx_in.clone();
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
         self.ring_delay_cancel = Some(cancel_tx);

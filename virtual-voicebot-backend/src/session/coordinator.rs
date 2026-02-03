@@ -14,9 +14,9 @@ use crate::session::state_machine::{SessionEvent, SessionStateMachine};
 use crate::session::types::Sdp;
 use crate::session::types::*;
 
-use crate::app::AppEvent;
 use crate::config;
-use crate::http::ingest::IngestPort;
+use crate::ports::app::AppEvent;
+use crate::ports::ingest::IngestPort;
 use crate::recording;
 use crate::recording::storage::StoragePort;
 use crate::rtp::tx::RtpTxHandle;
@@ -144,7 +144,9 @@ impl SessionCoordinator {
             app_tx,
             media_cfg,
             rtp: crate::session::rtp_stream_manager::RtpStreamManager::new(rtp_tx),
-            recording: crate::session::recording_manager::RecordingManager::new(call_id_clone),
+            recording: crate::session::recording_manager::RecordingManager::new(
+                call_id_clone.to_string(),
+            ),
             started_at: None,
             started_wall: None,
             rtp_last_sent: None,
@@ -240,7 +242,7 @@ impl SessionCoordinator {
         self.align_rtp_clock();
 
         let frame = vec![0xFFu8; 160]; // μ-law silence
-        self.rtp.send_payload(&self.call_id, frame);
+        self.rtp.send_payload(self.call_id.as_str(), frame);
         self.rtp_last_sent = Some(Instant::now());
         Ok(())
     }
@@ -259,7 +261,7 @@ impl SessionCoordinator {
             .map(|base| recording::recording_url(base, &recording_dir));
 
         let payload = json!({
-            "callId": self.call_id,
+            "callId": self.call_id.to_string(),
             "from": self.from_uri,
             "to": self.to_uri,
             "startedAt": humantime::format_rfc3339(started_at).to_string(),
@@ -290,7 +292,7 @@ mod tests {
             &self,
             _url: String,
             _payload: serde_json::Value,
-        ) -> crate::http::ingest::IngestFuture<anyhow::Result<()>> {
+        ) -> crate::ports::ingest::IngestFuture<anyhow::Result<()>> {
             Box::pin(async { Ok(()) })
         }
     }
@@ -309,7 +311,7 @@ mod tests {
         let (tx_in, _rx_in) = tokio::sync::mpsc::unbounded_channel();
         SessionCoordinator {
             state_machine: SessionStateMachine::new(),
-            call_id: "test-call".to_string(),
+            call_id: CallId::new("test-call".to_string()),
             from_uri: "sip:from@example.com".to_string(),
             to_uri: "sip:to@example.com".to_string(),
             ingest: crate::session::ingest_manager::IngestManager::new(

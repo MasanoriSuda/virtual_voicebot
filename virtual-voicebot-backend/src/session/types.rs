@@ -13,7 +13,7 @@ pub struct Sdp {
 }
 
 /// Call-ID を表す（設計ドキュメント上はセッション識別子と一致させる）
-pub type CallId = String;
+pub use crate::entities::CallId;
 
 impl Sdp {
     pub fn pcmu(ip: impl Into<String>, port: u16) -> Self {
@@ -231,10 +231,10 @@ pub(crate) enum SessState {
 /// # Examples
 ///
 /// ```
-/// use crate::types::{next_session_state, SessState, SessionIn};
+/// use crate::types::{next_session_state, CallId, SessState, SessionIn};
 ///
 /// let s = SessState::Idle;
-/// let next = next_session_state(s, &SessionIn::SipInvite { call_id: "".into(), from: "".into(), to: "".into(), offer: None, session_timer: None });
+/// let next = next_session_state(s, &SessionIn::SipInvite { call_id: CallId::new("".to_string()), from: "".into(), to: "".into(), offer: None, session_timer: None });
 /// assert_eq!(next, SessState::Early);
 /// ```
 pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
@@ -259,35 +259,120 @@ pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessS
 }
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use tokio::sync::{mpsc, oneshot};
 use tokio::sync::mpsc::UnboundedSender;
 
-pub type SessionMap = Arc<Mutex<HashMap<CallId, UnboundedSender<SessionIn>>>>;
-
-/// session manager の薄いラッパ（挙動は従来のマップ操作と同じ）
 #[derive(Clone)]
 pub struct SessionRegistry {
-    inner: SessionMap,
+    tx: mpsc::Sender<RegistryCommand>,
+}
+
+enum RegistryCommand {
+    Register {
+        call_id: CallId,
+        tx: UnboundedSender<SessionIn>,
+        reply: oneshot::Sender<()>,
+    },
+    Unregister {
+        call_id: CallId,
+        reply: oneshot::Sender<Option<UnboundedSender<SessionIn>>>,
+    },
+    Get {
+        call_id: CallId,
+        reply: oneshot::Sender<Option<UnboundedSender<SessionIn>>>,
+    },
+    List {
+        reply: oneshot::Sender<Vec<CallId>>,
+    },
 }
 
 impl SessionRegistry {
-    pub fn new(inner: SessionMap) -> Self {
-        Self { inner }
+    pub fn new() -> Self {
+        let (tx, mut rx) = mpsc::channel(128);
+        tokio::spawn(async move {
+            let mut map: HashMap<CallId, UnboundedSender<SessionIn>> = HashMap::new();
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    RegistryCommand::Register { call_id, tx, reply } => {
+                        map.insert(call_id, tx);
+                        let _ = reply.send(());
+                    }
+                    RegistryCommand::Unregister { call_id, reply } => {
+                        let removed = map.remove(&call_id);
+                        let _ = reply.send(removed);
+                    }
+                    RegistryCommand::Get { call_id, reply } => {
+                        let found = map.get(&call_id).cloned();
+                        let _ = reply.send(found);
+                    }
+                    RegistryCommand::List { reply } => {
+                        let list = map.keys().cloned().collect();
+                        let _ = reply.send(list);
+                    }
+                }
+            }
+        });
+        Self { tx }
     }
 
-    pub fn insert(&self, call_id: CallId, tx: UnboundedSender<SessionIn>) {
-        self.inner.lock().unwrap().insert(call_id, tx);
+    pub async fn insert(&self, call_id: CallId, tx: UnboundedSender<SessionIn>) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(RegistryCommand::Register {
+                call_id,
+                tx,
+                reply: reply_tx,
+            })
+            .await
+            .is_ok()
+        {
+            let _ = reply_rx.await;
+        }
     }
 
-    pub fn get(&self, call_id: &CallId) -> Option<UnboundedSender<SessionIn>> {
-        self.inner.lock().unwrap().get(call_id).cloned()
+    pub async fn get(&self, call_id: &CallId) -> Option<UnboundedSender<SessionIn>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(RegistryCommand::Get {
+                call_id: call_id.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        reply_rx.await.ok().flatten()
     }
 
-    pub fn remove(&self, call_id: &CallId) -> Option<UnboundedSender<SessionIn>> {
-        self.inner.lock().unwrap().remove(call_id)
+    pub async fn remove(&self, call_id: &CallId) -> Option<UnboundedSender<SessionIn>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(RegistryCommand::Unregister {
+                call_id: call_id.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        reply_rx.await.ok().flatten()
     }
 
-    pub fn list(&self) -> Vec<CallId> {
-        self.inner.lock().unwrap().keys().cloned().collect()
+    pub async fn list(&self) -> Vec<CallId> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(RegistryCommand::List { reply: reply_tx })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        reply_rx.await.unwrap_or_default()
     }
 }

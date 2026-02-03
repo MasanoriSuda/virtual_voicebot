@@ -5,8 +5,8 @@
 // ここでは経路だけ定義し、実際の送信/受信はまだスタブのまま（挙動は従来どおり）。
 use std::sync::Arc;
 
-use crate::app::AppEvent;
-use crate::http::ingest::IngestPort;
+use crate::ports::app::AppEvent;
+use crate::ports::ingest::IngestPort;
 use crate::recording::storage::StoragePort;
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::types::*;
@@ -43,7 +43,7 @@ pub fn spawn_call(
     handle
 }
 
-pub fn spawn_session(
+pub async fn spawn_session(
     call_id: CallId,
     from_uri: String,
     to_uri: String,
@@ -71,6 +71,6 @@ pub fn spawn_session(
         storage_port,
     );
     // Session manager の薄いラッパ経由で登録
-    registry.insert(call_id, handle.tx_in.clone());
+    registry.insert(call_id, handle.tx_in.clone()).await;
     handle.tx_in
 }
