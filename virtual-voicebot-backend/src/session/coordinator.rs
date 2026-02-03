@@ -16,16 +16,15 @@ use crate::session::types::*;
 
 use crate::config;
 use crate::ports::app::AppEvent;
-use crate::ports::ingest::IngestPort;
+use crate::ports::ingest::{IngestPayload, IngestPort, IngestRecording};
+use crate::ports::storage::StoragePort;
 use crate::recording;
-use crate::recording::storage::StoragePort;
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::b2bua;
 use crate::session::capture::AudioCapture;
 use crate::session::timers::SessionTimers;
 use anyhow::Error;
 // log macros used in handler/service modules
-use serde_json::json;
 use services::playback_service::PlaybackState;
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
@@ -259,24 +258,23 @@ impl SessionCoordinator {
             .recording_base_url
             .as_ref()
             .map(|base| recording::recording_url(base, &recording_dir));
-
-        let payload = json!({
-            "callId": self.call_id.to_string(),
-            "from": self.from_uri,
-            "to": self.to_uri,
-            "startedAt": humantime::format_rfc3339(started_at).to_string(),
-            "endedAt": humantime::format_rfc3339(ended_at).to_string(),
-            "status": status,
-            "summary": "",
-            "durationSec": duration_sec,
-            "recording": recording_url.as_ref().map(|url| json!({
-                "recordingUrl": url,
-                "durationSec": duration_sec,
-                "sampleRate": self.recording.sample_rate(),
-                "channels": self.recording.channels()
-            })),
+        let recording = recording_url.map(|url| IngestRecording {
+            recording_url: url,
+            duration_sec,
+            sample_rate: self.recording.sample_rate(),
+            channels: self.recording.channels(),
         });
-
+        let payload = IngestPayload {
+            call_id: self.call_id.clone(),
+            from: self.from_uri.clone(),
+            to: self.to_uri.clone(),
+            started_at,
+            ended_at,
+            status: status.to_string(),
+            summary: String::new(),
+            duration_sec,
+            recording,
+        };
         self.ingest.post_once(payload).await;
     }
 }
@@ -291,8 +289,9 @@ mod tests {
         fn post(
             &self,
             _url: String,
-            _payload: serde_json::Value,
-        ) -> crate::ports::ingest::IngestFuture<anyhow::Result<()>> {
+            _payload: IngestPayload,
+        ) -> crate::ports::ingest::IngestFuture<Result<(), crate::ports::ingest::IngestError>>
+        {
             Box::pin(async { Ok(()) })
         }
     }
@@ -300,7 +299,10 @@ mod tests {
     struct DummyStoragePort;
 
     impl StoragePort for DummyStoragePort {
-        fn load_wav_as_pcmu_frames(&self, _path: &str) -> anyhow::Result<Vec<Vec<u8>>> {
+        fn load_wav_as_pcmu_frames(
+            &self,
+            _path: &str,
+        ) -> Result<Vec<Vec<u8>>, crate::ports::storage::StorageError> {
             Ok(vec![vec![0xFF; 160]])
         }
     }

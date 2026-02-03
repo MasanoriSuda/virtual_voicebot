@@ -85,7 +85,7 @@ impl SessionCoordinator {
                             .send((self.call_id.clone(), SessionOut::SipSend180));
                         let from = sip_handler::extract_notify_from(self.from_uri.as_str());
                         let _ = self.app_tx.send(AppEvent::CallRinging {
-                            call_id: self.call_id.to_string(),
+                            call_id: self.call_id.clone(),
                             from,
                             timestamp: sip_handler::now_jst(),
                         });
@@ -145,7 +145,7 @@ impl SessionCoordinator {
 
                 let caller = sip_handler::extract_user_from_to(self.from_uri.as_str());
                 let _ = self.app_tx.send(AppEvent::CallStarted {
-                    call_id: self.call_id.to_string(),
+                    call_id: self.call_id.clone(),
                     caller,
                 });
 
@@ -192,7 +192,7 @@ impl SessionCoordinator {
                         let pcm_linear16: Vec<i16> =
                             buffer.iter().map(|&b| mulaw_to_linear16(b)).collect();
                         let _ = self.app_tx.send(AppEvent::AudioBuffered {
-                            call_id: self.call_id.to_string(),
+                            call_id: self.call_id.clone(),
                             pcm_mulaw: buffer,
                             pcm_linear16,
                         });

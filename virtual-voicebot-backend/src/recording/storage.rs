@@ -1,9 +1,6 @@
-use anyhow::Result;
 use hound::WavReader;
 
-pub trait StoragePort: Send + Sync {
-    fn load_wav_as_pcmu_frames(&self, path: &str) -> Result<Vec<Vec<u8>>>;
-}
+use crate::ports::storage::{StorageError, StoragePort};
 
 pub struct FileStoragePort;
 
@@ -14,25 +11,32 @@ impl FileStoragePort {
 }
 
 impl StoragePort for FileStoragePort {
-    fn load_wav_as_pcmu_frames(&self, path: &str) -> Result<Vec<Vec<u8>>> {
+    fn load_wav_as_pcmu_frames(&self, path: &str) -> Result<Vec<Vec<u8>>, StorageError> {
         load_wav_as_pcmu_frames(path)
     }
 }
 
-fn load_wav_as_pcmu_frames(path: &str) -> Result<Vec<Vec<u8>>> {
-    let mut reader = WavReader::open(path)?;
+fn load_wav_as_pcmu_frames(path: &str) -> Result<Vec<Vec<u8>>, StorageError> {
+    let mut reader =
+        WavReader::open(path).map_err(|e| StorageError::Io(e.to_string()))?;
     let spec = reader.spec();
     if spec.channels != 1 || spec.bits_per_sample != 16 {
-        anyhow::bail!("expected mono 16bit wav");
+        return Err(StorageError::UnsupportedFormat(
+            "expected mono 16bit wav".to_string(),
+        ));
     }
     let mut samples: Vec<i16> = Vec::new();
     for s in reader.samples::<i16>() {
-        samples.push(s?);
+        samples.push(s.map_err(|e| StorageError::Io(e.to_string()))?);
     }
     let base_samples: Vec<i16> = match spec.sample_rate {
         8000 => samples,
         24000 => samples.iter().step_by(3).copied().collect(),
-        other => anyhow::bail!("unsupported sample rate {other}"),
+        other => {
+            return Err(StorageError::UnsupportedFormat(format!(
+                "unsupported sample rate {other}"
+            )))
+        }
     };
     let mut frames = Vec::new();
     let mut cur = Vec::with_capacity(160);

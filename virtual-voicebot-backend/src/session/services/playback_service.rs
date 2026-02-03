@@ -1,7 +1,7 @@
 use anyhow::Error;
 
 use super::super::SessionCoordinator;
-use log::info;
+use log::{info, warn};
 
 use crate::session::types::IvrState;
 
@@ -14,6 +14,10 @@ pub(crate) struct PlaybackState {
 impl SessionCoordinator {
     pub(crate) fn start_playback(&mut self, paths: &[&str]) -> Result<(), Error> {
         let Some(_dst) = self.peer_rtp_addr() else {
+            warn!(
+                "[session {}] start_playback skipped: no peer RTP address",
+                self.call_id
+            );
             return Ok(());
         };
         self.cancel_playback();

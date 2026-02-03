@@ -1,6 +1,7 @@
-use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
+
+use thiserror::Error;
 
 #[derive(Clone, Debug)]
 pub struct PhoneLookupResult {
@@ -8,8 +9,14 @@ pub struct PhoneLookupResult {
     pub ivr_enabled: bool,
 }
 
+#[derive(Debug, Error)]
+pub enum PhoneLookupError {
+    #[error("lookup failed: {0}")]
+    LookupFailed(String),
+}
+
 pub type PhoneLookupFuture =
-    Pin<Box<dyn Future<Output = Result<Option<PhoneLookupResult>>> + Send>>;
+    Pin<Box<dyn Future<Output = Result<Option<PhoneLookupResult>, PhoneLookupError>> + Send>>;
 
 pub trait PhoneLookupPort: Send + Sync {
     fn lookup_phone(&self, phone_number: String) -> PhoneLookupFuture;

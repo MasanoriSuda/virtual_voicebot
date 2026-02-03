@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use serde_json::Value;
-
-use crate::ports::ingest::IngestPort;
+use crate::ports::ingest::{IngestPayload, IngestPort};
 
 pub struct IngestManager {
     ingest_url: Option<String>,
@@ -23,7 +21,7 @@ impl IngestManager {
         self.ingest_url.is_some() && !self.ingest_sent
     }
 
-    pub async fn post_once(&mut self, payload: Value) {
+    pub async fn post_once(&mut self, payload: IngestPayload) {
         if self.ingest_sent {
             return;
         }

@@ -3,25 +3,24 @@
 //! ai ポートを呼び出してボット音声(WAV)のパスを session に返す。
 //! transport/sip/rtp には依存せず、SessionOut 経由のイベントのみを返す。
 
-mod notification;
 mod router;
 
 use std::sync::Arc;
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-use crate::app::notification::{NotificationFuture, NotificationPort};
 use crate::app::router::{
     parse_intent_json, router_config, system_info_response, RouteAction, Router,
 };
 use crate::config;
-use crate::db::port::PhoneLookupPort;
+use crate::ports::notification::{NotificationFuture, NotificationService as NotificationPort};
+use crate::ports::phone_lookup::PhoneLookupPort;
 use crate::ports::ai::{AiServices, AsrChunk, ChatMessage, Role, SerInputPcm, WeatherQuery};
 use crate::session::SessionOut;
 use crate::session::types::CallId;
 
-pub use notification::{LineAdapter, NoopNotification, NotificationPort as AppNotificationPort};
 pub use crate::ports::app::{AppEvent, EndReason};
+pub use crate::ports::notification::NotificationService as AppNotificationPort;
 
 const SORRY_WAV_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sorry.wav");
 const SPEC_FILTER_KEYWORDS: [&str; 21] = [
@@ -76,13 +75,13 @@ const SPEC_FILTER_KEYWORDS: [&str; 21] = [
 /// let phone_lookup: std::sync::Arc<dyn PhoneLookupPort> = /* ... */;
 /// let notification_port: std::sync::Arc<dyn NotificationPort> = /* ... */;
 /// let tx: UnboundedSender<AppEvent> = spawn_app_worker(
-///     crate::session::types::CallId::new("call-123".to_string()),
+///     crate::session::types::CallId::new("call-123"),
 ///     session_tx,
 ///     ai_port,
 ///     phone_lookup,
 ///     notification_port,
 /// );
-/// tx.send(AppEvent::CallStarted { call_id: "call-123".into(), caller: None }).unwrap();
+/// tx.send(AppEvent::CallStarted { call_id: CallId::new("call-123"), caller: None }).unwrap();
 /// ```
 pub fn spawn_app_worker(
     call_id: CallId,
@@ -185,17 +184,19 @@ impl AppWorker {
 
     /// // Here we show the shape of the call; replace `ai_impl` and `phone_impl` with real Arcs.
 
-    /// let ai_impl: Arc<dyn crate::ports::ai::AiServices> = Arc::new(crate::notification::NoopNotification); // placeholder
-
-    /// let phone_impl: Arc<dyn crate::ports::PhoneLookupPort> = Arc::new(crate::notification::NoopNotification); // placeholder
-
-    /// let notif_impl: Arc<dyn crate::notification::NotificationPort> = Arc::new(crate::notification::NoopNotification);
+    /// let ai_impl: Arc<dyn crate::ports::ai::AiServices> = Arc::new(crate::ai::DefaultAiPort::new());
+    ///
+    /// let phone_impl: Arc<dyn crate::ports::phone_lookup::PhoneLookupPort> =
+    ///     Arc::new(crate::ports::phone_lookup::NoopPhoneLookup::new());
+    ///
+    /// let notif_impl: Arc<dyn crate::ports::notification::NotificationService> =
+    ///     Arc::new(crate::notification::NoopNotification::new());
 
     ///
 
     /// let worker = crate::app::AppWorker::new(
 
-    ///     "call-123".to_string(),
+    ///     crate::session::types::CallId::new("call-123"),
 
     ///     session_tx,
 
@@ -257,7 +258,7 @@ impl AppWorker {
                     from,
                     timestamp,
                 } => {
-                    if call_id != self.call_id.as_str() {
+                    if call_id != self.call_id {
                         log::warn!(
                             "[app {}] CallRinging received for mismatched call_id={}",
                             self.call_id,
@@ -267,7 +268,7 @@ impl AppWorker {
                     self.notify_ringing(from, timestamp);
                 }
                 AppEvent::CallStarted { call_id, caller } => {
-                    if call_id != self.call_id.as_str() {
+                    if call_id != self.call_id {
                         log::warn!(
                             "[app {}] CallStarted received for mismatched call_id={}",
                             self.call_id,
@@ -277,7 +278,11 @@ impl AppWorker {
                     self.active = true;
                     let caller_display = caller.as_deref().filter(|value| !value.trim().is_empty());
                     if let Some(value) = caller_display {
-                        log::info!("[app {}] caller extracted={}", self.call_id, value);
+                        log::info!(
+                            "[app {}] caller extracted={}",
+                            self.call_id,
+                            mask_phone(value)
+                        );
                     } else {
                         log::info!("[app {}] caller missing", self.call_id);
                     }
@@ -288,7 +293,7 @@ impl AppWorker {
                     pcm_mulaw,
                     pcm_linear16,
                 } => {
-                    if call_id != self.call_id.as_str() {
+                    if call_id != self.call_id {
                         log::warn!(
                             "[app {}] AudioBuffered received for mismatched call_id={}",
                             self.call_id,
@@ -302,7 +307,6 @@ impl AppWorker {
                         );
                         continue;
                     }
-                    let call_id = self.call_id.to_string();
                     if let Err(e) = self
                         .handle_audio_buffer(&call_id, pcm_mulaw, pcm_linear16)
                         .await
@@ -317,7 +321,7 @@ impl AppWorker {
                     duration_sec,
                     timestamp,
                 } => {
-                    if call_id != self.call_id.as_str() {
+                    if call_id != self.call_id {
                         log::warn!(
                             "[app {}] CallEnded received for mismatched call_id={}",
                             self.call_id,
@@ -352,16 +356,16 @@ impl AppWorker {
     /// // `worker` is an instance of the surrounding type that provides `handle_audio_buffer`.
     /// // This example demonstrates the call pattern; constructing a full `AppWorker` requires
     /// // multiple dependencies not shown here.
-    /// let call_id = "call-123";
+    /// let call_id = CallId::new("call-123");
     /// let pcm_mulaw: Vec<u8> = vec![]; // mu-law encoded bytes from the session
     /// let pcm_linear16: Vec<i16> = vec![]; // linear16 PCM samples for SER
     /// // await the handler
-    /// // worker.handle_audio_buffer(call_id, pcm_mulaw, pcm_linear16).await.unwrap();
+    /// // worker.handle_audio_buffer(&call_id, pcm_mulaw, pcm_linear16).await.unwrap();
     /// # }
     /// ```
     async fn handle_audio_buffer(
         &mut self,
-        call_id: &str,
+        call_id: &CallId,
         pcm_mulaw: Vec<u8>,
         pcm_linear16: Vec<i16>,
     ) -> anyhow::Result<()> {
@@ -370,9 +374,10 @@ impl AppWorker {
             pcm_mulaw,
             end: true,
         }];
+        let call_id_str = call_id.to_string();
         let user_text = match self
             .ai_port
-            .transcribe_chunks(call_id.to_string(), asr_chunks)
+            .transcribe_chunks(call_id_str.clone(), asr_chunks)
             .await
         {
             Ok(t) => t,
@@ -383,7 +388,7 @@ impl AppWorker {
         };
 
         let ser_input = SerInputPcm {
-            session_id: call_id.to_string(),
+            session_id: call_id_str,
             stream_id: "main".to_string(),
             pcm: pcm_linear16,
             sample_rate: 8000,
@@ -418,7 +423,7 @@ impl AppWorker {
             log::warn!(
                 "[security] spec question blocked: call_id={} input={}",
                 call_id,
-                trimmed
+                mask_pii(trimmed)
             );
             let answer_text = system_info_response();
             match self.ai_port.synth_to_wav(answer_text, None).await {
@@ -445,10 +450,11 @@ impl AppWorker {
             }
         };
         let intent_result = parse_intent_json(&intent_json, trimmed);
+        let intent_json_len = intent_json.chars().count();
         log::info!(
-            "[app {call_id}] intent classified={} raw={}",
+            "[app {call_id}] intent classified={} raw_len={}",
             intent_result.raw_intent,
-            intent_json
+            intent_json_len
         );
 
         let (answer_text, user_query) = match self.router.route(intent_result) {
@@ -685,12 +691,13 @@ impl AppWorker {
             log::info!("[app {}] caller missing, skip lookup", self.call_id);
             return;
         };
+        let caller_masked = mask_phone(&caller);
         match self.phone_lookup.lookup_phone(caller.clone()).await {
             Ok(Some(result)) => {
                 log::info!(
                     "[app {}] phone lookup found caller={} ivr_enabled={}",
                     self.call_id,
-                    caller,
+                    caller_masked,
                     result.ivr_enabled
                 );
             }
@@ -698,14 +705,14 @@ impl AppWorker {
                 log::info!(
                     "[app {}] phone lookup not found caller={} (default ivr enabled)",
                     self.call_id,
-                    caller
+                    caller_masked
                 );
             }
             Err(err) => {
                 log::warn!(
                     "[app {}] phone lookup failed caller={}: {}",
                     self.call_id,
-                    caller,
+                    caller_masked,
                     err
                 );
             }
@@ -713,6 +720,19 @@ impl AppWorker {
     }
 
     // build_prompt はロール分離に伴い廃止
+}
+
+fn mask_pii(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return "<empty>".to_string();
+    }
+    let len = trimmed.chars().count();
+    format!("<redacted len={}>", len)
+}
+
+fn mask_phone(value: &str) -> String {
+    mask_pii(value)
 }
 
 /// Detects whether a text appears to be a specification or policy question.

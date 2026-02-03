@@ -1,8 +1,6 @@
-use anyhow::Result;
-use serde_json::Value;
 use std::time::Duration;
 
-use crate::ports::ingest::{IngestFuture, IngestPort};
+use crate::ports::ingest::{IngestError, IngestFuture, IngestPayload, IngestPort};
 
 pub struct HttpIngestPort {
     timeout: Duration,
@@ -20,11 +18,36 @@ impl HttpIngestPort {
 }
 
 impl IngestPort for HttpIngestPort {
-    fn post(&self, url: String, payload: Value) -> IngestFuture<Result<()>> {
+    fn post(&self, url: String, payload: IngestPayload) -> IngestFuture<Result<(), IngestError>> {
         let timeout = self.timeout;
         let client = self.client.clone();
         Box::pin(async move {
-            client.post(url).timeout(timeout).json(&payload).send().await?;
+            let recording = payload.recording.as_ref().map(|rec| {
+                serde_json::json!({
+                    "recordingUrl": rec.recording_url,
+                    "durationSec": rec.duration_sec,
+                    "sampleRate": rec.sample_rate,
+                    "channels": rec.channels,
+                })
+            });
+            let payload_json = serde_json::json!({
+                "callId": payload.call_id.to_string(),
+                "from": payload.from,
+                "to": payload.to,
+                "startedAt": humantime::format_rfc3339(payload.started_at).to_string(),
+                "endedAt": humantime::format_rfc3339(payload.ended_at).to_string(),
+                "status": payload.status,
+                "summary": payload.summary,
+                "durationSec": payload.duration_sec,
+                "recording": recording,
+            });
+            client
+                .post(url)
+                .timeout(timeout)
+                .json(&payload_json)
+                .send()
+                .await
+                .map_err(|e| IngestError::Transport(e.to_string()))?;
             Ok(())
         })
     }

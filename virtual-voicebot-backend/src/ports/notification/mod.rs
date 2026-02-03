@@ -1,9 +1,16 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use anyhow::Result;
+use thiserror::Error;
 
-pub type NotificationFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+#[derive(Debug, Error)]
+pub enum NotificationError {
+    #[error("notification failed: {0}")]
+    Failed(String),
+}
+
+pub type NotificationFuture =
+    Pin<Box<dyn Future<Output = Result<(), NotificationError>> + Send>>;
 
 pub mod ended;
 pub mod missed;

@@ -60,6 +60,38 @@
 
 > **備考**: #1（SessionRegistry 巨大Mutex）、#2（CallId 二重定義）、#6（RTP parser）は既存指摘として Phase 2/3 で対応予定
 
+### 2.4 Phase 2 完了後レビュー（Codex 2026-02-03）
+
+**指摘（重大）**
+
+| # | 指摘 | 根拠 | 方向性 |
+|---|------|------|--------|
+| 14 | app（UseCase）内で reqwest を使った外部HTTP（LINE API）を実行 | notification.rs:1,148 | LINE通知アダプタをinfra層へ移し、appは ports::notification のtraitにのみ依存 |
+| 15 | session層が config/recording/serde_json に依存しJSON組み立て | coordinator.rs:17,263 | ingest用DTOをportsに置き、JSON化は http adapter 側で行う |
+| 16 | PII（ユーザー発話・意図JSON・電話番号）を info/warn でそのまま出力 | mod.rs:417,449,690 | デフォルトは伏字/長さのみ、詳細は明示的なデバッグフラグでのみ出力 |
+| 17 | UseCaseが db モジュールに依存し、Port定義もdb内 | mod.rs:18, port.rs:1 | PhoneLookupPortは ports に移し、dbはadapter実装のみを持つ |
+
+**指摘（中）**
+
+| # | 指摘 | 根拠 | 方向性 |
+|---|------|------|--------|
+| 18 | Port境界が anyhow::Result や serde_json::Value を露出 | ingest.rs:1, port.rs:1, storage.rs:1 | PortはドメインDTOと専用エラー型にする |
+| 19 | OnceLock によるグローバル状態が複数 | config.rs:163,320 | Configをコンストラクタ注入し、環境読込はcomposition rootに限定 |
+| 20 | Arc<Mutex<HashMap>> の共有可変状態を理由説明なしで利用 | packet.rs:27, main.rs:67 | Actor化/所有権の明確化、または設計意図をドキュメント化 |
+| 21 | AppEvent の call_id が String 固定で型安全性欠如 | app.rs:4 | Port/イベント境界で CallId を使い、外側で文字列化 |
+
+**指摘（軽）**
+
+| # | 指摘 | 根拠 | 方向性 |
+|---|------|------|--------|
+| 22 | CallId::new が空文字等を許容し不変条件が型で保証されない | identifiers.rs:7 | Result<CallId, ...> でバリデーション |
+| 23 | AiServices が便利集約traitとして置かれ境界責務が曖昧 | ai.rs:27 | 用途別に明示的な依存を渡すか、用途特化のFacade型に |
+
+**決定済み（PoC暫定処置として修正）**
+
+- session → recording 直参照 → **撤廃**（StoragePort を ports/ に移動）
+- db::port を db に置く → **ports/ へ移動**（PhoneLookupPort を ports/phone_lookup に）
+
 ---
 
 ## 3. 現状と理想の対比
@@ -397,12 +429,27 @@ impl HttpIngestAdapter {
 | 5 | AsrError 導入 | エラーハンドリング改善 | 小 |
 | 13 | HttpIngestAdapter Client 再利用 | パフォーマンス改善 | 小 |
 
+### Phase 2.5: PoC暫定処置解消（依存方向完全適合）
+
+| # | 対応 | 理由 | 工数目安 |
+|---|------|------|---------|
+| 14 | LINE通知アダプタをinfra層へ移動 | UseCase内のIO直接実行（重大） | 中 |
+| 15 | session→recording依存解消、StoragePort移動 | 依存方向違反（重大） | 中 |
+| 16 | PIIログ出力のマスキング | AGENTS違反（重大） | 小 |
+| 17 | PhoneLookupPort を ports へ移動 | 依存方向違反（重大） | 小 |
+| 18 | Port境界からanyhow/serde_json排除 | infra型漏れ（中） | 中 |
+| 21 | AppEvent.call_id を CallId 型に | 型安全性（中） | 小 |
+
 ### Phase 3: 将来対応可
 
 | # | 対応 | 理由 | 工数目安 |
 |---|------|------|---------|
 | 6 | RTP parser 改修 | 現時点で動作に影響なし | 小 |
 | 7-10 | 追加改善 | 長期的な保守性向上 | 中 |
+| 19 | OnceLock グローバル状態解消 | テスト再現性（中） | 中 |
+| 20 | Arc<Mutex<HashMap>> 設計明確化 | 並行設計意図（中） | 小 |
+| 22 | CallId バリデーション追加 | 不変条件（軽） | 小 |
+| 23 | AiServices 分割 | 境界責務（軽） | 小 |
 
 ---
 
@@ -422,13 +469,22 @@ impl HttpIngestAdapter {
 - [x] AC-10: session 層が app 層に直接依存していない（AppEvent/EndReason が ports/ または session::events に移動）
 - [x] AC-11: session 層が http 層に直接依存していない（IngestPort が ports/ に移動）
 
-### Phase 2
+### Phase 2 ✅ 完了
 
 - [x] AC-6: SessionRegistry が Actor パターンで実装されている
 - [x] AC-7: CallId が entities/identifiers.rs のみに定義されている
 - [x] AC-8: AsrPort が AsrError を返す設計になっている
 - [x] AC-9: AiPort が AsrPort にリネームされている
 - [x] AC-12: HttpIngestAdapter が reqwest::Client を保持して再利用している
+
+### Phase 2.5（PoC暫定処置解消）
+
+- [ ] AC-13: LINE通知がports::notificationのtraitを経由している（notification.rs内のreqwest直接利用が解消）
+- [ ] AC-14: session層がrecording層に直接依存していない（StoragePortがports/に移動）
+- [ ] AC-15: PIIがログにマスクされて出力される（ユーザー発話・電話番号が伏字）
+- [ ] AC-16: PhoneLookupPortがports/phone_lookupに定義されている（db層はadapter実装のみ）
+- [ ] AC-17: Port境界がanyhow::ResultやSerdeJsonを露出していない（ドメインDTO/専用エラー型のみ）
+- [ ] AC-18: AppEvent.call_idがCallId型になっている（String固定が解消）
 
 ---
 
@@ -445,6 +501,10 @@ impl HttpIngestAdapter {
   - **決定: B) 修正する** - AppEvent を ports/ または session::events へ移動
 - [x] Q4: IngestPort を ports/ に寄せる方針で問題ないか？
   - **決定: A) Yes** - IngestPort を ports/ に移動し、http 側は adapter として実装
+- [x] Q5: session → recording 直参照の設計意図は？
+  - **決定: PoC暫定処置のため撤廃** - StoragePort を ports/ に移動
+- [x] Q6: db::port を db に置く理由は？
+  - **決定: PoC暫定処置のため ports/ へ移動** - PhoneLookupPort を ports/phone_lookup に
 
 ---
 
@@ -472,3 +532,4 @@ impl HttpIngestAdapter {
 | 2026-02-03 | 1.9 | Phase 2 実装（AC-6: SessionRegistry Actor化） | Codex |
 | 2026-02-03 | 2.0 | Phase 2 実装（AC-7: CallId 統一） | Codex |
 | 2026-02-03 | 2.1 | AC-8/9 対応（AsrPort の型設計確認、AiPort 互換削除） | Codex |
+| 2026-02-03 | 2.2 | Phase 2 完了後レビュー追記（#14-23）、Phase 2.5 追加、Q5/Q6 決定 | Claude Code |

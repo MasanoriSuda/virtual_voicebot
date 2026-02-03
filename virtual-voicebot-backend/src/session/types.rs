@@ -234,7 +234,7 @@ pub(crate) enum SessState {
 /// use crate::types::{next_session_state, CallId, SessState, SessionIn};
 ///
 /// let s = SessState::Idle;
-/// let next = next_session_state(s, &SessionIn::SipInvite { call_id: CallId::new("".to_string()), from: "".into(), to: "".into(), offer: None, session_timer: None });
+/// let next = next_session_state(s, &SessionIn::SipInvite { call_id: CallId::new(""), from: "".into(), to: "".into(), offer: None, session_timer: None });
 /// assert_eq!(next, SessState::Early);
 /// ```
 pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
