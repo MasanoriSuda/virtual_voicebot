@@ -2,6 +2,7 @@
 
 pub mod b2bua;
 mod capture;
+pub mod coordinator;
 pub mod ingest_manager;
 pub mod recording_manager;
 pub mod rtp_stream_manager;
