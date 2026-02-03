@@ -47,6 +47,8 @@ impl IngestPort for HttpIngestPort {
                 .json(&payload_json)
                 .send()
                 .await
+                .map_err(|e| IngestError::Transport(e.to_string()))?
+                .error_for_status()
                 .map_err(|e| IngestError::Transport(e.to_string()))?;
             Ok(())
         })
