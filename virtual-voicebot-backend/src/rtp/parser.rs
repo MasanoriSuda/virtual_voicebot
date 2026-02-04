@@ -54,11 +54,11 @@ pub fn parse_rtp_packet(buf: &[u8]) -> Result<RtpPacket, RtpParseError> {
 
     let mut payload_end = buf.len();
     if padding {
-        if payload_end == 0 {
+        if payload_end <= offset {
             return Err(RtpParseError::TooShort);
         }
         let pad_len = buf[payload_end - 1] as usize;
-        if pad_len > payload_end.saturating_sub(offset) {
+        if pad_len == 0 || pad_len > payload_end - offset {
             return Err(RtpParseError::TooShort);
         }
         payload_end -= pad_len;
