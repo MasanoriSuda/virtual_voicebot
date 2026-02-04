@@ -57,6 +57,8 @@ async fn main() -> anyhow::Result<()> {
     ai::intent::init_intent_prompt();
 
     let cfg = config::Config::from_env()?;
+    let app_cfg = config::AppRuntimeConfig::from_env();
+    let session_cfg = Arc::new(config::SessionRuntimeConfig::from_env(&cfg));
     let sip_bind_ip = cfg.sip_bind_ip;
     let sip_port = cfg.sip_port;
     let rtp_port_cfg = cfg.rtp_port;
@@ -195,6 +197,7 @@ async fn main() -> anyhow::Result<()> {
                                 ai_port.clone(),
                                 phone_lookup.clone(),
                                 notification_port.clone(),
+                                app_cfg.clone(),
                             );
                             let sess_tx = spawn_session(
                                 call_id.clone(),
@@ -209,6 +212,7 @@ async fn main() -> anyhow::Result<()> {
                                 recording_base_url,
                                 ingest_port.clone(),
                                 storage_port.clone(),
+                                session_cfg.clone(),
                             )
                             .await;
 

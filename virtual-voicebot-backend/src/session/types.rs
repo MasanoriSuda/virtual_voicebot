@@ -234,7 +234,7 @@ pub(crate) enum SessState {
 /// use crate::types::{next_session_state, CallId, SessState, SessionIn};
 ///
 /// let s = SessState::Idle;
-/// let next = next_session_state(s, &SessionIn::SipInvite { call_id: CallId::new(""), from: "".into(), to: "".into(), offer: None, session_timer: None });
+/// let next = next_session_state(s, &SessionIn::SipInvite { call_id: CallId::new("call-1").unwrap(), from: "".into(), to: "".into(), offer: None, session_timer: None });
 /// assert_eq!(next, SessState::Early);
 /// ```
 pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
@@ -263,6 +263,11 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Clone)]
+/// SessionRegistry keeps the active session channels keyed by CallId.
+///
+/// Register immediately after spawning a session and unregister on termination
+/// (e.g., after BYE/CANCEL handling or when the session task exits) to avoid
+/// stale entries or duplicate registrations.
 pub struct SessionRegistry {
     tx: mpsc::Sender<RegistryCommand>,
 }

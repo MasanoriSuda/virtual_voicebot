@@ -2,7 +2,6 @@ use chrono::{Local, Timelike};
 use tokio::sync::oneshot;
 
 use super::super::SessionCoordinator;
-use crate::config;
 use crate::session::types::{IvrState, SessionIn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +45,7 @@ pub(crate) fn get_intro_wav_path() -> &'static str {
 
 impl SessionCoordinator {
     pub(crate) fn start_ivr_timeout(&mut self) {
-        let timeout = config::ivr_timeout();
+        let timeout = self.runtime_cfg.ivr_timeout;
         let (stop_tx, mut stop_rx) = oneshot::channel();
         let tx = self.tx_in.clone();
         self.ivr_timeout_stop = Some(stop_tx);

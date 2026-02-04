@@ -92,6 +92,32 @@
 - session → recording 直参照 → **撤廃**（StoragePort を ports/ に移動）
 - db::port を db に置く → **ports/ へ移動**（PhoneLookupPort を ports/phone_lookup に）
 
+### 2.5 Phase 3 準備レビュー（Codex 2026-02-03）
+
+**指摘（重大）**
+
+| # | 指摘 | 根拠 | 方向性 |
+|---|------|------|--------|
+| 24 | session が依然として巨大かつ責務集中、再肥大化リスク | coordinator.rs, mod.rs | state_machine 純化、handler 責務分離をもう一段進める |
+| 19 | config のグローバル状態が多い（テスト困難・再現性低下） | config.rs | composition root で読み込み、Config を引数で渡す範囲を増やす |
+
+**指摘（中）**
+
+| # | 指摘 | 根拠 | 方向性 |
+|---|------|------|--------|
+| 22 | CallId の型安全性が不十分（空文字許容） | identifiers.rs | CallId::new を Result にしてバリデーション追加 |
+| 25 | recording 周りの非同期処理でエラーが握り潰されやすい | recording_manager.rs | merge/copy/stop の失敗をメトリクス or エラー集約に寄せる |
+| 26 | anyhow がドメイン層に残存している箇所がある | recording_manager.rs, message.rs | 「ドメインに近い層」から専用エラー型に置換 |
+| 27 | App層のAI処理が一箇所に集中しすぎてテストしにくい | mod.rs | 意図判定・ルーティング・応答生成をユースケース関数に分離 |
+
+**指摘（軽）**
+
+| # | 指摘 | 根拠 | 方向性 |
+|---|------|------|--------|
+| 28 | ログメッセージが大量でノイズになりやすい | mod.rs | info/debug の整理、重要イベントのみ info へ |
+| 6 | RTP parser の仕様逸脱が残っている | parser.rs | CSRC/extension 対応を追加 |
+| 29 | SessionRegistry でActor化は済んだがアクセスパターン設計意図が薄い | types.rs | register/unregister 規約をコメントで明確化 |
+
 ---
 
 ## 3. 現状と理想の対比
@@ -440,15 +466,32 @@ impl HttpIngestAdapter {
 | 18 | Port境界からanyhow/serde_json排除 | infra型漏れ（中） | 中 |
 | 21 | AppEvent.call_id を CallId 型に | 型安全性（中） | 小 |
 
-### Phase 3: 将来対応可
+### Phase 3: アーキテクチャ深化（規模拡大前に対応推奨）
+
+**重大**
 
 | # | 対応 | 理由 | 工数目安 |
 |---|------|------|---------|
-| 6 | RTP parser 改修 | 現時点で動作に影響なし | 小 |
-| 7-10 | 追加改善 | 長期的な保守性向上 | 中 |
-| 19 | OnceLock グローバル状態解消 | テスト再現性（中） | 中 |
-| 20 | Arc<Mutex<HashMap>> 設計明確化 | 並行設計意図（中） | 小 |
-| 22 | CallId バリデーション追加 | 不変条件（軽） | 小 |
+| 24 | session 責務の更なる分離（state_machine 純化、handler 責務分離） | 再肥大化防止（重大） | 大 |
+| 19 | config グローバル状態解消（Config を composition root で注入） | テスト再現性（重大） | 中 |
+
+**中**
+
+| # | 対応 | 理由 | 工数目安 |
+|---|------|------|---------|
+| 22 | CallId バリデーション追加（CallId::new を Result に） | 型安全性（中） | 小 |
+| 25 | recording 非同期エラーの集約（merge/copy/stop 失敗をメトリクス化） | エラー可視化（中） | 小 |
+| 26 | anyhow ドメイン層残存箇所の専用エラー型置換 | エラー型一貫性（中） | 中 |
+| 27 | App層AI処理の分離（意図判定/ルーティング/応答生成をユースケース関数に） | テスタビリティ（中） | 中 |
+
+**軽**
+
+| # | 対応 | 理由 | 工数目安 |
+|---|------|------|---------|
+| 6 | RTP parser 改修（CSRC/extension 対応） | 仕様準拠（軽） | 小 |
+| 28 | ログ info/debug 整理（重要イベントのみ info） | ノイズ削減（軽） | 小 |
+| 29 | SessionRegistry アクセスパターン規約コメント追加 | 設計意図明確化（軽） | 小 |
+| 20 | Arc<Mutex<HashMap>> 設計明確化 | 並行設計意図（軽） | 小 |
 | 23 | AiServices 分割 | 境界責務（軽） | 小 |
 
 ---
@@ -479,12 +522,47 @@ impl HttpIngestAdapter {
 
 ### Phase 2.5（PoC暫定処置解消）
 
-- [ ] AC-13: LINE通知がports::notificationのtraitを経由している（notification.rs内のreqwest直接利用が解消）
-- [ ] AC-14: session層がrecording層に直接依存していない（StoragePortがports/に移動）
-- [ ] AC-15: PIIがログにマスクされて出力される（ユーザー発話・電話番号が伏字）
-- [ ] AC-16: PhoneLookupPortがports/phone_lookupに定義されている（db層はadapter実装のみ）
-- [ ] AC-17: Port境界がanyhow::ResultやSerdeJsonを露出していない（ドメインDTO/専用エラー型のみ）
-- [ ] AC-18: AppEvent.call_idがCallId型になっている（String固定が解消）
+- [x] AC-13: LINE通知がports::notificationのtraitを経由している（notification.rs内のreqwest直接利用が解消）
+- [x] AC-14: session層がrecording層に直接依存していない（StoragePortがports/に移動）
+- [x] AC-15: PIIがログにマスクされて出力される（ユーザー発話・電話番号が伏字）
+- [x] AC-16: PhoneLookupPortがports/phone_lookupに定義されている（db層はadapter実装のみ）
+- [x] AC-17: Port境界がanyhow::ResultやSerdeJsonを露出していない（ドメインDTO/専用エラー型のみ）
+- [x] AC-18: AppEvent.call_idがCallId型になっている（String固定が解消）
+
+### Phase 3（アーキテクチャ深化）
+
+**重大**
+- [ ] AC-19: session/state_machine が純粋な状態遷移のみを担当（IO非依存）
+  - 根拠: coordinator.rs, mod.rs
+  - 方向性: state_machine 純化、handler 責務分離をもう一段進める
+- [ ] AC-20: Config がグローバル状態でなく、必要箇所に引数で注入されている
+  - 根拠: config.rs:163,320（OnceLock 複数）
+  - 方向性: composition root で読み込み、Config を引数で渡す範囲を増やす
+
+**中**
+- [ ] AC-21: CallId::new が Result を返しバリデーションされている
+  - 根拠: identifiers.rs:7（空文字許容）
+  - 方向性: Result<CallId, CallIdError> でバリデーション追加
+- [ ] AC-22: recording 非同期エラーがメトリクスまたはエラー集約に記録される
+  - 根拠: recording_manager.rs（merge/copy/stop の失敗が握り潰される）
+  - 方向性: 失敗をメトリクス or エラー集約に寄せる
+- [ ] AC-23: recording_manager, message 等のドメイン近傍から anyhow が排除されている
+  - 根拠: recording_manager.rs, message.rs
+  - 方向性: 専用エラー型に置換（段階的でOK）
+- [ ] AC-24: App層のAI処理（意図判定/ルーティング/応答生成）がユースケース関数に分離されている
+  - 根拠: app/mod.rs（一箇所に集中しすぎ）
+  - 方向性: 意図判定・ルーティング・応答生成をユースケース関数に分離
+
+**軽**
+- [ ] AC-25: ログ出力が info/debug で整理され、重要イベントのみ info
+  - 根拠: mod.rs（ログメッセージが大量でノイズ）
+  - 方向性: info/debug の整理
+- [ ] AC-26: RTP parser が CSRC/extension に対応している
+  - 根拠: parser.rs（仕様逸脱）
+  - 方向性: CSRC/extension 対応を追加
+- [ ] AC-27: SessionRegistry の register/unregister 規約がコメントで明確化されている
+  - 根拠: types.rs（アクセスパターン設計意図が薄い）
+  - 方向性: どこで register/unregister するかの規約をコメントで明確化
 
 ---
 
@@ -534,3 +612,5 @@ impl HttpIngestAdapter {
 | 2026-02-03 | 2.1 | AC-8/9 対応（AsrPort の型設計確認、AiPort 互換削除） | Codex |
 | 2026-02-03 | 2.2 | Phase 2 完了後レビュー追記（#14-23）、Phase 2.5 追加、Q5/Q6 決定 | Claude Code |
 | 2026-02-03 | 2.3 | BD-003 v2.0 改訂（依存関係図作成、モジュール層対応表追加）、Phase 2.5 実装準備完了 | Claude Code |
+| 2026-02-03 | 2.4 | Phase 3 準備レビュー追記（#24-29: session再分離、config注入、CallId検証、recording/anyhow/AI分離、ログ整理、Registry規約）、AC-19〜27 追加 | Claude Code |
+| 2026-02-03 | 2.5 | Phase 3 AC-19〜27 に根拠・方向性詳細を追加 | Claude Code |

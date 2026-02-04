@@ -12,8 +12,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::Notify;
 use tokio::time::sleep;
 
-use crate::config;
-use crate::config::RegistrarConfig;
+use crate::config::{RegistrarConfig, RegistrarTransport, SessionRuntimeConfig};
 use crate::rtp::codec::{codec_from_pt, decode_to_mulaw};
 use crate::rtp::parser::parse_rtp_packet;
 use crate::session::types::{Sdp, SessionIn};
@@ -71,10 +70,11 @@ impl BLeg {
 pub fn spawn_transfer(
     a_call_id: String,
     tx_in: UnboundedSender<SessionIn>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> tokio::sync::oneshot::Sender<()> {
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        match run_transfer(a_call_id.clone(), tx_in.clone(), cancel_rx).await {
+        match run_transfer(a_call_id.clone(), tx_in.clone(), cancel_rx, runtime_cfg).await {
             Ok(Some(b_leg)) => {
                 let _ = tx_in.send(SessionIn::B2buaEstablished { b_leg });
             }
@@ -96,10 +96,11 @@ pub fn spawn_outbound(
     a_call_id: String,
     number: String,
     tx_in: UnboundedSender<SessionIn>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> tokio::sync::oneshot::Sender<()> {
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        match run_outbound(a_call_id.clone(), number, tx_in.clone(), cancel_rx).await {
+        match run_outbound(a_call_id.clone(), number, tx_in.clone(), cancel_rx, runtime_cfg).await {
             Ok(Some(b_leg)) => {
                 let _ = tx_in.send(SessionIn::B2buaEstablished { b_leg });
             }
@@ -121,18 +122,18 @@ async fn run_transfer(
     a_call_id: String,
     tx_in: UnboundedSender<SessionIn>,
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> Result<Option<BLeg>> {
-    let cfg = config::Config::from_env()?;
-    let target_uri = config::transfer_target_uri();
+    let target_uri = runtime_cfg.transfer_target_uri.clone();
     let target_addr = resolve_target_addr(&target_uri)?;
 
-    let sip_port = cfg.sip_port;
-    let via_host = cfg.advertised_ip.clone();
+    let sip_port = runtime_cfg.sip_port;
+    let via_host = runtime_cfg.advertised_ip.clone();
     let via = build_via(via_host.as_str(), sip_port);
     let local_tag = generate_tag();
     let from_header = format!(
         "<sip:rustbot@{}:{}>;tag={}",
-        cfg.advertised_ip, sip_port, local_tag
+        runtime_cfg.advertised_ip, sip_port, local_tag
     );
     let to_header = format!("<{}>", target_uri);
     let b_call_id = format!("b2bua-{}-{}", a_call_id, rand::thread_rng().gen::<u32>());
@@ -140,7 +141,7 @@ async fn run_transfer(
 
     let rtp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
     let rtp_port = rtp_socket.local_addr()?.port();
-    let sdp = build_sdp(cfg.advertised_ip.as_str(), rtp_port);
+    let sdp = build_sdp(runtime_cfg.advertised_ip.as_str(), rtp_port);
 
     let cseq: u32 = 1;
     let invite = SipRequestBuilder::new(SipMethod::Invite, target_uri.clone())
@@ -152,7 +153,7 @@ async fn run_transfer(
         .header("CSeq", format!("{cseq} INVITE"))
         .header(
             "Contact",
-            format!("<sip:rustbot@{}:{}>", cfg.advertised_ip, sip_port),
+            format!("<sip:rustbot@{}:{}>", runtime_cfg.advertised_ip, sip_port),
         )
         .body(sdp.as_bytes(), Some("application/sdp"))
         .build();
@@ -160,7 +161,7 @@ async fn run_transfer(
     log_invite("transfer", target_addr, &invite);
     send_b2bua_payload(TransportPeer::Udp(target_addr), invite.to_bytes())?;
 
-    let timeout = config::transfer_timeout();
+    let timeout = runtime_cfg.transfer_timeout;
     let timeout_sleep = sleep(timeout);
     tokio::pin!(timeout_sleep);
     let mut provisional_received = false;
@@ -393,27 +394,29 @@ async fn run_outbound(
     number: String,
     tx_in: UnboundedSender<SessionIn>,
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> Result<Option<BLeg>> {
-    let registrar =
-        config::registrar_config().ok_or_else(|| anyhow!("missing registrar config"))?;
+    let registrar = runtime_cfg
+        .registrar
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing registrar config"))?;
     if registrar.auth_password.is_none() {
         return Err(anyhow!("missing registrar auth password"));
     }
-    if registrar.transport != crate::config::RegistrarTransport::Udp {
+    if registrar.transport != RegistrarTransport::Udp {
         return Err(anyhow!("outbound transport must be UDP"));
     }
 
-    let outbound_cfg = config::outbound_config();
+    let outbound_cfg = &runtime_cfg.outbound;
     let outbound_domain = outbound_cfg.domain.clone();
     if outbound_domain.is_empty() {
         return Err(anyhow!("missing outbound domain"));
     }
 
-    let cfg = config::Config::from_env()?;
     let request_uri = format!("sip:{}@{}", number, outbound_domain);
     let sip_peer = registrar.addr;
 
-    let sip_port = cfg.sip_port;
+    let sip_port = runtime_cfg.sip_port;
     let from_header = format!(
         "<sip:{}@{}>;tag={}",
         registrar.user,
@@ -427,7 +430,7 @@ async fn run_outbound(
 
     let rtp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
     let rtp_port = rtp_socket.local_addr()?.port();
-    let sdp = build_sdp(cfg.advertised_ip.as_str(), rtp_port);
+    let sdp = build_sdp(runtime_cfg.advertised_ip.as_str(), rtp_port);
 
     let mut cseq: u32 = 1;
     let mut auth_attempts: u32 = 0;
@@ -470,7 +473,7 @@ async fn run_outbound(
     let mut rtp_guard = RtpListenerGuard::new(shutdown.clone(), shutdown_notify.clone());
     rtp_guard.start(a_call_id.as_str(), rtp_socket.clone(), tx_in.clone());
 
-    let timeout = config::transfer_timeout();
+    let timeout = runtime_cfg.transfer_timeout;
     let timeout_sleep = sleep(timeout);
     tokio::pin!(timeout_sleep);
     let mut provisional_received = false;

@@ -60,7 +60,7 @@ mod tests {
     fn process_event_emits_transition() {
         let sm = SessionStateMachine::new();
         let event = SessionIn::SipInvite {
-            call_id: CallId::new("call".to_string()),
+            call_id: CallId::new("call".to_string()).expect("valid test call id"),
             from: "from".to_string(),
             to: "to".to_string(),
             offer: super::super::types::Sdp::pcmu("127.0.0.1", 10000),

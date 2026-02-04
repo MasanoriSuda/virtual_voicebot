@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use thiserror::Error;
+
 #[derive(Debug, Clone)]
 // Request or Response の種別
 pub enum SipMessage {
@@ -64,26 +66,26 @@ impl SipRequest {
     }
 
     /// よく使う基本ヘッダを構造化して返す（存在しない場合は Err）
-    pub fn core_headers(&self) -> anyhow::Result<CoreHeaders> {
+    pub fn core_headers(&self) -> Result<CoreHeaders, SipHeaderError> {
         let via = self
             .header_value("Via")
-            .ok_or_else(|| anyhow::anyhow!("missing Via"))?
+            .ok_or(SipHeaderError::MissingHeader("Via"))?
             .to_string();
         let from = self
             .header_value("From")
-            .ok_or_else(|| anyhow::anyhow!("missing From"))?
+            .ok_or(SipHeaderError::MissingHeader("From"))?
             .to_string();
         let to = self
             .header_value("To")
-            .ok_or_else(|| anyhow::anyhow!("missing To"))?
+            .ok_or(SipHeaderError::MissingHeader("To"))?
             .to_string();
         let call_id = self
             .header_value("Call-ID")
-            .ok_or_else(|| anyhow::anyhow!("missing Call-ID"))?
+            .ok_or(SipHeaderError::MissingHeader("Call-ID"))?
             .to_string();
         let cseq_raw = self
             .header_value("CSeq")
-            .ok_or_else(|| anyhow::anyhow!("missing CSeq"))?;
+            .ok_or(SipHeaderError::MissingHeader("CSeq"))?;
         let (cseq_num, cseq_method) = parse_cseq(cseq_raw)?;
 
         Ok(CoreHeaders {
@@ -107,18 +109,26 @@ pub struct CoreHeaders {
     pub cseq_method: String,
 }
 
-fn parse_cseq(raw: &str) -> anyhow::Result<(u32, String)> {
+fn parse_cseq(raw: &str) -> Result<(u32, String), SipHeaderError> {
     let mut parts = raw.split_whitespace();
     let num_str = parts
         .next()
-        .ok_or_else(|| anyhow::anyhow!("CSeq missing number"))?;
+        .ok_or(SipHeaderError::InvalidCSeq("missing number"))?;
     let method = parts
         .next()
-        .ok_or_else(|| anyhow::anyhow!("CSeq missing method"))?;
+        .ok_or(SipHeaderError::InvalidCSeq("missing method"))?;
     let num: u32 = num_str
         .parse()
-        .map_err(|_| anyhow::anyhow!("invalid CSeq number"))?;
+        .map_err(|_| SipHeaderError::InvalidCSeq("invalid number"))?;
     Ok((num, method.to_string()))
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum SipHeaderError {
+    #[error("missing header: {0}")]
+    MissingHeader(&'static str),
+    #[error("invalid CSeq: {0}")]
+    InvalidCSeq(&'static str),
 }
 
 #[derive(Debug, Clone)]

@@ -12,7 +12,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use crate::app::router::{
     parse_intent_json, router_config, system_info_response, RouteAction, Router,
 };
-use crate::config;
+use crate::config::AppRuntimeConfig;
 use crate::ports::notification::{NotificationFuture, NotificationService as NotificationPort};
 use crate::ports::phone_lookup::PhoneLookupPort;
 use crate::ports::ai::{AiServices, AsrChunk, ChatMessage, Role, SerInputPcm, WeatherQuery};
@@ -75,14 +75,16 @@ const SPEC_FILTER_KEYWORDS: [&str; 21] = [
 /// let ai_port: std::sync::Arc<dyn AiServices> = /* ... */;
 /// let phone_lookup: std::sync::Arc<dyn PhoneLookupPort> = /* ... */;
 /// let notification_port: std::sync::Arc<dyn NotificationPort> = /* ... */;
+/// let app_cfg = crate::config::AppRuntimeConfig::from_env();
 /// let tx: UnboundedSender<AppEvent> = spawn_app_worker(
-///     crate::session::types::CallId::new("call-123"),
+///     crate::session::types::CallId::new("call-123").unwrap(),
 ///     session_tx,
 ///     ai_port,
 ///     phone_lookup,
 ///     notification_port,
+///     app_cfg,
 /// );
-/// tx.send(AppEvent::CallStarted { call_id: CallId::new("call-123"), caller: None }).unwrap();
+/// tx.send(AppEvent::CallStarted { call_id: CallId::new("call-123").unwrap(), caller: None }).unwrap();
 /// ```
 pub fn spawn_app_worker(
     call_id: CallId,
@@ -90,6 +92,7 @@ pub fn spawn_app_worker(
     ai_port: Arc<dyn AiServices>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
     notification_port: Arc<dyn NotificationPort>,
+    app_cfg: AppRuntimeConfig,
 ) -> UnboundedSender<AppEvent> {
     let (tx, rx) = unbounded_channel();
     let worker = AppWorker::new(
@@ -99,6 +102,7 @@ pub fn spawn_app_worker(
         ai_port,
         phone_lookup,
         notification_port,
+        app_cfg,
     );
     tokio::spawn(async move { worker.run().await });
     tx
@@ -115,6 +119,7 @@ struct AppWorker {
     router: Router,
     notification_port: Arc<dyn NotificationPort>,
     notification_state: NotificationState,
+    app_cfg: AppRuntimeConfig,
 }
 
 #[derive(Debug, Default)]
@@ -196,8 +201,8 @@ impl AppWorker {
     ///
 
     /// let worker = crate::app::AppWorker::new(
-
-    ///     crate::session::types::CallId::new("call-123"),
+    ///
+    ///     crate::session::types::CallId::new("call-123").unwrap(),
 
     ///     session_tx,
 
@@ -219,6 +224,7 @@ impl AppWorker {
         ai_port: Arc<dyn AiServices>,
         phone_lookup: Arc<dyn PhoneLookupPort>,
         notification_port: Arc<dyn NotificationPort>,
+        app_cfg: AppRuntimeConfig,
     ) -> Self {
         Self {
             call_id,
@@ -231,6 +237,7 @@ impl AppWorker {
             router: Router::new(),
             notification_port,
             notification_state: NotificationState::default(),
+            app_cfg,
         }
     }
 
@@ -279,13 +286,13 @@ impl AppWorker {
                     self.active = true;
                     let caller_display = caller.as_deref().filter(|value| !value.trim().is_empty());
                     if let Some(value) = caller_display {
-                        log::info!(
+                        log::debug!(
                             "[app {}] caller extracted={}",
                             self.call_id,
                             mask_phone(value)
                         );
                     } else {
-                        log::info!("[app {}] caller missing", self.call_id);
+                        log::debug!("[app {}] caller missing", self.call_id);
                     }
                     self.handle_phone_lookup(caller).await;
                 }
@@ -357,7 +364,7 @@ impl AppWorker {
     /// // `worker` is an instance of the surrounding type that provides `handle_audio_buffer`.
     /// // This example demonstrates the call pattern; constructing a full `AppWorker` requires
     /// // multiple dependencies not shown here.
-    /// let call_id = CallId::new("call-123");
+    /// let call_id = CallId::new("call-123").unwrap();
     /// let pcm_mulaw: Vec<u8> = vec![]; // mu-law encoded bytes from the session
     /// let pcm_linear16: Vec<i16> = vec![]; // linear16 PCM samples for SER
     /// // await the handler
@@ -370,43 +377,8 @@ impl AppWorker {
         pcm_mulaw: Vec<u8>,
         pcm_linear16: Vec<i16>,
     ) -> anyhow::Result<()> {
-        // ASR: チャンクI/F（1チャンクのみだが将来拡張用）
-        let asr_chunks = vec![AsrChunk {
-            pcm_mulaw,
-            end: true,
-        }];
-        let call_id_str = call_id.to_string();
-        let user_text = match self
-            .ai_port
-            .transcribe_chunks(call_id_str.clone(), asr_chunks)
-            .await
-        {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("[app {call_id}] ASR failed: {e:?}");
-                "すみません、聞き取れませんでした。".to_string()
-            }
-        };
-
-        let ser_input = SerInputPcm {
-            session_id: call_id_str,
-            stream_id: "main".to_string(),
-            pcm: pcm_linear16,
-            sample_rate: 8000,
-            channels: 1,
-        };
-        match self.ai_port.analyze(ser_input).await {
-            Ok(result) => {
-                log::info!(
-                    "[app {call_id}] ser emotion={:?} confidence={:.2}",
-                    result.emotion,
-                    result.confidence
-                );
-            }
-            Err(err) => {
-                log::warn!("[app {call_id}] SER failed: {err}");
-            }
-        }
+        let user_text = self.transcribe_asr(call_id, pcm_mulaw).await;
+        self.analyze_ser(call_id, pcm_linear16).await;
 
         let trimmed = user_text.trim();
         if trimmed.is_empty() {
@@ -420,6 +392,51 @@ impl AppWorker {
             return Ok(());
         }
 
+        self.handle_user_text(call_id, trimmed).await
+    }
+
+    async fn transcribe_asr(&self, call_id: &CallId, pcm_mulaw: Vec<u8>) -> String {
+        let asr_chunks = vec![AsrChunk {
+            pcm_mulaw,
+            end: true,
+        }];
+        let call_id_str = call_id.to_string();
+        match self
+            .ai_port
+            .transcribe_chunks(call_id_str, asr_chunks)
+            .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("[app {call_id}] ASR failed: {e:?}");
+                "すみません、聞き取れませんでした。".to_string()
+            }
+        }
+    }
+
+    async fn analyze_ser(&self, call_id: &CallId, pcm_linear16: Vec<i16>) {
+        let ser_input = SerInputPcm {
+            session_id: call_id.to_string(),
+            stream_id: "main".to_string(),
+            pcm: pcm_linear16,
+            sample_rate: 8000,
+            channels: 1,
+        };
+        match self.ai_port.analyze(ser_input).await {
+            Ok(result) => {
+                log::debug!(
+                    "[app {call_id}] ser emotion={:?} confidence={:.2}",
+                    result.emotion,
+                    result.confidence
+                );
+            }
+            Err(err) => {
+                log::warn!("[app {call_id}] SER failed: {err}");
+            }
+        }
+    }
+
+    async fn handle_user_text(&mut self, call_id: &CallId, trimmed: &str) -> anyhow::Result<()> {
         if is_spec_question(trimmed) {
             log::warn!(
                 "[security] spec question blocked: call_id={} input={}",
@@ -452,7 +469,7 @@ impl AppWorker {
         };
         let intent_result = parse_intent_json(&intent_json, trimmed);
         let intent_json_len = intent_json.chars().count();
-        log::info!(
+        log::debug!(
             "[app {call_id}] intent classified={} raw_len={}",
             intent_result.raw_intent,
             intent_json_len
@@ -684,18 +701,18 @@ impl AppWorker {
     /// worker.handle_phone_lookup(None).await;
     /// ```
     async fn handle_phone_lookup(&mut self, caller: Option<String>) {
-        if !config::phone_lookup_enabled() {
-            log::info!("[app {}] phone lookup disabled", self.call_id);
+        if !self.app_cfg.phone_lookup_enabled {
+            log::debug!("[app {}] phone lookup disabled", self.call_id);
             return;
         }
         let Some(caller) = caller.filter(|v| !v.trim().is_empty()) else {
-            log::info!("[app {}] caller missing, skip lookup", self.call_id);
+            log::debug!("[app {}] caller missing, skip lookup", self.call_id);
             return;
         };
         let caller_masked = mask_phone(&caller);
         match self.phone_lookup.lookup_phone(caller.clone()).await {
             Ok(Some(result)) => {
-                log::info!(
+                log::debug!(
                     "[app {}] phone lookup found caller={} ivr_enabled={}",
                     self.call_id,
                     caller_masked,
@@ -703,7 +720,7 @@ impl AppWorker {
                 );
             }
             Ok(None) => {
-                log::info!(
+                log::debug!(
                     "[app {}] phone lookup not found caller={} (default ivr enabled)",
                     self.call_id,
                     caller_masked

@@ -17,6 +17,50 @@ pub struct Config {
     pub recording_base_url: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct AppRuntimeConfig {
+    pub phone_lookup_enabled: bool,
+}
+
+impl AppRuntimeConfig {
+    pub fn from_env() -> Self {
+        Self {
+            phone_lookup_enabled: env_bool("PHONE_LOOKUP_ENABLED", false),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionRuntimeConfig {
+    pub vad: VadConfig,
+    pub ring_duration: Duration,
+    pub ivr_timeout: Duration,
+    pub transfer_target_uri: String,
+    pub transfer_timeout: Duration,
+    pub registrar: Option<RegistrarConfig>,
+    pub outbound: OutboundConfig,
+    pub advertised_ip: String,
+    pub sip_port: u16,
+}
+
+impl SessionRuntimeConfig {
+    pub fn from_env(base: &Config) -> Self {
+        let registrar = RegistrarConfig::from_env();
+        let outbound = OutboundConfig::from_env_with(registrar.as_ref());
+        Self {
+            vad: VadConfig::from_env(),
+            ring_duration: ring_duration_from_env(),
+            ivr_timeout: Duration::from_secs(env_u64("IVR_TIMEOUT_SEC", 10)),
+            transfer_target_uri: transfer_target_uri_from_env(),
+            transfer_timeout: Duration::from_secs(env_u64("TRANSFER_TIMEOUT_SEC", 30)),
+            registrar,
+            outbound,
+            advertised_ip: base.advertised_ip.clone(),
+            sip_port: base.sip_port,
+        }
+    }
+}
+
 impl Config {
     /// Create a Config populated from environment variables, falling back to sensible defaults when keys are absent.
     ///
@@ -89,7 +133,7 @@ pub struct TlsSettings {
 }
 
 impl TlsSettings {
-    fn from_env() -> Option<Self> {
+    pub fn from_env() -> Option<Self> {
         let cert_path = env_non_empty("TLS_CERT_PATH")?;
         let key_path = env_non_empty("TLS_KEY_PATH")?;
         let bind_ip = std::env::var("SIP_BIND_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
@@ -169,34 +213,36 @@ pub fn session_config() -> &'static SessionConfig {
 static RING_DURATION: OnceLock<Duration> = OnceLock::new();
 
 pub fn ring_duration() -> Duration {
-    *RING_DURATION.get_or_init(|| {
-        const DEFAULT_MS: u64 = 3000;
-        const MAX_MS: u64 = 10_000;
-        let raw = std::env::var("RING_DURATION_MS").ok();
-        let mut ms = match raw.as_deref() {
-            Some(value) => match value.trim().parse::<u64>() {
-                Ok(v) => v,
-                Err(_) => {
-                    log::warn!(
-                        "[config] invalid RING_DURATION_MS={}, fallback to {}",
-                        value,
-                        DEFAULT_MS
-                    );
+    *RING_DURATION.get_or_init(ring_duration_from_env)
+}
+
+fn ring_duration_from_env() -> Duration {
+    const DEFAULT_MS: u64 = 3000;
+    const MAX_MS: u64 = 10_000;
+    let raw = std::env::var("RING_DURATION_MS").ok();
+    let mut ms = match raw.as_deref() {
+        Some(value) => match value.trim().parse::<u64>() {
+            Ok(v) => v,
+            Err(_) => {
+                log::warn!(
+                    "[config] invalid RING_DURATION_MS={}, fallback to {}",
+                    value,
                     DEFAULT_MS
-                }
-            },
-            None => DEFAULT_MS,
-        };
-        if ms > MAX_MS {
-            log::warn!(
-                "[config] RING_DURATION_MS={} exceeds max {}, clamped",
-                ms,
-                MAX_MS
-            );
-            ms = MAX_MS;
-        }
-        Duration::from_millis(ms)
-    })
+                );
+                DEFAULT_MS
+            }
+        },
+        None => DEFAULT_MS,
+    };
+    if ms > MAX_MS {
+        log::warn!(
+            "[config] RING_DURATION_MS={} exceeds max {}, clamped",
+            ms,
+            MAX_MS
+        );
+        ms = MAX_MS;
+    }
+    Duration::from_millis(ms)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -356,12 +402,12 @@ pub struct OutboundConfig {
 }
 
 impl OutboundConfig {
-    fn from_env() -> Self {
+    fn from_env_with(registrar: Option<&RegistrarConfig>) -> Self {
         let enabled = env_bool("OUTBOUND_ENABLED", false);
         let default_number = env_non_empty("OUTBOUND_DEFAULT_NUMBER");
         let dial_plan = load_dial_plan();
         let domain = env_non_empty("OUTBOUND_DOMAIN")
-            .or_else(|| registrar_config().map(|cfg| cfg.domain.clone()))
+            .or_else(|| registrar.map(|cfg| cfg.domain.clone()))
             .unwrap_or_default();
         if enabled && domain.is_empty() {
             log::warn!("[config] OUTBOUND_ENABLED is true but no outbound domain configured");
@@ -372,6 +418,11 @@ impl OutboundConfig {
             default_number,
             dial_plan,
         }
+    }
+
+    fn from_env() -> Self {
+        let registrar = registrar_config();
+        Self::from_env_with(registrar)
     }
 
     pub fn resolve_number(&self, user: &str) -> Option<String> {
@@ -562,11 +613,13 @@ static TRANSFER_TARGET_URI: OnceLock<String> = OnceLock::new();
 
 pub fn transfer_target_uri() -> String {
     TRANSFER_TARGET_URI
-        .get_or_init(|| {
-            std::env::var("TRANSFER_TARGET_SIP_URI")
-                .unwrap_or_else(|_| "sip:zoiper@192.168.1.4:8000".to_string())
-        })
+        .get_or_init(transfer_target_uri_from_env)
         .clone()
+}
+
+fn transfer_target_uri_from_env() -> String {
+    std::env::var("TRANSFER_TARGET_SIP_URI")
+        .unwrap_or_else(|_| "sip:zoiper@192.168.1.4:8000".to_string())
 }
 
 static TRANSFER_TIMEOUT: OnceLock<Duration> = OnceLock::new();

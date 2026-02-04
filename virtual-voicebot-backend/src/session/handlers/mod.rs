@@ -8,7 +8,6 @@ use tokio::time::Instant;
 use super::services::ivr_service::{ivr_action_for_digit, ivr_state_after_action, IvrAction};
 use super::SessionCoordinator;
 use crate::ports::app::{AppEvent, EndReason};
-use crate::config;
 use crate::rtp::codec::mulaw_to_linear16;
 use crate::session::b2bua;
 use crate::session::types::{
@@ -39,9 +38,9 @@ impl SessionCoordinator {
                 self.outbound_sent_183 = false;
                 self.invite_rejected = false;
                 self.stop_ring_delay();
-                if config::outbound_config().enabled {
-                    let outbound_cfg = config::outbound_config();
-                    let registrar = config::registrar_config();
+                if self.runtime_cfg.outbound.enabled {
+                    let outbound_cfg = &self.runtime_cfg.outbound;
+                    let registrar = self.runtime_cfg.registrar.as_ref();
                     let user =
                         sip_handler::extract_user_from_to(self.to_uri.as_str()).unwrap_or_default();
                     let skip_outbound = registrar.map(|cfg| cfg.user == user).unwrap_or(false);
@@ -70,6 +69,7 @@ impl SessionCoordinator {
                                     self.call_id.to_string(),
                                     number,
                                     self.tx_in.clone(),
+                                    self.runtime_cfg.clone(),
                                 ));
                             }
                         }
@@ -89,7 +89,7 @@ impl SessionCoordinator {
                             from,
                             timestamp: sip_handler::now_jst(),
                         });
-                        let ring_duration = config::ring_duration();
+                        let ring_duration = self.runtime_cfg.ring_duration;
                         if ring_duration.is_zero() {
                             let _ = self
                                 .session_out_tx
@@ -269,6 +269,7 @@ impl SessionCoordinator {
                         self.transfer_cancel = Some(b2bua::spawn_transfer(
                             self.call_id.to_string(),
                             self.tx_in.clone(),
+                            self.runtime_cfg.clone(),
                         ));
                     }
                     IvrAction::ReplayMenu => {
@@ -544,6 +545,7 @@ impl SessionCoordinator {
                 self.transfer_cancel = Some(b2bua::spawn_transfer(
                     self.call_id.to_string(),
                     self.tx_in.clone(),
+                    self.runtime_cfg.clone(),
                 ));
             }
             (_, SessionIn::SipSessionExpires { timer }) => {

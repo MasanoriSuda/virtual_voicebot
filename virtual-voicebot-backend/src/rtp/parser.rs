@@ -35,14 +35,36 @@ pub fn parse_rtp_packet(buf: &[u8]) -> Result<RtpPacket, RtpParseError> {
     let timestamp = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
     let ssrc = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
 
-    // v1では csrc_count と extension は無視して payload をそのまま残り全部とする
-    // TODO: csrc_count > 0 や extension = true のときに対応する
-    let header_len = 12; // いまは固定
-    if buf.len() < header_len {
+    let csrc_len = csrc_count as usize * 4;
+    let mut offset = 12 + csrc_len;
+    if buf.len() < offset {
         return Err(RtpParseError::TooShort);
     }
 
-    let payload = buf[header_len..].to_vec();
+    if extension {
+        if buf.len() < offset + 4 {
+            return Err(RtpParseError::TooShort);
+        }
+        let ext_len_words = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]) as usize;
+        offset += 4 + ext_len_words * 4;
+        if buf.len() < offset {
+            return Err(RtpParseError::TooShort);
+        }
+    }
+
+    let mut payload_end = buf.len();
+    if padding {
+        if payload_end == 0 {
+            return Err(RtpParseError::TooShort);
+        }
+        let pad_len = buf[payload_end - 1] as usize;
+        if pad_len > payload_end.saturating_sub(offset) {
+            return Err(RtpParseError::TooShort);
+        }
+        payload_end -= pad_len;
+    }
+
+    let payload = buf[offset..payload_end].to_vec();
 
     Ok(RtpPacket {
         version,

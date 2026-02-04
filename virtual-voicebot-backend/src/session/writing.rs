@@ -11,6 +11,7 @@ use crate::ports::storage::StoragePort;
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::types::*;
 use crate::session::{Session, SessionHandle};
+use crate::config::SessionRuntimeConfig;
 
 /// セッションを生成し、SessionOut を上位レイヤに配線する（挙動は従来と同じ）。
 pub fn spawn_call(
@@ -25,6 +26,7 @@ pub fn spawn_call(
     recording_base_url: Option<String>,
     ingest_port: Arc<dyn IngestPort>,
     storage_port: Arc<dyn StoragePort>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> SessionHandle {
     let handle = Session::spawn(
         call_id.clone(),
@@ -38,6 +40,7 @@ pub fn spawn_call(
         recording_base_url,
         ingest_port,
         storage_port,
+        runtime_cfg,
     );
 
     handle
@@ -56,6 +59,7 @@ pub async fn spawn_session(
     recording_base_url: Option<String>,
     ingest_port: Arc<dyn IngestPort>,
     storage_port: Arc<dyn StoragePort>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> tokio::sync::mpsc::UnboundedSender<SessionIn> {
     let handle = spawn_call(
         call_id.clone(),
@@ -69,6 +73,7 @@ pub async fn spawn_session(
         recording_base_url,
         ingest_port,
         storage_port,
+        runtime_cfg,
     );
     // Session manager の薄いラッパ経由で登録
     registry.insert(call_id, handle.tx_in.clone()).await;

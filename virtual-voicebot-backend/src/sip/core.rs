@@ -477,14 +477,14 @@ struct CoreHeaderSnapshot {
 }
 
 impl CoreHeaderSnapshot {
-    fn from_request(req: &SipRequest) -> Self {
-        Self {
+    fn from_request(req: &SipRequest) -> Result<Self, crate::entities::identifiers::CallIdError> {
+        Ok(Self {
             via: req.header_value("Via").unwrap_or("").to_string(),
             from: req.header_value("From").unwrap_or("").to_string(),
             to: req.header_value("To").unwrap_or("").to_string(),
-            call_id: CallId::new(req.header_value("Call-ID").unwrap_or("").to_string()),
+            call_id: CallId::new(req.header_value("Call-ID").unwrap_or("").to_string())?,
             cseq: req.header_value("CSeq").unwrap_or("").to_string(),
-        }
+        })
     }
 }
 
@@ -648,7 +648,13 @@ impl SipCore {
     }
 
     fn handle_request(&mut self, req: SipRequest, peer: TransportPeer) -> Vec<SipEvent> {
-        let headers = CoreHeaderSnapshot::from_request(&req);
+        let headers = match CoreHeaderSnapshot::from_request(&req) {
+            Ok(headers) => headers,
+            Err(err) => {
+                log::warn!("[sip] invalid Call-ID: {}", err);
+                return vec![SipEvent::Unknown];
+            }
+        };
         match req.method {
             SipMethod::Invite => self.handle_invite(req, headers, peer),
             SipMethod::Ack => self.handle_ack(headers.call_id),

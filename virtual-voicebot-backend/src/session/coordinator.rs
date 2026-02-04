@@ -14,7 +14,7 @@ use crate::session::state_machine::{SessionEvent, SessionStateMachine};
 use crate::session::types::Sdp;
 use crate::session::types::*;
 
-use crate::config;
+use crate::config::{self, SessionRuntimeConfig};
 use crate::ports::app::AppEvent;
 use crate::ports::ingest::{IngestPayload, IngestPort, IngestRecording};
 use crate::ports::storage::StoragePort;
@@ -81,6 +81,7 @@ pub struct SessionCoordinator {
     session_out_tx: UnboundedSender<(CallId, SessionOut)>,
     tx_in: UnboundedSender<SessionIn>,
     app_tx: UnboundedSender<AppEvent>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
     media_cfg: MediaConfig,
     rtp: crate::session::rtp_stream_manager::RtpStreamManager,
     recording: crate::session::recording_manager::RecordingManager,
@@ -124,6 +125,7 @@ impl SessionCoordinator {
         recording_base_url: Option<String>,
         ingest_port: Arc<dyn IngestPort>,
         storage_port: Arc<dyn StoragePort>,
+        runtime_cfg: Arc<SessionRuntimeConfig>,
     ) -> SessionHandle {
         let (tx_in, rx_in) = tokio::sync::mpsc::unbounded_channel();
         let call_id_clone = call_id.clone();
@@ -140,6 +142,7 @@ impl SessionCoordinator {
             session_out_tx,
             tx_in: tx_in.clone(),
             app_tx,
+            runtime_cfg: runtime_cfg.clone(),
             media_cfg,
             rtp: crate::session::rtp_stream_manager::RtpStreamManager::new(rtp_tx),
             recording: crate::session::recording_manager::RecordingManager::new(
@@ -153,7 +156,7 @@ impl SessionCoordinator {
             sending_audio: false,
             playback: None,
             speaking: false,
-            capture: AudioCapture::new(config::vad_config().clone()),
+            capture: AudioCapture::new(runtime_cfg.vad.clone()),
             intro_sent: false,
             ivr_state: IvrState::default(),
             ivr_timeout_stop: None,
@@ -315,9 +318,11 @@ mod tests {
         let (session_out_tx, _session_out_rx) = tokio::sync::mpsc::unbounded_channel();
         let (app_tx, _app_rx) = tokio::sync::mpsc::unbounded_channel();
         let (tx_in, _rx_in) = tokio::sync::mpsc::unbounded_channel();
+        let base_cfg = config::Config::from_env().expect("config loads");
+        let runtime_cfg = Arc::new(SessionRuntimeConfig::from_env(&base_cfg));
         SessionCoordinator {
             state_machine: SessionStateMachine::new(),
-            call_id: CallId::new("test-call".to_string()),
+            call_id: CallId::new("test-call".to_string()).expect("valid test call id"),
             from_uri: "sip:from@example.com".to_string(),
             to_uri: "sip:to@example.com".to_string(),
             ingest: crate::session::ingest_manager::IngestManager::new(
@@ -331,6 +336,7 @@ mod tests {
             session_out_tx,
             tx_in,
             app_tx,
+            runtime_cfg: runtime_cfg.clone(),
             media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
             rtp: crate::session::rtp_stream_manager::RtpStreamManager::new(RtpTxHandle::new()),
             recording: crate::session::recording_manager::RecordingManager::new("test-call"),
@@ -342,7 +348,7 @@ mod tests {
             sending_audio: false,
             playback: None,
             speaking: false,
-            capture: AudioCapture::new(config::vad_config().clone()),
+            capture: AudioCapture::new(runtime_cfg.vad.clone()),
             intro_sent: false,
             ivr_state: IvrState::default(),
             ivr_timeout_stop: None,
