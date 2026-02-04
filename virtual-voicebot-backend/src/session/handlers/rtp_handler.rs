@@ -31,7 +31,7 @@ impl SessionCoordinator {
         };
         self.rtp
             .start(self.call_id.to_string(), dst_addr, 0, 0x12345678, 0, 0);
-        let _ = self.session_out_tx.send((
+        let _ = self.session_out_tx.try_send((
             self.call_id.clone(),
             SessionOut::RtpStartTx {
                 dst_ip: ip,

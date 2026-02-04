@@ -1,5 +1,8 @@
 use chrono::{DateTime, FixedOffset};
 use std::fmt;
+use std::sync::Arc;
+
+use tokio::sync::{mpsc, Mutex};
 
 use crate::entities::identifiers::CallId;
 
@@ -70,6 +73,70 @@ impl fmt::Debug for AppEvent {
                 .field("timestamp", timestamp)
                 .finish(),
         }
+    }
+}
+
+/// Bounded channel pair for AppEvent with "latest-wins" semantics for high-volume audio events.
+///
+/// Backpressure policy:
+/// - Control events should use `send` (awaitable).
+/// - Audio events should use `try_send_latest` (drops oldest queued item if full).
+#[derive(Clone)]
+pub struct AppEventTx {
+    tx: mpsc::Sender<AppEvent>,
+    rx: Arc<Mutex<mpsc::Receiver<AppEvent>>>,
+}
+
+pub struct AppEventRx {
+    rx: Arc<Mutex<mpsc::Receiver<AppEvent>>>,
+}
+
+pub fn app_event_channel(capacity: usize) -> (AppEventTx, AppEventRx) {
+    let (tx, rx) = mpsc::channel(capacity);
+    let shared = Arc::new(Mutex::new(rx));
+    (
+        AppEventTx {
+            tx,
+            rx: Arc::clone(&shared),
+        },
+        AppEventRx { rx: shared },
+    )
+}
+
+impl AppEventTx {
+    pub async fn send(&self, event: AppEvent) -> Result<(), mpsc::error::SendError<AppEvent>> {
+        self.tx.send(event).await
+    }
+
+    pub fn try_send(
+        &self,
+        event: AppEvent,
+    ) -> Result<(), mpsc::error::TrySendError<AppEvent>> {
+        self.tx.try_send(event)
+    }
+
+    /// Try to send and, if full, drop one oldest queued event before retrying.
+    pub fn try_send_latest(
+        &self,
+        event: AppEvent,
+    ) -> Result<(), mpsc::error::TrySendError<AppEvent>> {
+        match self.tx.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                if let Ok(mut rx) = self.rx.try_lock() {
+                    let _ = rx.try_recv();
+                }
+                self.tx.try_send(event)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl AppEventRx {
+    pub async fn recv(&self) -> Option<AppEvent> {
+        let mut rx = self.rx.lock().await;
+        rx.recv().await
     }
 }
 

@@ -1,6 +1,6 @@
 // src/rtp/parse.rs
 
-use crate::rtp::packet::RtpPacket;
+use crate::rtp::packet::{RtpExtension, RtpPacket};
 
 #[derive(Debug)]
 pub enum RtpParseError {
@@ -40,16 +40,36 @@ pub fn parse_rtp_packet(buf: &[u8]) -> Result<RtpPacket, RtpParseError> {
     if buf.len() < offset {
         return Err(RtpParseError::TooShort);
     }
+    let mut csrcs = Vec::with_capacity(csrc_count as usize);
+    for i in 0..csrc_count as usize {
+        let start = 12 + i * 4;
+        let csrc = u32::from_be_bytes([
+            buf[start],
+            buf[start + 1],
+            buf[start + 2],
+            buf[start + 3],
+        ]);
+        csrcs.push(csrc);
+    }
+
+    let mut extension_data = None;
 
     if extension {
         if buf.len() < offset + 4 {
             return Err(RtpParseError::TooShort);
         }
+        let ext_profile = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
         let ext_len_words = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]) as usize;
-        offset += 4 + ext_len_words * 4;
-        if buf.len() < offset {
+        let ext_data_start = offset + 4;
+        let ext_data_end = ext_data_start + ext_len_words * 4;
+        if buf.len() < ext_data_end {
             return Err(RtpParseError::TooShort);
         }
+        extension_data = Some(RtpExtension {
+            profile: ext_profile,
+            data: buf[ext_data_start..ext_data_end].to_vec(),
+        });
+        offset = ext_data_end;
     }
 
     let mut payload_end = buf.len();
@@ -69,13 +89,13 @@ pub fn parse_rtp_packet(buf: &[u8]) -> Result<RtpPacket, RtpParseError> {
     Ok(RtpPacket {
         version,
         padding,
-        extension,
-        csrc_count,
         marker,
         payload_type,
         sequence_number,
         timestamp,
         ssrc,
+        csrcs,
+        extension: extension_data,
         payload,
     })
 }

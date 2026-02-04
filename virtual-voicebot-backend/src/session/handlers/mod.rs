@@ -52,7 +52,7 @@ impl SessionCoordinator {
                                 "[session {}] outbound disabled (missing config)",
                                 self.call_id
                             );
-                            let _ = self.session_out_tx.send((
+                            let _ = self.session_out_tx.try_send((
                                 self.call_id.clone(),
                                 SessionOut::SipSendError {
                                     code: 503,
@@ -76,24 +76,45 @@ impl SessionCoordinator {
                     }
                 }
                 if advance_state {
-                    let _ = self
+                    if let Err(err) = self
                         .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::SipSend100));
+                        .try_send((self.call_id.clone(), SessionOut::SipSend100))
+                    {
+                        warn!(
+                            "[session {}] dropped SipSend100 (channel full): {:?}",
+                            self.call_id, err
+                        );
+                    }
                     if !self.outbound_mode {
-                        let _ = self
+                        if let Err(err) = self
                             .session_out_tx
-                            .send((self.call_id.clone(), SessionOut::SipSend180));
+                            .try_send((self.call_id.clone(), SessionOut::SipSend180))
+                        {
+                            warn!(
+                                "[session {}] dropped SipSend180 (channel full): {:?}",
+                                self.call_id, err
+                            );
+                        }
                         let from = sip_handler::extract_notify_from(self.from_uri.as_str());
-                        let _ = self.app_tx.send(AppEvent::CallRinging {
-                            call_id: self.call_id.clone(),
-                            from,
-                            timestamp: sip_handler::now_jst(),
-                        });
+                        let _ = self
+                            .app_tx
+                            .send(AppEvent::CallRinging {
+                                call_id: self.call_id.clone(),
+                                from,
+                                timestamp: sip_handler::now_jst(),
+                            })
+                            .await;
                         let ring_duration = self.runtime_cfg.ring_duration;
                         if ring_duration.is_zero() {
-                            let _ = self
-                                .session_out_tx
-                                .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
+                            if let Err(err) = self.session_out_tx.try_send((
+                                self.call_id.clone(),
+                                SessionOut::SipSend200 { answer },
+                            )) {
+                                warn!(
+                                    "[session {}] dropped SipSend200 (channel full): {:?}",
+                                    self.call_id, err
+                                );
+                            }
                         } else {
                             self.pending_answer = Some(answer);
                             self.start_ring_delay(ring_duration);
@@ -144,10 +165,13 @@ impl SessionCoordinator {
                 self.align_rtp_clock();
 
                 let caller = sip_handler::extract_user_from_to(self.from_uri.as_str());
-                let _ = self.app_tx.send(AppEvent::CallStarted {
-                    call_id: self.call_id.clone(),
-                    caller,
-                });
+                let _ = self
+                    .app_tx
+                    .send(AppEvent::CallStarted {
+                        call_id: self.call_id.clone(),
+                        caller,
+                    })
+                    .await;
 
                 if !self.outbound_mode {
                     self.ivr_state = IvrState::IvrMenuWaiting;
@@ -191,15 +215,20 @@ impl SessionCoordinator {
                         );
                         let pcm_linear16: Vec<i16> =
                             buffer.iter().map(|&b| mulaw_to_linear16(b)).collect();
-                        let _ = self.app_tx.send(AppEvent::AudioBuffered {
+                        if let Err(err) = self.app_tx.try_send_latest(AppEvent::AudioBuffered {
                             call_id: self.call_id.clone(),
                             pcm_mulaw: buffer,
                             pcm_linear16,
-                        });
+                        }) {
+                            warn!(
+                                "[session {}] dropped AudioBuffered event (channel full): {:?}",
+                                self.call_id, err
+                            );
+                        }
                         self.capture.start();
                     }
                 }
-                let _ = self.session_out_tx.send((
+                let _ = self.session_out_tx.try_send((
                     self.call_id.clone(),
                     SessionOut::Metrics {
                         name: "rtp_in",
@@ -330,9 +359,10 @@ impl SessionCoordinator {
                 let _ = self.ensure_a_leg_rtp_started();
                 if self.outbound_mode && !self.outbound_answered {
                     if let Some(answer) = self.local_sdp.clone() {
-                        let _ = self
-                            .session_out_tx
-                            .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
+                        let _ = self.session_out_tx.try_send((
+                            self.call_id.clone(),
+                            SessionOut::SipSend200 { answer },
+                        ));
                         self.outbound_answered = true;
                     }
                 }
@@ -343,7 +373,7 @@ impl SessionCoordinator {
                 self.stop_transfer_announce();
                 if self.outbound_mode {
                     let code = status.unwrap_or(503);
-                    let _ = self.session_out_tx.send((
+                    let _ = self.session_out_tx.try_send((
                         self.call_id.clone(),
                         SessionOut::SipSendError {
                             code,
@@ -466,8 +496,8 @@ impl SessionCoordinator {
                 self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
-                    .send((self.call_id.clone(), SessionOut::RtpStopTx));
-                let _ = self.session_out_tx.send((
+                    .try_send((self.call_id.clone(), SessionOut::RtpStopTx));
+                let _ = self.session_out_tx.try_send((
                     self.call_id.clone(),
                     SessionOut::SipSendError {
                         code: 487,
@@ -488,10 +518,10 @@ impl SessionCoordinator {
                 self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
-                    .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                    .try_send((self.call_id.clone(), SessionOut::RtpStopTx));
                 let _ = self
                     .session_out_tx
-                    .send((self.call_id.clone(), SessionOut::SipSendBye200));
+                    .try_send((self.call_id.clone(), SessionOut::SipSendBye200));
                 self.stop_recorders();
                 self.send_ingest("ended").await;
                 self.send_call_ended(EndReason::Bye);
@@ -521,10 +551,10 @@ impl SessionCoordinator {
                 self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
-                    .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                    .try_send((self.call_id.clone(), SessionOut::RtpStopTx));
                 let _ = self
                     .session_out_tx
-                    .send((self.call_id.clone(), SessionOut::SipSendBye200));
+                    .try_send((self.call_id.clone(), SessionOut::SipSendBye200));
                 self.send_call_ended(EndReason::AppHangup);
             }
             (_, SessionIn::AppTransferRequest { person }) => {
@@ -568,9 +598,10 @@ impl SessionCoordinator {
                 if let (Some(expires), Some(SessionRefresher::Uas)) =
                     (self.session_expires, self.session_refresher)
                 {
-                    let _ = self
-                        .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::SipSendUpdate { expires }));
+                    let _ = self.session_out_tx.try_send((
+                        self.call_id.clone(),
+                        SessionOut::SipSendUpdate { expires },
+                    ));
                     self.update_session_expires(SessionTimerInfo {
                         expires,
                         refresher: SessionRefresher::Uas,

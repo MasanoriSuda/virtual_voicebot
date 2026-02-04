@@ -61,18 +61,31 @@ impl SessionCoordinator {
         let from = extract_notify_from(self.from_uri.as_str());
         let timestamp = now_jst();
         let duration_sec = self.started_at.map(|started| started.elapsed().as_secs());
-        let _ = self.app_tx.send(AppEvent::CallEnded {
+        if let Err(err) = self.app_tx.try_send(AppEvent::CallEnded {
             call_id: self.call_id.clone(),
             from,
             reason,
             duration_sec,
             timestamp,
-        });
+        }) {
+            log::warn!(
+                "[session {}] dropped CallEnded event (channel full): {:?}",
+                self.call_id,
+                err
+            );
+        }
     }
 
     pub(crate) fn send_bye_to_a_leg(&self) {
-        let _ = self
+        if let Err(err) = self
             .session_out_tx
-            .send((self.call_id.clone(), SessionOut::SipSendBye));
+            .try_send((self.call_id.clone(), SessionOut::SipSendBye))
+        {
+            log::warn!(
+                "[session {}] dropped SipSendBye (channel full): {:?}",
+                self.call_id,
+                err
+            );
+        }
     }
 }

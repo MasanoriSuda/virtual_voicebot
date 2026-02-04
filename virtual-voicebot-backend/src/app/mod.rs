@@ -7,7 +7,7 @@ mod router;
 
 use std::sync::Arc;
 
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc;
 
 use crate::app::router::{
     parse_intent_json, router_config, system_info_response, RouteAction, Router,
@@ -20,7 +20,7 @@ use crate::session::SessionOut;
 use crate::session::types::CallId;
 use crate::utils::{mask_pii, mask_phone};
 
-pub use crate::ports::app::{AppEvent, EndReason};
+pub use crate::ports::app::{app_event_channel, AppEvent, AppEventRx, AppEventTx, EndReason};
 pub use crate::ports::notification::NotificationService as AppNotificationPort;
 
 const SORRY_WAV_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sorry.wav");
@@ -48,6 +48,8 @@ const SPEC_FILTER_KEYWORDS: [&str; 21] = [
     "トークン",
 ];
 
+const APP_EVENT_CHANNEL_CAPACITY: usize = 16;
+const APP_HISTORY_MAX_MESSAGES: usize = 20;
 
 /// Starts and spawns an AppWorker task for the given call.
 ///
@@ -64,19 +66,18 @@ const SPEC_FILTER_KEYWORDS: [&str; 21] = [
 ///
 /// # Returns
 ///
-/// An `UnboundedSender<AppEvent>` that can be used to send events to the spawned worker.
+/// An `AppEventTx` that can be used to send events to the spawned worker.
 ///
 /// # Examples
 ///
-/// ```
-/// use tokio::sync::mpsc::UnboundedSender;
+/// ```no_run
 /// // assume necessary types and implementations are in scope
-/// let (session_tx, _session_rx) = tokio::sync::mpsc::unbounded_channel();
+/// let (session_tx, _session_rx) = tokio::sync::mpsc::channel(128);
 /// let ai_port: std::sync::Arc<dyn AiServices> = /* ... */;
 /// let phone_lookup: std::sync::Arc<dyn PhoneLookupPort> = /* ... */;
 /// let notification_port: std::sync::Arc<dyn NotificationPort> = /* ... */;
 /// let app_cfg = crate::config::AppRuntimeConfig::from_env();
-/// let tx: UnboundedSender<AppEvent> = spawn_app_worker(
+/// let tx = spawn_app_worker(
 ///     crate::session::types::CallId::new("call-123").unwrap(),
 ///     session_tx,
 ///     ai_port,
@@ -84,17 +85,22 @@ const SPEC_FILTER_KEYWORDS: [&str; 21] = [
 ///     notification_port,
 ///     app_cfg,
 /// );
-/// tx.send(AppEvent::CallStarted { call_id: CallId::new("call-123").unwrap(), caller: None }).unwrap();
+/// let _ = tx
+///     .send(AppEvent::CallStarted {
+///         call_id: CallId::new("call-123").unwrap(),
+///         caller: None,
+///     })
+///     .await;
 /// ```
 pub fn spawn_app_worker(
     call_id: CallId,
-    session_out_tx: UnboundedSender<(CallId, SessionOut)>,
+    session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
     ai_port: Arc<dyn AiServices>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
     notification_port: Arc<dyn NotificationPort>,
     app_cfg: AppRuntimeConfig,
-) -> UnboundedSender<AppEvent> {
-    let (tx, rx) = unbounded_channel();
+) -> AppEventTx {
+    let (tx, rx) = app_event_channel(APP_EVENT_CHANNEL_CAPACITY);
     let worker = AppWorker::new(
         call_id,
         session_out_tx,
@@ -110,8 +116,8 @@ pub fn spawn_app_worker(
 
 struct AppWorker {
     call_id: CallId,
-    session_out_tx: UnboundedSender<(CallId, SessionOut)>,
-    rx: UnboundedReceiver<AppEvent>,
+    session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
+    rx: AppEventRx,
     active: bool,
     history: Vec<ChatMessage>,
     ai_port: Arc<dyn AiServices>,
@@ -170,57 +176,39 @@ impl AppWorker {
 
     ///
 
-    /// ```
-
+    /// ```no_run
     /// use std::sync::Arc;
-
-    /// use tokio::sync::mpsc::unbounded_channel;
-
     ///
-
+    /// use crate::ports::app::app_event_channel;
+    /// use tokio::sync::mpsc::channel;
+    ///
     /// // Create channels
-
-    /// let (session_tx, _session_rx) = unbounded_channel::<(crate::session::types::CallId, crate::session::SessionOut)>();
-
-    /// let (_event_tx, event_rx) = unbounded_channel::<crate::app::AppEvent>();
-
+    /// let (session_tx, _session_rx) =
+    ///     channel::<(crate::session::types::CallId, crate::session::SessionOut)>(128);
+    /// let (_event_tx, event_rx) = app_event_channel(16);
     ///
-
     /// // Placeholder implementations for required ports would be provided in real code.
-
     /// // Here we show the shape of the call; replace `ai_impl` and `phone_impl` with real Arcs.
-
     /// let ai_impl: Arc<dyn crate::ports::ai::AiServices> = Arc::new(crate::ai::DefaultAiPort::new());
-    ///
     /// let phone_impl: Arc<dyn crate::ports::phone_lookup::PhoneLookupPort> =
     ///     Arc::new(crate::ports::phone_lookup::NoopPhoneLookup::new());
-    ///
     /// let notif_impl: Arc<dyn crate::ports::notification::NotificationService> =
     ///     Arc::new(crate::notification::NoopNotification::new());
-
     ///
-
     /// let worker = crate::app::AppWorker::new(
-    ///
     ///     crate::session::types::CallId::new("call-123").unwrap(),
-
     ///     session_tx,
-
     ///     event_rx,
-
     ///     ai_impl,
-
     ///     phone_impl,
-
     ///     notif_impl,
-
+    ///     crate::config::AppRuntimeConfig::from_env(),
     /// );
-
     /// ```
     fn new(
         call_id: CallId,
-        session_out_tx: UnboundedSender<(CallId, SessionOut)>,
-        rx: UnboundedReceiver<AppEvent>,
+        session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
+        rx: AppEventRx,
         ai_port: Arc<dyn AiServices>,
         phone_lookup: Arc<dyn PhoneLookupPort>,
         notification_port: Arc<dyn NotificationPort>,
@@ -383,12 +371,15 @@ impl AppWorker {
         let trimmed = user_text.trim();
         if trimmed.is_empty() {
             log::debug!("[app {call_id}] empty ASR text after filtering, playing sorry audio");
-            let _ = self.session_out_tx.send((
+            let _ = self
+                .session_out_tx
+                .send((
                 self.call_id.clone(),
                 SessionOut::AppSendBotAudioFile {
                     path: SORRY_WAV_PATH.to_string(),
                 },
-            ));
+            ))
+                .await;
             return Ok(());
         }
 
@@ -446,12 +437,15 @@ impl AppWorker {
             let answer_text = system_info_response();
             match self.ai_port.synth_to_wav(answer_text, None).await {
                 Ok(bot_wav) => {
-                    let _ = self.session_out_tx.send((
+                    let _ = self
+                        .session_out_tx
+                        .send((
                         self.call_id.clone(),
                         SessionOut::AppSendBotAudioFile {
                             path: bot_wav.to_string_lossy().to_string(),
                         },
-                    ));
+                    ))
+                        .await;
                 }
                 Err(e) => {
                     log::warn!("[app {call_id}] TTS failed: {e:?}");
@@ -520,31 +514,40 @@ impl AppWorker {
                         .await
                     {
                         Ok(bot_wav) => {
-                            let _ = self.session_out_tx.send((
+                            let _ = self
+                                .session_out_tx
+                                .send((
                                 self.call_id.clone(),
                                 SessionOut::AppSendBotAudioFile {
                                     path: bot_wav.to_string_lossy().to_string(),
                                 },
-                            ));
+                            ))
+                                .await;
                         }
                         Err(e) => {
                             log::warn!("[app {call_id}] transfer TTS failed: {e:?}");
                         }
                     }
-                    let _ = self.session_out_tx.send((
+                    let _ = self
+                        .session_out_tx
+                        .send((
                         self.call_id.clone(),
                         SessionOut::AppRequestTransfer { person: resolved },
-                    ));
+                    ))
+                        .await;
                 } else {
                     let not_found = self.router.transfer_not_found_message();
                     match self.ai_port.synth_to_wav(not_found.clone(), None).await {
                         Ok(bot_wav) => {
-                            let _ = self.session_out_tx.send((
-                                self.call_id.clone(),
-                                SessionOut::AppSendBotAudioFile {
-                                    path: bot_wav.to_string_lossy().to_string(),
-                                },
-                            ));
+                    let _ = self
+                        .session_out_tx
+                        .send((
+                        self.call_id.clone(),
+                        SessionOut::AppSendBotAudioFile {
+                            path: bot_wav.to_string_lossy().to_string(),
+                        },
+                    ))
+                        .await;
                         }
                         Err(e) => {
                             log::warn!("[app {call_id}] transfer not-found TTS failed: {e:?}");
@@ -564,16 +567,23 @@ impl AppWorker {
             role: Role::Assistant,
             content: answer_text.clone(),
         });
+        if self.history.len() > APP_HISTORY_MAX_MESSAGES {
+            let excess = self.history.len() - APP_HISTORY_MAX_MESSAGES;
+            self.history.drain(0..excess);
+        }
 
         // TTS
         match self.ai_port.synth_to_wav(answer_text, None).await {
             Ok(bot_wav) => {
-                let _ = self.session_out_tx.send((
+                let _ = self
+                    .session_out_tx
+                    .send((
                     self.call_id.clone(),
                     SessionOut::AppSendBotAudioFile {
                         path: bot_wav.to_string_lossy().to_string(),
                     },
-                ));
+                ))
+                    .await;
             }
             Err(e) => {
                 log::warn!("[app {call_id}] TTS failed: {e:?}");

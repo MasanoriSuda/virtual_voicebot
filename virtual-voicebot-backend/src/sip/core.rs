@@ -517,7 +517,7 @@ fn spawn_register_task(
                     };
                     match (peer, payload) {
                         (Some(peer), Some(payload)) => {
-                            let _ = transport_tx.send(SipTransportRequest {
+                            let _ = transport_tx.try_send(SipTransportRequest {
                                 peer,
                                 src_port,
                                 payload,
@@ -1303,7 +1303,7 @@ impl SipCore {
                 if start.elapsed() >= max_duration {
                     log::warn!("[sip 100rel] PRACK timeout call_id={}", call_id);
                     if let Some(resp) = timeout_resp {
-                        let _ = transport_tx.send(SipTransportRequest {
+                        let _ = transport_tx.try_send(SipTransportRequest {
                             peer,
                             src_port,
                             payload: resp,
@@ -1311,7 +1311,7 @@ impl SipCore {
                     }
                     break;
                 }
-                let _ = transport_tx.send(SipTransportRequest {
+                let _ = transport_tx.try_send(SipTransportRequest {
                     peer,
                     src_port,
                     payload: payload.clone(),
@@ -1363,7 +1363,7 @@ impl SipCore {
                     log::warn!("[sip] 2xx retransmit timeout (no ACK) call_id={}", call_id);
                     break;
                 }
-                let _ = transport_tx.send(SipTransportRequest {
+                let _ = transport_tx.try_send(SipTransportRequest {
                     peer,
                     src_port,
                     payload: payload.clone(),
@@ -1645,7 +1645,7 @@ impl SipCore {
             );
         }
 
-        let _ = self.transport_tx.send(SipTransportRequest {
+        let _ = self.transport_tx.try_send(SipTransportRequest {
             peer,
             src_port: self.cfg.sip_port,
             payload,
@@ -1685,7 +1685,7 @@ mod tests {
     use super::*;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
-    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::mpsc;
 
     fn dummy_peer() -> TransportPeer {
         TransportPeer::Udp("127.0.0.1:5060".parse().unwrap())
@@ -1748,7 +1748,7 @@ mod tests {
 
     #[test]
     fn options_response_includes_allow_and_supported() {
-        let (tx, mut rx) = unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(16);
         let mut core = SipCore::new(
             SipConfig {
                 advertised_ip: "127.0.0.1".to_string(),
@@ -1801,7 +1801,7 @@ mod tests {
 
     #[test]
     fn invite_when_busy_returns_486() {
-        let (tx, mut rx) = unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(16);
         let mut core = SipCore::new(
             SipConfig {
                 advertised_ip: "127.0.0.1".to_string(),
@@ -1852,7 +1852,7 @@ mod tests {
 
     #[test]
     fn cancel_sends_200_and_event() {
-        let (tx, mut rx) = unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(16);
         let mut core = SipCore::new(
             SipConfig {
                 advertised_ip: "127.0.0.1".to_string(),

@@ -5,7 +5,7 @@
 // ここでは経路だけ定義し、実際の送信/受信はまだスタブのまま（挙動は従来どおり）。
 use std::sync::Arc;
 
-use crate::ports::app::AppEvent;
+use crate::ports::app::AppEventTx;
 use crate::ports::ingest::IngestPort;
 use crate::ports::storage::StoragePort;
 use crate::rtp::tx::RtpTxHandle;
@@ -19,8 +19,8 @@ pub fn spawn_call(
     from_uri: String,
     to_uri: String,
     media_cfg: MediaConfig,
-    session_out_tx: tokio::sync::mpsc::UnboundedSender<(CallId, SessionOut)>,
-    app_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    session_out_tx: tokio::sync::mpsc::Sender<(CallId, SessionOut)>,
+    app_tx: AppEventTx,
     rtp_tx: RtpTxHandle,
     ingest_url: Option<String>,
     recording_base_url: Option<String>,
@@ -52,15 +52,15 @@ pub async fn spawn_session(
     to_uri: String,
     registry: SessionRegistry,
     media_cfg: MediaConfig,
-    session_out_tx: tokio::sync::mpsc::UnboundedSender<(CallId, SessionOut)>,
-    app_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    session_out_tx: tokio::sync::mpsc::Sender<(CallId, SessionOut)>,
+    app_tx: AppEventTx,
     rtp_tx: RtpTxHandle,
     ingest_url: Option<String>,
     recording_base_url: Option<String>,
     ingest_port: Arc<dyn IngestPort>,
     storage_port: Arc<dyn StoragePort>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
-) -> tokio::sync::mpsc::UnboundedSender<SessionIn> {
+) -> tokio::sync::mpsc::Sender<SessionIn> {
     let handle = spawn_call(
         call_id.clone(),
         from_uri,

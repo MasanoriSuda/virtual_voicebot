@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use crate::session::b2bua::BLeg;
+use thiserror::Error;
 
 #[derive(Clone, Debug)]
 pub struct Sdp {
@@ -145,7 +146,13 @@ pub enum SessionIn {
     SipSessionExpires {
         timer: SessionTimerInfo,
     },
-    Abort(anyhow::Error),
+    Abort(SessionError),
+}
+
+#[derive(Debug, Error)]
+pub enum SessionError {
+    #[error("internal session error: {0}")]
+    Internal(String),
 }
 
 /// session → 上位（sip/rtp/app/metrics）への通知/指示
@@ -260,7 +267,6 @@ pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessS
 
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
-use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Clone)]
 /// SessionRegistry keeps the active session channels keyed by CallId.
@@ -275,16 +281,16 @@ pub struct SessionRegistry {
 enum RegistryCommand {
     Register {
         call_id: CallId,
-        tx: UnboundedSender<SessionIn>,
+        tx: mpsc::Sender<SessionIn>,
         reply: oneshot::Sender<()>,
     },
     Unregister {
         call_id: CallId,
-        reply: oneshot::Sender<Option<UnboundedSender<SessionIn>>>,
+        reply: oneshot::Sender<Option<mpsc::Sender<SessionIn>>>,
     },
     Get {
         call_id: CallId,
-        reply: oneshot::Sender<Option<UnboundedSender<SessionIn>>>,
+        reply: oneshot::Sender<Option<mpsc::Sender<SessionIn>>>,
     },
     List {
         reply: oneshot::Sender<Vec<CallId>>,
@@ -295,7 +301,7 @@ impl SessionRegistry {
     pub fn new() -> Self {
         let (tx, mut rx) = mpsc::channel(128);
         tokio::spawn(async move {
-            let mut map: HashMap<CallId, UnboundedSender<SessionIn>> = HashMap::new();
+            let mut map: HashMap<CallId, mpsc::Sender<SessionIn>> = HashMap::new();
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     RegistryCommand::Register { call_id, tx, reply } => {
@@ -320,7 +326,7 @@ impl SessionRegistry {
         Self { tx }
     }
 
-    pub async fn insert(&self, call_id: CallId, tx: UnboundedSender<SessionIn>) {
+    pub async fn insert(&self, call_id: CallId, tx: mpsc::Sender<SessionIn>) {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
             .tx
@@ -336,7 +342,7 @@ impl SessionRegistry {
         }
     }
 
-    pub async fn get(&self, call_id: &CallId) -> Option<UnboundedSender<SessionIn>> {
+    pub async fn get(&self, call_id: &CallId) -> Option<mpsc::Sender<SessionIn>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
             .tx
@@ -352,7 +358,7 @@ impl SessionRegistry {
         reply_rx.await.ok().flatten()
     }
 
-    pub async fn remove(&self, call_id: &CallId) -> Option<UnboundedSender<SessionIn>> {
+    pub async fn remove(&self, call_id: &CallId) -> Option<mpsc::Sender<SessionIn>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
             .tx

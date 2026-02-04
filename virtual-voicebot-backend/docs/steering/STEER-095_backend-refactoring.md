@@ -118,6 +118,25 @@
 | 6 | RTP parser の仕様逸脱が残っている | parser.rs | CSRC/extension 対応を追加 |
 | 29 | SessionRegistry でActor化は済んだがアクセスパターン設計意図が薄い | types.rs | register/unregister 規約をコメントで明確化 |
 
+### 2.6 Phase 3 実装後レビュー（Codex 2026-02-03）
+
+**指摘（重大/中）**
+
+| # | 指摘 | 根拠 | 方向性 |
+|---|------|------|--------|
+| 30 | unbounded_channel でバックログが無制限に積み上がる | mod.rs:97, coordinator.rs:130, main.rs:77 | mpsc::channel に変更、ASR/PCM は最新優先で try_send + 旧データ破棄ポリシー明文化 |
+| 31 | rtp_port_map が単一の受信ポート→call_id を上書きし同時通話で問題 | main.rs:73,219, rx.rs:109 | 通話ごとにRTPポート割当、または5-tuple/SSRCで紐付け。単一通話前提なら制約明示 |
+| 32 | OnceLock 設定を下位層が直接参照（依存性注入崩れ） | config.rs:152, packet.rs:95 | Timeouts/RtpConfig をコンストラクタ引数で渡す |
+| 33 | std::sync::Mutex を async ホットパスでロック（tokio ブロック） | packet.rs:27, rx.rs:34,111 | actor 化、または tokio::sync::Mutex/DashMap に置換 |
+| 34 | AppWorker 履歴が無制限に増加、LLM 呼び出しで全履歴クローン | mod.rs:111,482 | 履歴の上限設定とリングバッファ化、または直近 N 件のみ送信 |
+
+**指摘（軽）**
+
+| # | 指摘 | 根拠 | 方向性 |
+|---|------|------|--------|
+| 35 | RtpPacket が CSRC/拡張ヘッダ非対応宣言だがパーサは黙ってスキップ | packet.rs:4, parser.rs:44 | extension/csrc_count>0 を明示的エラー化、または構造体に保持 |
+| 36 | SessionIn::Abort(anyhow::Error) が境界を越えドメインエラー喪失 | types.rs:148 | SessionError などのドメインエラー型に寄せる |
+
 ---
 
 ## 3. 現状と理想の対比
@@ -494,6 +513,25 @@ impl HttpIngestAdapter {
 | 20 | Arc<Mutex<HashMap>> 設計明確化 | 並行設計意図（軽） | 小 |
 | 23 | AiServices 分割 | 境界責務（軽） | 小 |
 
+### Phase 4: 並行処理・スケーラビリティ改善
+
+**重大/中**
+
+| # | 対応 | 理由 | 工数目安 |
+|---|------|------|---------|
+| 30 | unbounded_channel → mpsc::channel（バックプレッシャ対応） | AGENTS バックプレッシャ方針違反 | 中 |
+| 31 | rtp_port_map 同時通話対応（通話ごとにRTPポート割当 or 5-tuple/SSRC紐付け） | 同時通話不可（重大） | 大 |
+| 32 | OnceLock 下位層直接参照解消（Timeouts/RtpConfig をコンストラクタ注入） | 依存性注入崩れ | 中 |
+| 33 | std::sync::Mutex → tokio::sync::Mutex/DashMap（async ホットパス対応） | tokio ブロック | 中 |
+| 34 | AppWorker 履歴上限設定（リングバッファ化 or 直近 N 件のみ送信） | メモリ/CPU 線形悪化 | 小 |
+
+**軽**
+
+| # | 対応 | 理由 | 工数目安 |
+|---|------|------|---------|
+| 35 | RtpPacket CSRC/extension 仕様明確化（エラー化 or 構造体保持） | 期待仕様曖昧 | 小 |
+| 36 | SessionIn::Abort → SessionError（ドメインエラー型） | 境界越えエラー喪失 | 小 |
+
 ---
 
 ## 5. 受入条件（Acceptance Criteria）
@@ -529,40 +567,67 @@ impl HttpIngestAdapter {
 - [x] AC-17: Port境界がanyhow::ResultやSerdeJsonを露出していない（ドメインDTO/専用エラー型のみ）
 - [x] AC-18: AppEvent.call_idがCallId型になっている（String固定が解消）
 
-### Phase 3（アーキテクチャ深化）
+### Phase 3 ✅ 完了（アーキテクチャ深化）
 
 **重大**
-- [ ] AC-19: session/state_machine が純粋な状態遷移のみを担当（IO非依存）
+- [x] AC-19: session/state_machine が純粋な状態遷移のみを担当（IO非依存）
   - 根拠: coordinator.rs, mod.rs
   - 方向性: state_machine 純化、handler 責務分離をもう一段進める
-- [ ] AC-20: Config がグローバル状態でなく、必要箇所に引数で注入されている
+- [x] AC-20: Config がグローバル状態でなく、必要箇所に引数で注入されている
   - 根拠: config.rs:163,320（OnceLock 複数）
   - 方向性: composition root で読み込み、Config を引数で渡す範囲を増やす
 
 **中**
-- [ ] AC-21: CallId::new が Result を返しバリデーションされている
+- [x] AC-21: CallId::new が Result を返しバリデーションされている
   - 根拠: identifiers.rs:7（空文字許容）
   - 方向性: Result<CallId, CallIdError> でバリデーション追加
-- [ ] AC-22: recording 非同期エラーがメトリクスまたはエラー集約に記録される
+- [x] AC-22: recording 非同期エラーがメトリクスまたはエラー集約に記録される
   - 根拠: recording_manager.rs（merge/copy/stop の失敗が握り潰される）
   - 方向性: 失敗をメトリクス or エラー集約に寄せる
-- [ ] AC-23: recording_manager, message 等のドメイン近傍から anyhow が排除されている
+- [x] AC-23: recording_manager, message 等のドメイン近傍から anyhow が排除されている
   - 根拠: recording_manager.rs, message.rs
   - 方向性: 専用エラー型に置換（段階的でOK）
-- [ ] AC-24: App層のAI処理（意図判定/ルーティング/応答生成）がユースケース関数に分離されている
+- [x] AC-24: App層のAI処理（意図判定/ルーティング/応答生成）がユースケース関数に分離されている
   - 根拠: app/mod.rs（一箇所に集中しすぎ）
   - 方向性: 意図判定・ルーティング・応答生成をユースケース関数に分離
 
 **軽**
-- [ ] AC-25: ログ出力が info/debug で整理され、重要イベントのみ info
+- [x] AC-25: ログ出力が info/debug で整理され、重要イベントのみ info
   - 根拠: mod.rs（ログメッセージが大量でノイズ）
   - 方向性: info/debug の整理
-- [ ] AC-26: RTP parser が CSRC/extension に対応している
+- [x] AC-26: RTP parser が CSRC/extension に対応している
   - 根拠: parser.rs（仕様逸脱）
   - 方向性: CSRC/extension 対応を追加
-- [ ] AC-27: SessionRegistry の register/unregister 規約がコメントで明確化されている
+- [x] AC-27: SessionRegistry の register/unregister 規約がコメントで明確化されている
   - 根拠: types.rs（アクセスパターン設計意図が薄い）
   - 方向性: どこで register/unregister するかの規約をコメントで明確化
+
+### Phase 4（並行処理・スケーラビリティ改善）
+
+**重大/中**
+- [x] AC-28: イベントチャネルが mpsc::channel で bounded になり、バックプレッシャポリシーが明文化されている
+  - 根拠: mod.rs:97, coordinator.rs:130, main.rs:77
+  - 方向性: mpsc::channel、ASR/PCM は最新優先で try_send + 旧データ破棄
+- [x] AC-29: 同時通話に対応している（通話ごとにRTPポート割当、または5-tuple/SSRC紐付け、または単一通話制約が明示）
+  - 根拠: main.rs:73,219, rx.rs:109
+  - 方向性: 通話ごとにRTPポート割当、または制約明示
+- [x] AC-30: Timeouts/RtpConfig がコンストラクタ引数で渡されている（OnceLock 直接参照解消）
+  - 根拠: config.rs:152, packet.rs:95
+  - 方向性: コンストラクタ注入
+- [x] AC-31: async ホットパスで tokio::sync::Mutex または DashMap を使用している
+  - 根拠: packet.rs:27, rx.rs:34,111
+  - 方向性: std::sync::Mutex → tokio::sync::Mutex/DashMap
+- [x] AC-32: AppWorker 履歴に上限が設定されている（リングバッファ or 直近 N 件）
+  - 根拠: mod.rs:111,482
+  - 方向性: 履歴上限設定
+
+**軽**
+- [x] AC-33: RtpPacket の CSRC/extension 仕様が明確化されている（エラー化 or 構造体保持）
+  - 根拠: packet.rs:4, parser.rs:44
+  - 方向性: extension/csrc_count>0 を明示的エラー化、または構造体に保持
+- [x] AC-34: SessionIn::Abort がドメインエラー型（SessionError）になっている
+  - 根拠: types.rs:148
+  - 方向性: SessionError に寄せる
 
 ---
 
@@ -614,3 +679,6 @@ impl HttpIngestAdapter {
 | 2026-02-03 | 2.3 | BD-003 v2.0 改訂（依存関係図作成、モジュール層対応表追加）、Phase 2.5 実装準備完了 | Claude Code |
 | 2026-02-03 | 2.4 | Phase 3 準備レビュー追記（#24-29: session再分離、config注入、CallId検証、recording/anyhow/AI分離、ログ整理、Registry規約）、AC-19〜27 追加 | Claude Code |
 | 2026-02-03 | 2.5 | Phase 3 AC-19〜27 に根拠・方向性詳細を追加 | Claude Code |
+| 2026-02-03 | 2.6 | Phase 3 実装後レビュー追記（#30-36: unbounded_channel、rtp_port_map同時通話、OnceLock、sync::Mutex、AppWorker履歴、RtpPacket仕様、SessionIn::Abort）、Phase 4 追加、AC-28〜34 追加 | Claude Code |
+| 2026-02-05 | 2.7 | Phase 3 完了マーク追加（AC-19〜27 全達成） | Claude Code |
+| 2026-02-04 | 2.8 | Phase 4 AC-28〜34 実装完了（bounded channel、RTP同時通話、注入、tokio::Mutex、履歴上限、RTP仕様、SessionError） | Codex |

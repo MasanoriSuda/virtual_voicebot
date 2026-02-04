@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc;
 
 use crate::sip::message::{SipMessage, SipResponse};
 use crate::sip::tx::{SipTransportRequest, SipTransportTx};
@@ -27,7 +27,7 @@ impl Drop for B2buaRegistration {
 struct BridgeState {
     transport_tx: Option<SipTransportTx>,
     sip_port: u16,
-    sessions: HashMap<String, UnboundedSender<B2buaSipMessage>>,
+    sessions: HashMap<String, mpsc::Sender<B2buaSipMessage>>,
 }
 
 static BRIDGE: OnceLock<Mutex<BridgeState>> = OnceLock::new();
@@ -48,8 +48,10 @@ pub fn init(transport_tx: SipTransportTx, sip_port: u16) {
     bridge.sip_port = sip_port;
 }
 
-pub fn register(call_id: String) -> (B2buaRegistration, UnboundedReceiver<B2buaSipMessage>) {
-    let (tx, rx) = unbounded_channel();
+const B2BUA_CHANNEL_CAPACITY: usize = 32;
+
+pub fn register(call_id: String) -> (B2buaRegistration, mpsc::Receiver<B2buaSipMessage>) {
+    let (tx, rx) = mpsc::channel(B2BUA_CHANNEL_CAPACITY);
     let mut bridge = state().lock().unwrap();
     bridge.sessions.insert(call_id.clone(), tx);
     (B2buaRegistration { call_id }, rx)
@@ -68,7 +70,7 @@ pub fn send(peer: TransportPeer, payload: Vec<u8>) -> bool {
     let Some(tx) = tx else {
         return false;
     };
-    tx.send(SipTransportRequest {
+    tx.try_send(SipTransportRequest {
         peer,
         src_port: sip_port,
         payload,
@@ -87,7 +89,7 @@ pub fn dispatch_message(peer: TransportPeer, message: &SipMessage) -> bool {
     let Some(sender) = sender else {
         return false;
     };
-    let _ = sender.send(B2buaSipMessage {
+    let _ = sender.try_send(B2buaSipMessage {
         peer,
         message: message.clone(),
     });

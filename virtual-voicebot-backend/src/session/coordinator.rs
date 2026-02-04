@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 // session.rs
 use std::sync::Arc;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::{interval, Duration, Instant, MissedTickBehavior};
 
@@ -15,7 +15,7 @@ use crate::session::types::Sdp;
 use crate::session::types::*;
 
 use crate::config::{self, SessionRuntimeConfig};
-use crate::ports::app::AppEvent;
+use crate::ports::app::{AppEvent, AppEventTx};
 use crate::ports::ingest::{IngestPayload, IngestPort, IngestRecording};
 use crate::ports::storage::StoragePort;
 use crate::rtp::tx::RtpTxHandle;
@@ -29,6 +29,7 @@ use services::playback_service::PlaybackState;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
 const PLAYBACK_FRAME_INTERVAL: Duration = Duration::from_millis(20);
 const TRANSFER_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
+const SESSION_IN_CHANNEL_CAPACITY: usize = 64;
 
 pub(crate) const INTRO_MORNING_WAV_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -65,7 +66,7 @@ pub(crate) const TRANSFER_FAIL_WAV_PATH: &str = concat!(
 
 #[derive(Clone)]
 pub struct SessionHandle {
-    pub tx_in: UnboundedSender<SessionIn>,
+    pub tx_in: mpsc::Sender<SessionIn>,
 }
 
 pub struct SessionCoordinator {
@@ -78,9 +79,9 @@ pub struct SessionCoordinator {
     storage_port: Arc<dyn StoragePort>,
     peer_sdp: Option<Sdp>,
     local_sdp: Option<Sdp>,
-    session_out_tx: UnboundedSender<(CallId, SessionOut)>,
-    tx_in: UnboundedSender<SessionIn>,
-    app_tx: UnboundedSender<AppEvent>,
+    session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
+    tx_in: mpsc::Sender<SessionIn>,
+    app_tx: AppEventTx,
     runtime_cfg: Arc<SessionRuntimeConfig>,
     media_cfg: MediaConfig,
     rtp: crate::session::rtp_stream_manager::RtpStreamManager,
@@ -117,8 +118,8 @@ impl SessionCoordinator {
         call_id: CallId,
         from_uri: String,
         to_uri: String,
-        session_out_tx: UnboundedSender<(CallId, SessionOut)>,
-        app_tx: UnboundedSender<AppEvent>,
+        session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
+        app_tx: AppEventTx,
         media_cfg: MediaConfig,
         rtp_tx: RtpTxHandle,
         ingest_url: Option<String>,
@@ -127,7 +128,8 @@ impl SessionCoordinator {
         storage_port: Arc<dyn StoragePort>,
         runtime_cfg: Arc<SessionRuntimeConfig>,
     ) -> SessionHandle {
-        let (tx_in, rx_in) = tokio::sync::mpsc::unbounded_channel();
+        // Bounded channel to avoid unbounded backlog; media events are drop-on-full upstream.
+        let (tx_in, rx_in) = mpsc::channel(SESSION_IN_CHANNEL_CAPACITY);
         let call_id_clone = call_id.clone();
         let mut s = Self {
             state_machine: SessionStateMachine::new(),
@@ -184,7 +186,7 @@ impl SessionCoordinator {
     /// performing cleanup when the input channel closes or the session ends.
     ///
     /// This method drives the session state machine: it receives events from the
-    /// provided `UnboundedReceiver<SessionIn>`, advances the internal `SessState`,
+    /// provided `mpsc::Receiver<SessionIn>`, advances the internal `SessState`,
     /// handles playback and recording, manages RTP and SIP interactions, and emits
     /// outgoing actions via the session's configured channels. The loop exits when
     /// the receiver is closed; recorders are stopped after the loop finishes.
@@ -192,15 +194,15 @@ impl SessionCoordinator {
     /// # Examples
     ///
     /// ```
-    /// use tokio::sync::mpsc::UnboundedReceiver;
+    /// use tokio::sync::mpsc::Receiver;
     ///
     /// // In an async context where `session` and `rx` are available:
-    /// async fn run_session_example(mut session: crate::session::Session, rx: UnboundedReceiver<crate::session::SessionIn>) {
+    /// async fn run_session_example(mut session: crate::session::Session, rx: Receiver<crate::session::SessionIn>) {
     ///     // This will run until `rx` is closed or the session ends.
     ///     session.run(rx).await;
     /// }
     /// ```
-    async fn run(&mut self, mut rx: UnboundedReceiver<SessionIn>) {
+    async fn run(&mut self, mut rx: mpsc::Receiver<SessionIn>) {
         let mut playback_tick = interval(PLAYBACK_FRAME_INTERVAL);
         playback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
@@ -315,9 +317,9 @@ mod tests {
     }
 
     fn build_test_session(storage_port: Arc<dyn StoragePort>) -> SessionCoordinator {
-        let (session_out_tx, _session_out_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (app_tx, _app_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (tx_in, _rx_in) = tokio::sync::mpsc::unbounded_channel();
+        let (session_out_tx, _session_out_rx) = mpsc::channel(32);
+        let (app_tx, _app_rx) = crate::ports::app::app_event_channel(16);
+        let (tx_in, _rx_in) = mpsc::channel(SESSION_IN_CHANNEL_CAPACITY);
         let base_cfg = config::Config::from_env().expect("config loads");
         let runtime_cfg = Arc::new(SessionRuntimeConfig::from_env(&base_cfg));
         SessionCoordinator {
@@ -338,7 +340,9 @@ mod tests {
             app_tx,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
-            rtp: crate::session::rtp_stream_manager::RtpStreamManager::new(RtpTxHandle::new()),
+            rtp: crate::session::rtp_stream_manager::RtpStreamManager::new(RtpTxHandle::new(
+                config::rtp_config().clone(),
+            )),
             recording: crate::session::recording_manager::RecordingManager::new("test-call"),
             started_at: None,
             started_wall: None,
