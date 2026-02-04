@@ -18,6 +18,7 @@ use crate::ports::phone_lookup::PhoneLookupPort;
 use crate::ports::ai::{AiServices, AsrChunk, ChatMessage, Role, SerInputPcm, WeatherQuery};
 use crate::session::SessionOut;
 use crate::session::types::CallId;
+use crate::utils::{mask_pii, mask_phone};
 
 pub use crate::ports::app::{AppEvent, EndReason};
 pub use crate::ports::notification::NotificationService as AppNotificationPort;
@@ -720,19 +721,6 @@ impl AppWorker {
     }
 
     // build_prompt はロール分離に伴い廃止
-}
-
-fn mask_pii(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return "<empty>".to_string();
-    }
-    let len = trimmed.chars().count();
-    format!("<redacted len={}>", len)
-}
-
-fn mask_phone(value: &str) -> String {
-    mask_pii(value)
 }
 
 /// Detects whether a text appears to be a specification or policy question.

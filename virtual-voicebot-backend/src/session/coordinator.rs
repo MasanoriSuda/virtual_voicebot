@@ -18,7 +18,6 @@ use crate::config;
 use crate::ports::app::AppEvent;
 use crate::ports::ingest::{IngestPayload, IngestPort, IngestRecording};
 use crate::ports::storage::StoragePort;
-use crate::recording;
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::b2bua;
 use crate::session::capture::AudioCapture;
@@ -257,7 +256,7 @@ impl SessionCoordinator {
         let recording_url = self
             .recording_base_url
             .as_ref()
-            .map(|base| recording::recording_url(base, &recording_dir));
+            .map(|base| recording_url(base, &recording_dir));
         let recording = recording_url.map(|url| IngestRecording {
             recording_url: url,
             duration_sec,
@@ -277,6 +276,11 @@ impl SessionCoordinator {
         };
         self.ingest.post_once(payload).await;
     }
+}
+
+fn recording_url(base_url: &str, call_id: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    format!("{}/recordings/{}/mixed.wav", base, call_id)
 }
 
 #[cfg(test)]

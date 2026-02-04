@@ -25,6 +25,7 @@ use crate::ports::ai::{
     AiFuture, AsrChunk, AsrPort, ChatMessage, IntentPort, LlmPort, Role, SerInputPcm, SerOutcome,
     SerPort, TtsPort, WeatherPort, WeatherQuery,
 };
+use crate::utils::mask_pii;
 
 #[derive(Serialize)]
 struct OllamaChatRequest {
@@ -570,7 +571,7 @@ async fn transcribe_with_aws_job(
                         let resp = http.get(uri).send().await?;
                         let body_text = resp.text().await?;
 
-                        log::info!("AWS transcript raw JSON: {}", body_text);
+                        log::info!("AWS transcript raw JSON: {}", mask_pii(&body_text));
 
                         let transcript = parse_aws_transcript(&body_text)?;
                         return Ok(transcript);

@@ -533,3 +533,4 @@ impl HttpIngestAdapter {
 | 2026-02-03 | 2.0 | Phase 2 実装（AC-7: CallId 統一） | Codex |
 | 2026-02-03 | 2.1 | AC-8/9 対応（AsrPort の型設計確認、AiPort 互換削除） | Codex |
 | 2026-02-03 | 2.2 | Phase 2 完了後レビュー追記（#14-23）、Phase 2.5 追加、Q5/Q6 決定 | Claude Code |
+| 2026-02-03 | 2.3 | BD-003 v2.0 改訂（依存関係図作成、モジュール層対応表追加）、Phase 2.5 実装準備完了 | Claude Code |

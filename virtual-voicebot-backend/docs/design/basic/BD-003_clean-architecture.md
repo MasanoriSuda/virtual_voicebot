@@ -8,8 +8,11 @@
 | ID | BD-003 |
 | ステータス | Approved |
 | 作成日 | 2026-01-31 |
-| 関連Issue | #52, #65 |
+| 改訂日 | 2026-02-03 |
+| バージョン | 2.0 |
+| 関連Issue | #52, #65, #95 |
 | 関連RD | RD-001 |
+| 付録 | [依存関係図](BD-003_dependency-diagram.md) |
 
 ---
 
@@ -295,55 +298,119 @@ pub trait TtsPort: Send + Sync {
 
 ## 6. ディレクトリ構造
 
+### 6.1 現行構造（v2.0）
+
 ```
 src/
-├── main.rs                      # エントリポイント（DI コンテナ構築）
+├── main.rs                      # エントリポイント（Composition Root）
 │
-├── entities/                    # Enterprise Business Rules (Entity層)
-│   ├── mod.rs
+├── entities/                    # [L0] Enterprise Business Rules (Entity層)
 │   ├── call.rs                  # Call エンティティ（Aggregate Root）
 │   ├── recording.rs             # Recording エンティティ
 │   ├── participant.rs           # Participant 値オブジェクト
 │   └── identifiers.rs           # CallId, SessionId 等
 │
-├── domain/                      # Domain Services & Events
-│   ├── services/
-│   ├── events/
-│   └── factories/
-│
-├── ports/                       # Port 定義（インターフェース）
-│   ├── asr.rs, llm.rs, tts.rs   # AI ポート
-│   ├── repository.rs            # リポジトリポート
+├── ports/                       # [L1] Port 定義（インターフェース）
+│   ├── ai.rs, ai/               # AI ポート（AsrPort, LlmPort, TtsPort, IntentPort）
+│   ├── app.rs                   # App イベントポート（AppEvent, EndReason）
+│   ├── ingest.rs                # Ingest ポート
+│   ├── storage.rs               # Storage ポート
+│   ├── phone_lookup.rs          # 電話番号検索ポート
 │   └── notification.rs          # 通知ポート
 │
-├── app/                         # Application Business Rules (Use Case層)
-│   ├── dialog_service.rs
-│   ├── recording_service.rs
-│   └── notification_service.rs
+├── app/                         # [L5] Application Business Rules (Use Case層)
+│   ├── mod.rs                   # AppService（オーケストレーション）
+│   └── router.rs                # イベントルーティング
 │
-├── session/                     # Session 管理（Application層の一部）
-│   ├── state_machine.rs         # 純粋な状態遷移
-│   ├── session_coordinator.rs   # I/O コーディネータ
-│   └── types.rs
+├── session/                     # [L4] Session Orchestration
+│   ├── coordinator.rs           # I/O コーディネータ（≦500行）
+│   ├── state_machine.rs         # 純粋な状態遷移（SessionEvent→SessionCommand）
+│   ├── handlers/                # イベントハンドラ
+│   │   ├── sip_handler.rs
+│   │   ├── rtp_handler.rs
+│   │   └── timer_handler.rs
+│   ├── services/                # ドメインサービス
+│   │   ├── ivr_service.rs
+│   │   ├── b2bua_service.rs
+│   │   └── playback_service.rs
+│   ├── types.rs                 # SessionHandle, Sdp 等
+│   └── registry.rs              # SessionRegistry（Actor パターン）
 │
-├── adapters/                    # Interface Adapters
-│   ├── ai/                      # AI サービス実装
-│   ├── db/                      # DB 実装
-│   ├── http/                    # HTTP 実装
-│   └── notification/            # 通知実装
+├── ai/                          # [L2] AI Adapter 実装
+│   ├── asr.rs, llm.rs, tts.rs
+│   └── intent.rs, weather.rs
 │
-├── infrastructure/              # Frameworks & Drivers
-│   ├── sip/                     # SIP プロトコルスタック
-│   ├── rtp/                     # RTP プロトコルスタック
-│   ├── transport/               # ネットワーク I/O
-│   └── config/                  # 設定管理
+├── db/                          # [L2] DB Adapter 実装
+│   └── tsurugi.rs               # TsurugiAdapter
 │
-├── error/                       # エラー型定義
-│   ├── domain.rs
-│   ├── ai.rs
-│   └── repository.rs
+├── http/                        # [L2] HTTP Adapter 実装
+│   ├── mod.rs                   # axum サーバー
+│   └── ingest.rs                # HttpIngestAdapter
 │
-└── compat/                      # 後方互換（N-1 維持）
+├── notification/                # [L2] 通知 Adapter 実装
+│   └── mod.rs                   # LINE 通知
+│
+├── recording/                   # [L2] 録音 Adapter 実装
+│   └── storage.rs               # LocalStorageAdapter
+│
+├── media/                       # [L2] メディア処理
+│   └── mod.rs                   # Recorder, merge
+│
+├── sip/                         # [L3] SIP プロトコルスタック
+│   ├── core.rs, builder.rs
+│   └── transaction.rs
+│
+├── rtp/                         # [L3] RTP プロトコルスタック
+│   ├── tx.rs, rx.rs
+│   └── codec.rs, dtmf.rs
+│
+├── transport/                   # [L3] ネットワーク I/O
+│   ├── packet.rs
+│   └── tls.rs
+│
+├── config/                      # [L0] 設定（横断的関心事）
+│   └── mod.rs
+│
+├── error/                       # [L0] エラー型定義
+│   └── ai.rs
+│
+└── logging/                     # [L0] ログ（横断的関心事）
+    └── mod.rs
+```
+
+### 6.2 モジュール層対応表
+
+| レイヤー | モジュール | 許可される依存先 | 禁止される依存先 |
+|----------|-----------|-----------------|-----------------|
+| **L0: Foundation** | entities, config, error, logging | なし | すべて |
+| **L1: Ports** | ports | entities, error | adapters, infrastructure |
+| **L2: Adapters** | ai, db, http, notification, recording, media | ports, config, error | session, app, entities直接 |
+| **L3: Infrastructure** | sip, rtp, transport | config, session（コールバック） | app, entities直接 |
+| **L4: Session** | session | ports, entities, config, L3 | app, http, db直接 |
+| **L5: Application** | app | ports, session, config | adapters直接, infrastructure直接 |
+| **L6: Entry** | main | すべて | - |
+
+### 6.3 禁止依存の具体例
+
+```rust
+// ❌ 禁止: session → app
+// src/session/coordinator.rs で以下は禁止
+use crate::app::AppService;  // NG
+
+// ✅ 正しい: session → ports::app
+use crate::ports::app::AppEvent;  // OK
+
+// ❌ 禁止: session → http
+use crate::http::IngestPort;  // NG
+
+// ✅ 正しい: session → ports::ingest
+use crate::ports::ingest::IngestPort;  // OK
+
+// ❌ 禁止: app → db 直接
+use crate::db::TsurugiAdapter;  // NG
+
+// ✅ 正しい: app → ports::phone_lookup
+use crate::ports::phone_lookup::PhoneLookupPort;  // OK
 ```
 
 ---
@@ -391,4 +458,5 @@ src/
 | 日付 | バージョン | 変更内容 | 作成者 |
 |------|-----------|---------|--------|
 | 2026-01-31 | 1.0 | 初版作成（STEER-085 §5 より昇格） | @MasanoriSuda + Claude Code |
+| 2026-02-03 | 2.0 | §6 ディレクトリ構造を現行実装に合わせて改訂、モジュール層対応表追加、禁止依存の具体例追加、依存関係図付録追加（#95 対応） | Claude Code |
 

@@ -24,6 +24,7 @@ use crate::sip::builder::response_simple_from_request;
 use crate::sip::message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
 use crate::sip::{parse_cseq_header, parse_offer_sdp, parse_uri, SipRequestBuilder};
 use crate::transport::TransportPeer;
+use crate::utils::mask_pii;
 
 const RTP_BUFFER_SIZE: usize = 2048;
 const DEFAULT_SIP_PORT: u16 = 5060;
@@ -1115,9 +1116,9 @@ fn log_invite(label: &str, peer: SocketAddr, request: &SipRequest) {
     if !log::log_enabled!(log::Level::Info) {
         return;
     }
-    let from = request.header_value("From").unwrap_or("-");
-    let to = request.header_value("To").unwrap_or("-");
-    let contact = request.header_value("Contact").unwrap_or("-");
+    let from = mask_pii(request.header_value("From").unwrap_or("-"));
+    let to = mask_pii(request.header_value("To").unwrap_or("-"));
+    let contact = mask_pii(request.header_value("Contact").unwrap_or("-"));
     let call_id = request.header_value("Call-ID").unwrap_or("-");
     let auth_header = if request.header_value("Authorization").is_some() {
         "Authorization"
@@ -1136,8 +1137,8 @@ fn log_cancel(label: &str, peer: SocketAddr, request: &SipRequest) {
     if !log::log_enabled!(log::Level::Info) {
         return;
     }
-    let from = request.header_value("From").unwrap_or("-");
-    let to = request.header_value("To").unwrap_or("-");
+    let from = mask_pii(request.header_value("From").unwrap_or("-"));
+    let to = mask_pii(request.header_value("To").unwrap_or("-"));
     let call_id = request.header_value("Call-ID").unwrap_or("-");
     let cseq = request.header_value("CSeq").unwrap_or("-");
     info!(
