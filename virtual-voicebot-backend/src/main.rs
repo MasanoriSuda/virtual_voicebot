@@ -1,20 +1,7 @@
-mod ai;
-mod app;
-mod config;
-mod db;
-mod entities;
-mod error;
-mod http;
-mod logging;
-mod media;
-mod notification;
-mod ports;
-mod recording;
-mod rtp;
-mod session;
-mod sip;
-mod transport;
-mod utils;
+mod interface;
+mod protocol;
+mod service;
+mod shared;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,15 +9,21 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::app::AppNotificationPort;
-use crate::db::TsurugiAdapter;
-use crate::notification::{LineAdapter, NoopNotification};
-use crate::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
-use crate::ports::session_lookup::SessionLookup;
-use crate::rtp::tx::RtpTxHandle;
-use crate::session::{spawn_session, MediaConfig, SessionControlIn, SessionOut, SessionRegistry};
-use crate::sip::{b2bua_bridge, SipCommand, SipConfig, SipCore, SipEvent};
-use crate::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendRequest};
+use crate::interface::db::TsurugiAdapter;
+use crate::interface::http;
+use crate::interface::notification::{LineAdapter, NoopNotification};
+use crate::protocol::rtp::tx::RtpTxHandle;
+use crate::protocol::session::types::CallId;
+use crate::protocol::session::{spawn_session, MediaConfig, SessionControlIn, SessionOut, SessionRegistry};
+use crate::protocol::sip::{b2bua_bridge, SipCommand, SipConfig, SipCore, SipEvent};
+use crate::protocol::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendRequest};
+use crate::service::ai;
+use crate::service::call_control as app;
+use crate::service::recording;
+use crate::service::call_control::AppNotificationPort;
+use crate::shared::{config, logging};
+use crate::shared::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
+use crate::shared::ports::session_lookup::SessionLookup;
 
 const SIP_INPUT_CHANNEL_CAPACITY: usize = 256;
 const SIP_SEND_CHANNEL_CAPACITY: usize = 256;
@@ -78,9 +71,8 @@ async fn main() -> anyhow::Result<()> {
     // --- セッションとRTP送信元管理の共有マップ ---
     let session_registry = SessionRegistry::new();
     let rtp_port_map: RtpPortMap = Arc::new(Mutex::new(HashMap::new()));
-    let mut rtp_handles: HashMap<crate::session::types::CallId, RtpTxHandle> = HashMap::new();
-    let mut rtp_peers: HashMap<crate::session::types::CallId, std::net::SocketAddr> =
-        HashMap::new();
+    let mut rtp_handles: HashMap<CallId, RtpTxHandle> = HashMap::new();
+    let mut rtp_peers: HashMap<CallId, std::net::SocketAddr> = HashMap::new();
 
     // packet層 → SIP処理ループ へのチャネル（過負荷時はtransport側でdrop）
     let (sip_tx, mut sip_rx) = mpsc::channel::<SipInput>(SIP_INPUT_CHANNEL_CAPACITY);
@@ -89,9 +81,7 @@ async fn main() -> anyhow::Result<()> {
         mpsc::channel::<TransportSendRequest>(SIP_SEND_CHANNEL_CAPACITY);
     // session → sip 指示（boundedでバックプレッシャ）
     let (session_out_tx, mut session_out_rx) =
-        mpsc::channel::<(crate::session::types::CallId, SessionOut)>(
-            SESSION_OUT_CHANNEL_CAPACITY,
-        );
+        mpsc::channel::<(CallId, SessionOut)>(SESSION_OUT_CHANNEL_CAPACITY);
     b2bua_bridge::init(sip_send_tx.clone(), sip_port);
 
     // --- ソケット準備 (SIP/RTPポートは環境変数で指定) ---
@@ -166,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
             Arc::new(NoopNotification::new())
         }
     };
-    let ingest_port = Arc::new(http::ingest::HttpIngestPort::new(timeouts.ingest_http));
+    let ingest_port = Arc::new(http::ingest::HttpIngestPort::new(timeouts.ingest_http)?);
     let storage_port = Arc::new(recording::storage::FileStoragePort::new());
     let mut sip_core = SipCore::new(
         SipConfig {

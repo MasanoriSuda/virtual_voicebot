@@ -35,6 +35,7 @@ STEER-{イシュー番号}_{slug}.md
 | ID | タイトル | ステータス | 関連Issue | 優先度 | 概要 |
 |----|---------|----------|----------|--------|------|
 | [STEER-085](STEER-085_clean-architecture.md) | クリーンアーキテクチャ移行（ISP準拠 + ファイル分割） | Draft | #52, #65, #85 | P0 | ISP準拠トレイト設計、エンティティ層新設、sip/mod.rs分割、Session分離 |
+| [STEER-108](STEER-108_sip-core-engine-refactor.md) | 3層アーキテクチャへのリファクタリング | Draft | #108 | P1 | 全モジュールを Protocol/Service/Interface の3層構造に再構成し、依存方向を明確化 |
 
 ---
 
@@ -74,4 +75,5 @@ STEER-{イシュー番号}_{slug}.md
 | 日付 | バージョン | 変更内容 | 作成者 |
 |------|-----------|---------|--------|
 | 2026-01-31 | 1.0 | 初版作成 | Claude Code |
+| 2026-02-06 | 1.1 | STEER-108 追加 | Claude Code |
 

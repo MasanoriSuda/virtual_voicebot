@@ -12,28 +12,38 @@
 ### 1.1 レイヤー構造
 
 ```
-Frameworks & Drivers  (infrastructure/, adapters/)
+Interface              (interface/http, interface/health, interface/monitoring)
         ↓
-Interface Adapters    (adapters/)
+Service                (service/ai, service/call_control, service/recording)
         ↓
-Application Rules     (app/, session/)
+Protocol               (protocol/sip, protocol/rtp, protocol/session, protocol/transport)
         ↓
-Enterprise Rules      (entities/, domain/)
+Shared                 (shared/config, shared/error, shared/entities, shared/ports)
 ```
+
+**レイヤー間の依存方向**:
+- Interface → Service → Protocol → Shared
+- Shared は全レイヤーから参照可能（横断的関心事）
 
 ### 1.2 依存性の方向（Dependency Rule）
 
 **依存は常に内側へ。外側のレイヤーは内側を知るが、内側は外側を知らない。**
 
 ```rust
-// ✅ OK: Adapter → Port
-use crate::ports::AsrPort;
+// ✅ OK: Service → Port (Shared)
+use crate::shared::ports::ai::AsrPort;
 
-// ✅ OK: Use Case → Entity
-use crate::entities::Call;
+// ✅ OK: Service → Entity (Shared)
+use crate::shared::entities::Call;
 
-// ❌ NG: Entity → Adapter
-// use crate::adapters::ai::OpenAiClient;  // 禁止
+// ✅ OK: Interface → Service
+use crate::service::call_control::CallControlService;
+
+// ❌ NG: Protocol → Service
+// use crate::service::ai::AiService;  // 禁止
+
+// ❌ NG: Shared → Protocol
+// use crate::protocol::sip::SipEngine;  // 禁止
 ```
 
 ### 1.3 依存性逆転（Dependency Inversion）
@@ -90,12 +100,12 @@ pub trait TtsPort { fn synthesize(...); }
 
 | 概念 | 配置先 | 例 |
 |------|--------|-----|
-| Entity | `entities/` | Call, Recording |
-| Value Object | `entities/` | CallId, Participant |
-| Aggregate Root | `entities/` | Call |
-| Domain Service | `domain/services/` | CallStateTransition |
-| Repository | `ports/` (trait) | CallRepository |
-| Domain Event | `domain/events/` | CallStarted, CallEnded |
+| Entity | `shared/entities/` | Call, Recording |
+| Value Object | `shared/entities/` | CallId, Participant |
+| Aggregate Root | `shared/entities/` | Call |
+| Domain Service | `service/call_control/` | CallStateTransition |
+| Repository | `shared/ports/` (trait) | CallRepository |
+| Domain Event | `shared/events/` | CallStarted, CallEnded |
 
 ### 3.2 Aggregate Root の原則
 
@@ -182,10 +192,10 @@ pub enum AsrError {
 
 | エラー種別 | 配置先 |
 |-----------|--------|
-| ドメインエラー | `error/domain.rs` |
-| AI エラー | `error/ai.rs` |
-| リポジトリエラー | `error/repository.rs` |
-| インフラエラー | `error/infrastructure.rs` |
+| ドメインエラー | `shared/error/domain.rs` |
+| AI エラー | `shared/error/ai.rs` |
+| リポジトリエラー | `shared/error/repository.rs` |
+| プロトコルエラー | `shared/error/protocol.rs` |
 
 ---
 
@@ -238,6 +248,7 @@ pub enum AsrError {
 |-------------|------|
 | [BD-003](docs/design/basic/BD-003_clean-architecture.md) | クリーンアーキテクチャ設計原則（正式版） |
 | [STEER-085](docs/steering/STEER-085_clean-architecture.md) | クリーンアーキテクチャ移行ステアリング |
+| [STEER-108](docs/steering/STEER-108_sip-core-engine-refactor.md) | 3層アーキテクチャへのリファクタリング |
 | [CLAUDE.md](../CLAUDE.md) | Claude Code の役割定義 |
 | [AGENTS.md](AGENTS.md) | Codex の役割定義 |
 
@@ -248,4 +259,5 @@ pub enum AsrError {
 | 日付 | 変更内容 | 作成者 |
 |------|---------|--------|
 | 2026-01-31 | 初版作成 | @MasanoriSuda + Claude Code |
+| 2026-02-06 | 3層アーキテクチャに対応（STEER-108） | Claude Code |
 
