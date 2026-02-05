@@ -1,5 +1,6 @@
 use crate::config;
-use crate::session::types::{CallId, Sdp, SessionOut, SessionRefresher, SessionTimerInfo};
+use crate::entities::CallId;
+use crate::ports::sip::{Sdp, SessionRefresher, SessionTimerInfo, SipCommand};
 use crate::sip::b2bua_bridge;
 use crate::sip::builder::{
     response_final_with_sdp, response_options_from_request, response_provisional_from_request,
@@ -472,19 +473,19 @@ struct CoreHeaderSnapshot {
     via: String,
     from: String,
     to: String,
-    call_id: String,
+    call_id: CallId,
     cseq: String,
 }
 
 impl CoreHeaderSnapshot {
-    fn from_request(req: &SipRequest) -> Self {
-        Self {
+    fn from_request(req: &SipRequest) -> Result<Self, crate::entities::identifiers::CallIdError> {
+        Ok(Self {
             via: req.header_value("Via").unwrap_or("").to_string(),
             from: req.header_value("From").unwrap_or("").to_string(),
             to: req.header_value("To").unwrap_or("").to_string(),
-            call_id: req.header_value("Call-ID").unwrap_or("").to_string(),
+            call_id: CallId::new(req.header_value("Call-ID").unwrap_or("").to_string())?,
             cseq: req.header_value("CSeq").unwrap_or("").to_string(),
-        }
+        })
     }
 }
 
@@ -517,7 +518,7 @@ fn spawn_register_task(
                     };
                     match (peer, payload) {
                         (Some(peer), Some(payload)) => {
-                            let _ = transport_tx.send(SipTransportRequest {
+                            let _ = transport_tx.try_send(SipTransportRequest {
                                 peer,
                                 src_port,
                                 payload,
@@ -648,7 +649,13 @@ impl SipCore {
     }
 
     fn handle_request(&mut self, req: SipRequest, peer: TransportPeer) -> Vec<SipEvent> {
-        let headers = CoreHeaderSnapshot::from_request(&req);
+        let headers = match CoreHeaderSnapshot::from_request(&req) {
+            Ok(headers) => headers,
+            Err(err) => {
+                log::warn!("[sip] invalid Call-ID: {}", err);
+                return vec![SipEvent::Unknown];
+            }
+        };
         match req.method {
             SipMethod::Invite => self.handle_invite(req, headers, peer),
             SipMethod::Ack => self.handle_ack(headers.call_id),
@@ -794,7 +801,7 @@ impl SipCore {
             }
         };
 
-        // 新規 INVITE: トランザクション生成（レスポンスは SessionOut 経由で送るためここでは送信しない）
+        // 新規 INVITE: トランザクション生成（レスポンスは SipCommand 経由で送るためここでは送信しない）
         let mut tx = InviteServerTransaction::new(peer);
         tx.invite_req = Some(req.clone());
         let ctx = InviteContext {
@@ -1032,7 +1039,7 @@ impl SipCore {
             };
         }
 
-        // 最終応答は SessionOut::SipSendBye200 等から送るため、ここでは送信しない
+        // 最終応答は SipCommand::SendBye200 等から送るため、ここでは送信しない
         tx.last_request = Some(req);
 
         if emit_bye_event {
@@ -1297,7 +1304,7 @@ impl SipCore {
                 if start.elapsed() >= max_duration {
                     log::warn!("[sip 100rel] PRACK timeout call_id={}", call_id);
                     if let Some(resp) = timeout_resp {
-                        let _ = transport_tx.send(SipTransportRequest {
+                        let _ = transport_tx.try_send(SipTransportRequest {
                             peer,
                             src_port,
                             payload: resp,
@@ -1305,7 +1312,7 @@ impl SipCore {
                     }
                     break;
                 }
-                let _ = transport_tx.send(SipTransportRequest {
+                let _ = transport_tx.try_send(SipTransportRequest {
                     peer,
                     src_port,
                     payload: payload.clone(),
@@ -1357,7 +1364,7 @@ impl SipCore {
                     log::warn!("[sip] 2xx retransmit timeout (no ACK) call_id={}", call_id);
                     break;
                 }
-                let _ = transport_tx.send(SipTransportRequest {
+                let _ = transport_tx.try_send(SipTransportRequest {
                     peer,
                     src_port,
                     payload: payload.clone(),
@@ -1384,7 +1391,7 @@ impl SipCore {
         }
     }
 
-    /// Process a SessionOut command by sending the corresponding SIP message(s)
+    /// Process a SipCommand by sending the corresponding SIP message(s)
     /// and updating transaction state.
     ///
     /// This applies the requested outgoing session action (provisional responses,
@@ -1396,14 +1403,15 @@ impl SipCore {
     /// # Examples
     ///
     /// ```no_run
-    /// # use crate::sip::{SipCore, CallId, SessionOut};
-    /// # fn example(core: &mut SipCore, call_id: &CallId, out: SessionOut) {
-    /// core.handle_session_out(call_id, out);
+    /// # use crate::entities::CallId;
+    /// # use crate::sip::{SipCore, SipCommand};
+    /// # fn example(core: &mut SipCore, call_id: &CallId, cmd: SipCommand) {
+    /// core.handle_sip_command(call_id, cmd);
     /// # }
     /// ```
-    pub fn handle_session_out(&mut self, call_id: &CallId, out: SessionOut) {
-        match out {
-            SessionOut::SipSend100 => {
+    pub fn handle_sip_command(&mut self, call_id: &CallId, cmd: SipCommand) {
+        match cmd {
+            SipCommand::Send100 => {
                 if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(resp) = response_provisional_from_request(&ctx.req, 100, "Trying") {
                         let bytes = resp.to_bytes();
@@ -1413,7 +1421,7 @@ impl SipCore {
                     }
                 }
             }
-            SessionOut::SipSend180 => {
+            SipCommand::Send180 => {
                 let provision = if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(mut resp) =
                         response_provisional_from_request(&ctx.req, 180, "Ringing")
@@ -1454,7 +1462,7 @@ impl SipCore {
                     self.send_payload(peer, bytes);
                 }
             }
-            SessionOut::SipSend183 { answer } => {
+            SipCommand::Send183 { answer } => {
                 let provision = if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(mut resp) = response_final_with_sdp(
                         &ctx.req,
@@ -1510,7 +1518,7 @@ impl SipCore {
                     self.send_payload(peer, bytes);
                 }
             }
-            SessionOut::SipSend200 { answer } => {
+            SipCommand::Send200 { answer } => {
                 if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(mut resp) = response_final_with_sdp(
                         &ctx.req,
@@ -1542,7 +1550,7 @@ impl SipCore {
                     }
                 }
             }
-            SessionOut::SipSendUpdate { expires } => {
+            SipCommand::SendUpdate { expires } => {
                 let (peer, payload) = if let Some(ctx) = self.invites.get_mut(call_id) {
                     let peer = ctx.tx.peer;
                     let payload = build_update_request(ctx, &self.cfg, expires);
@@ -1556,7 +1564,7 @@ impl SipCore {
                     log::warn!("[sip update] failed to build UPDATE call_id={}", call_id);
                 }
             }
-            SessionOut::SipSendError { code, reason } => {
+            SipCommand::SendError { code, reason } => {
                 if self.active_call_id.as_ref() == Some(call_id) {
                     self.active_call_id = None;
                 }
@@ -1578,7 +1586,7 @@ impl SipCore {
                     self.stop_reliable_provisional(call_id);
                 }
             }
-            SessionOut::SipSendBye => {
+            SipCommand::SendBye => {
                 if self.active_call_id.as_ref() == Some(call_id) {
                     self.active_call_id = None;
                 }
@@ -1596,7 +1604,7 @@ impl SipCore {
                 }
                 self.invites.remove(call_id);
             }
-            SessionOut::SipSendBye200 => {
+            SipCommand::SendBye200 => {
                 if self.active_call_id.as_ref() == Some(call_id) {
                     self.active_call_id = None;
                 }
@@ -1612,7 +1620,6 @@ impl SipCore {
                 }
                 self.invites.remove(call_id);
             }
-            _ => { /* 他の SessionOut は現状未配線 */ }
         }
     }
 
@@ -1639,7 +1646,7 @@ impl SipCore {
             );
         }
 
-        let _ = self.transport_tx.send(SipTransportRequest {
+        let _ = self.transport_tx.try_send(SipTransportRequest {
             peer,
             src_port: self.cfg.sip_port,
             payload,
@@ -1679,7 +1686,7 @@ mod tests {
     use super::*;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
-    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::mpsc;
 
     fn dummy_peer() -> TransportPeer {
         TransportPeer::Udp("127.0.0.1:5060".parse().unwrap())
@@ -1742,7 +1749,7 @@ mod tests {
 
     #[test]
     fn options_response_includes_allow_and_supported() {
-        let (tx, mut rx) = unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(16);
         let mut core = SipCore::new(
             SipConfig {
                 advertised_ip: "127.0.0.1".to_string(),
@@ -1795,7 +1802,7 @@ mod tests {
 
     #[test]
     fn invite_when_busy_returns_486() {
-        let (tx, mut rx) = unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(16);
         let mut core = SipCore::new(
             SipConfig {
                 advertised_ip: "127.0.0.1".to_string(),
@@ -1846,7 +1853,7 @@ mod tests {
 
     #[test]
     fn cancel_sends_200_and_event() {
-        let (tx, mut rx) = unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(16);
         let mut core = SipCore::new(
             SipConfig {
                 advertised_ip: "127.0.0.1".to_string(),
@@ -1884,7 +1891,7 @@ mod tests {
         let events = core.handle_input(&cancel_input);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            SipEvent::Cancel { call_id } => assert_eq!(call_id, "call-1"),
+            SipEvent::Cancel { call_id } => assert_eq!(call_id.as_str(), "call-1"),
             other => panic!("expected Cancel event, got {:?}", other),
         }
 

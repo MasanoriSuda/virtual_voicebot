@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::ports::ai::AsrChunk;
 use crate::rtp::codec::mulaw_to_linear16;
+use crate::utils::mask_pii;
 
 /// ASR 呼び出しの薄いラッパ（挙動は ai::transcribe_and_log と同じ）。
 /// app からはこの関数を経由させる想定だが、現状の呼び出し順・回数は変えない。
@@ -26,7 +27,7 @@ pub async fn transcribe_chunks(call_id: &str, chunks: &[AsrChunk]) -> Result<Str
     write_mulaw_to_wav(&pcmu, &wav_path)?;
     let text = super::transcribe_and_log(&wav_path).await?;
     if is_hallucination(&text) {
-        log::info!("[asr] hallucination filtered: {}", text);
+        log::info!("[asr] hallucination filtered: {}", mask_pii(&text));
         return Ok(String::new());
     }
     Ok(text)

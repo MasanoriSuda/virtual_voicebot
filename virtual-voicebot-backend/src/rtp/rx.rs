@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use log::{debug, info, warn};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::interval;
 
-use crate::config::rtp_config;
+use crate::config::RtpConfig;
 use crate::rtp::codec::{codec_from_pt, decode_to_mulaw};
 use crate::rtp::dtmf::DtmfDetector;
 use crate::rtp::parser::parse_rtp_packet;
@@ -16,7 +16,9 @@ use crate::rtp::rtcp::{
     build_rr, is_rtcp_packet, parse_rtcp_packets, RtcpEvent, RtcpEventTx, RtcpPacket,
     RtcpReceiverReport, RtcpReportBlock,
 };
-use crate::session::{SessionIn, SessionMap};
+use crate::entities::CallId;
+use crate::ports::rtp_sink::RtpEvent;
+use crate::ports::session_lookup::SessionLookup;
 
 /// transport 層から受け取る RTP 生パケット
 #[derive(Debug, Clone)]
@@ -29,10 +31,10 @@ pub struct RawRtp {
 /// transport → rtp → session の受信経路ハンドラ。
 /// 役割: 生パケットをパースし、call_id を引いて session へ MediaRtpIn を送る。
 pub struct RtpReceiver {
-    session_map: SessionMap,
-    rtp_port_map: Arc<Mutex<HashMap<u16, String>>>,
-    jitter: Arc<Mutex<HashMap<String, JitterBuffer>>>,
-    dtmf: Arc<Mutex<HashMap<String, DtmfDetector>>>,
+    session_lookup: Arc<dyn SessionLookup>,
+    rtp_port_map: Arc<Mutex<HashMap<SocketAddr, CallId>>>,
+    jitter: Arc<Mutex<HashMap<CallId, JitterBuffer>>>,
+    dtmf: Arc<Mutex<HashMap<CallId, DtmfDetector>>>,
     jitter_max_reorder: u16,
     rtcp_tx: Option<RtcpEventTx>,
     rtcp_reporter: RtcpReporter,
@@ -40,18 +42,18 @@ pub struct RtpReceiver {
 
 impl RtpReceiver {
     pub fn new(
-        session_map: SessionMap,
-        rtp_port_map: Arc<Mutex<HashMap<u16, String>>>,
+        session_lookup: Arc<dyn SessionLookup>,
+        rtp_port_map: Arc<Mutex<HashMap<SocketAddr, CallId>>>,
         rtcp_tx: Option<RtcpEventTx>,
+        rtp_cfg: RtpConfig,
     ) -> Self {
-        let config = rtp_config();
-        let rtcp_reporter = RtcpReporter::new(config.rtcp_interval);
+        let rtcp_reporter = RtcpReporter::new(rtp_cfg.rtcp_interval);
         Self {
-            session_map,
+            session_lookup,
             rtp_port_map,
             jitter: Arc::new(Mutex::new(HashMap::new())),
             dtmf: Arc::new(Mutex::new(HashMap::new())),
-            jitter_max_reorder: config.jitter_max_reorder,
+            jitter_max_reorder: rtp_cfg.jitter_max_reorder,
             rtcp_tx,
             rtcp_reporter,
         }
@@ -76,7 +78,7 @@ impl RtpReceiver {
     /// // `receiver` is an existing RtpReceiver.
     /// // receiver.handle_raw(raw);
     /// ```
-    pub fn handle_raw(&self, raw: RawRtp) {
+    pub async fn handle_raw(&self, raw: RawRtp) {
         // RTCP簡易判定
         if is_rtcp_packet(&raw.data) {
             warn!(
@@ -85,19 +87,26 @@ impl RtpReceiver {
                 raw.data.len(),
                 raw.dst_port
             );
-            let call_id_opt = raw
-                .dst_port
-                .checked_sub(1)
-                .and_then(|rtp_port| self.rtp_port_map.lock().unwrap().get(&rtp_port).cloned());
+            let call_id_opt = {
+                let map = self.rtp_port_map.lock().await;
+                map.get(&raw.src)
+                    .cloned()
+                    .or_else(|| {
+                        raw.src
+                            .port()
+                            .checked_sub(1)
+                            .and_then(|p| map.get(&SocketAddr::new(raw.src.ip(), p)).cloned())
+                    })
+            };
             for pkt in parse_rtcp_packets(&raw.data) {
                 info!("[rtcp recv] packet {:?}", pkt);
                 if let (Some(call_id), RtcpPacket::SenderReport(sr)) = (&call_id_opt, &pkt) {
                     self.rtcp_reporter
-                        .update_sr(call_id, sr.ssrc, sr.ntp_timestamp, raw.src);
+                        .update_sr(call_id.as_str(), sr.ssrc, sr.ntp_timestamp, raw.src);
                 }
             }
             if let Some(tx) = &self.rtcp_tx {
-                let _ = tx.send(RtcpEvent {
+                let _ = tx.try_send(RtcpEvent {
                     raw: raw.data.clone(),
                     src: raw.src,
                     dst_port: raw.dst_port,
@@ -107,22 +116,18 @@ impl RtpReceiver {
         }
 
         let call_id_opt = {
-            let map = self.rtp_port_map.lock().unwrap();
-            map.get(&raw.dst_port).cloned()
+            let map = self.rtp_port_map.lock().await;
+            map.get(&raw.src).cloned()
         };
 
         if let Some(call_id) = call_id_opt {
-            // 対応するセッションを探して RTP入力イベントを投げる
-            let sess_tx_opt = {
-                let map = self.session_map.lock().unwrap();
-                map.get(&call_id).cloned()
-            };
+            let sink_opt = self.session_lookup.rtp_sink(call_id.clone()).await;
 
-            if let Some(sess_tx) = sess_tx_opt {
+            if let Some(sink) = sink_opt {
                 match parse_rtp_packet(&raw.data) {
                     Ok(pkt) => {
                         self.rtcp_reporter.update_rtp(
-                            &call_id,
+                            call_id.as_str(),
                             pkt.ssrc,
                             pkt.sequence_number,
                             pkt.timestamp,
@@ -136,15 +141,17 @@ impl RtpReceiver {
                             );
                             return;
                         }
-                        let frames = self.reorder(
-                            &call_id,
+        let frames = self
+            .reorder(
+                &call_id,
                             RtpFrame {
                                 seq: pkt.sequence_number,
                                 ts: pkt.timestamp,
                                 pt: pkt.payload_type,
                                 payload: pkt.payload,
                             },
-                        );
+                        )
+            .await;
                         if frames.is_empty() {
                             warn!(
                                 "[rtp recv] drop late/dup seq={} from {} (call_id={})",
@@ -173,7 +180,7 @@ impl RtpReceiver {
                             );
                             let payload = decode_to_mulaw(codec, &frame.payload);
                             let digit = {
-                                let mut map = self.dtmf.lock().unwrap();
+                                let mut map = self.dtmf.lock().await;
                                 let detector =
                                     map.entry(call_id.clone()).or_insert_with(DtmfDetector::new);
                                 detector.ingest_mulaw(&payload)
@@ -183,9 +190,15 @@ impl RtpReceiver {
                                     "[rtp recv] dtmf detected call_id={} digit={}",
                                     call_id, digit
                                 );
-                                let _ = sess_tx.send(SessionIn::Dtmf { digit });
+                                let _ = sink.try_send(RtpEvent::Dtmf {
+                                    call_id: call_id.clone(),
+                                    stream_id: "a-leg".to_string(),
+                                    digit,
+                                });
                             }
-                            let _ = sess_tx.send(SessionIn::MediaRtpIn {
+                            let _ = sink.try_send(RtpEvent::MediaRtpIn {
+                                call_id: call_id.clone(),
+                                stream_id: "a-leg".to_string(),
                                 ts: frame.ts,
                                 payload,
                             });
@@ -207,15 +220,15 @@ impl RtpReceiver {
         } else {
             // 未登録ポート → いまはログだけ
             warn!(
-                "[rtp recv] RTP on port {} without call_id mapping, from {}",
-                raw.dst_port, raw.src
+                "[rtp recv] RTP from {} without call_id mapping (dst_port={})",
+                raw.src, raw.dst_port
             );
         }
     }
 
-    fn reorder(&self, call_id: &str, frame: RtpFrame) -> Vec<RtpFrame> {
-        let mut map = self.jitter.lock().unwrap();
-        let buffer = map.entry(call_id.to_string()).or_default();
+    async fn reorder(&self, call_id: &CallId, frame: RtpFrame) -> Vec<RtpFrame> {
+        let mut map = self.jitter.lock().await;
+        let buffer = map.entry(call_id.clone()).or_default();
         buffer.push(frame, self.jitter_max_reorder)
     }
 }
@@ -288,7 +301,7 @@ impl JitterBuffer {
 }
 
 struct RtcpReporter {
-    tx: UnboundedSender<RtcpReportUpdate>,
+    tx: mpsc::Sender<RtcpReportUpdate>,
 }
 
 enum RtcpReportUpdate {
@@ -311,7 +324,8 @@ enum RtcpReportUpdate {
 
 impl RtcpReporter {
     fn new(rtcp_interval: Duration) -> Self {
-        let (tx, rx) = unbounded_channel();
+        const RTCP_REPORT_CHANNEL_CAPACITY: usize = 256;
+        let (tx, rx) = mpsc::channel(RTCP_REPORT_CHANNEL_CAPACITY);
         tokio::spawn(async move {
             run_rtcp_rr_loop(rx, rtcp_interval).await;
         });
@@ -327,7 +341,7 @@ impl RtcpReporter {
         peer: SocketAddr,
         arrival: Instant,
     ) {
-        let _ = self.tx.send(RtcpReportUpdate::RtpPacket {
+        let _ = self.tx.try_send(RtcpReportUpdate::RtpPacket {
             call_id: call_id.to_string(),
             ssrc,
             seq,
@@ -338,7 +352,7 @@ impl RtcpReporter {
     }
 
     fn update_sr(&self, call_id: &str, ssrc: u32, ntp_timestamp: u64, peer: SocketAddr) {
-        let _ = self.tx.send(RtcpReportUpdate::SenderReport {
+        let _ = self.tx.try_send(RtcpReportUpdate::SenderReport {
             call_id: call_id.to_string(),
             ssrc,
             ntp_timestamp,
@@ -363,7 +377,7 @@ struct RtcpRxState {
     last_sr_at: Option<Instant>,
 }
 
-async fn run_rtcp_rr_loop(mut rx: UnboundedReceiver<RtcpReportUpdate>, rtcp_interval: Duration) {
+async fn run_rtcp_rr_loop(mut rx: mpsc::Receiver<RtcpReportUpdate>, rtcp_interval: Duration) {
     let mut states: HashMap<String, RtcpRxState> = HashMap::new();
     let local_ssrc = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

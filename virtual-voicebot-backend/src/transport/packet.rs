@@ -1,18 +1,19 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::{Duration, Instant};
 use tokio_rustls::TlsAcceptor;
 
-use crate::config;
+use crate::config::{self, RtpConfig};
 use crate::rtp::rtcp::RtcpEventTx;
 use crate::rtp::rx::{RawRtp, RtpReceiver};
-use crate::session::SessionMap;
+use crate::entities::CallId;
+use crate::ports::session_lookup::SessionLookup;
 use crate::transport::{tls, ConnId, TransportPeer, TransportSendRequest};
 
 /// packet層 → SIP層 に渡す入力
@@ -22,14 +23,16 @@ pub struct SipInput {
     pub data: Vec<u8>,
 }
 
-/// RTPポート → call_id のマップ
-pub type RtpPortMap = Arc<Mutex<HashMap<u16, String>>>;
+/// RTP送信元アドレス → call_id のマップ（同時通話対応）
+pub type RtpPortMap = Arc<Mutex<HashMap<SocketAddr, CallId>>>;
 
 #[derive(Clone)]
 struct TcpConn {
     peer: SocketAddr,
-    tx: UnboundedSender<Vec<u8>>,
+    tx: mpsc::Sender<Vec<u8>>,
 }
+
+const TCP_WRITE_CHANNEL_CAPACITY: usize = 256;
 
 type TcpConnMap = Arc<Mutex<HashMap<ConnId, TcpConn>>>;
 
@@ -44,21 +47,24 @@ type TcpConnMap = Arc<Mutex<HashMap<ConnId, TcpConn>>>;
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use tokio::net::{UdpSocket, TcpListener};
-/// use tokio::sync::mpsc::unbounded_channel;
+/// use tokio::sync::mpsc;
 /// use std::net::SocketAddr;
 ///
 /// #[tokio::test]
 /// async fn spawn_packet_loop_smoke() {
 ///     let sip_sock = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
 ///     let rtp_sock = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
-///     let (sip_tx, _sip_rx) = unbounded_channel();
-///     let (send_tx, send_rx) = tokio::sync::mpsc::unbounded_channel();
-///     // Minimal placeholders for session_map, rtp_port_map, rtcp_tx
-///     let session_map = crate::session::SessionMap::default();
-///     let rtp_port_map = crate::packet::RtpPortMap::default();
+///     let (sip_tx, _sip_rx) = mpsc::channel(16);
+///     let (send_tx, send_rx) = mpsc::channel(16);
+///     // Minimal placeholders for session_lookup, rtp_port_map, rtcp_tx
+///     let session_lookup: std::sync::Arc<dyn crate::ports::session_lookup::SessionLookup> =
+///         std::sync::Arc::new(crate::session::SessionRegistry::new());
+///     let rtp_port_map = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 ///     let rtcp_tx = None;
+///     let rtp_cfg = crate::config::rtp_config().clone();
+///     let tcp_idle = crate::config::timeouts().sip_tcp_idle;
 ///
 ///     // Run the loop in background; this will return quickly in tests when sockets are dropped.
 ///     let _handle = tokio::spawn(async move {
@@ -68,9 +74,11 @@ type TcpConnMap = Arc<Mutex<HashMap<ConnId, TcpConn>>>;
 ///             rtp_sock,
 ///             sip_tx,
 ///             send_rx,
-///             session_map,
+///             session_lookup,
 ///             rtp_port_map,
 ///             rtcp_tx,
+///             rtp_cfg,
+///             tcp_idle,
 ///         )
 ///         .await;
 ///     });
@@ -80,20 +88,20 @@ pub async fn run_packet_loop(
     sip_sock: UdpSocket,
     sip_tcp_listener: Option<TcpListener>,
     rtp_sock: UdpSocket,
-    sip_tx: UnboundedSender<SipInput>,
-    mut sip_send_rx: tokio::sync::mpsc::UnboundedReceiver<TransportSendRequest>,
-    session_map: SessionMap,
+    sip_tx: mpsc::Sender<SipInput>,
+    mut sip_send_rx: tokio::sync::mpsc::Receiver<TransportSendRequest>,
+    session_lookup: Arc<dyn SessionLookup>,
     rtp_port_map: RtpPortMap,
     rtcp_tx: Option<RtcpEventTx>,
+    rtp_cfg: RtpConfig,
+    tcp_idle: Duration,
 ) -> std::io::Result<()> {
     let _sip_port = sip_sock.local_addr()?.port();
     let _rtp_port = rtp_sock.local_addr()?.port();
 
     let tcp_conns: TcpConnMap = Arc::new(Mutex::new(HashMap::new()));
     let conn_seq = Arc::new(AtomicU64::new(1));
-    let tcp_idle = config::timeouts().sip_tcp_idle;
-
-    let rtp_rx = RtpReceiver::new(session_map.clone(), rtp_port_map.clone(), rtcp_tx);
+    let rtp_rx = RtpReceiver::new(session_lookup.clone(), rtp_port_map.clone(), rtcp_tx, rtp_cfg);
 
     if let Some(listener) = sip_tcp_listener {
         let sip_tx = sip_tx.clone();
@@ -137,8 +145,8 @@ pub async fn run_packet_loop(
 /// SIP用 UDP ループ
 async fn run_sip_udp_loop(
     sock: UdpSocket,
-    sip_tx: UnboundedSender<SipInput>,
-    sip_send_rx: &mut UnboundedReceiver<TransportSendRequest>,
+    sip_tx: mpsc::Sender<SipInput>,
+    sip_send_rx: &mut mpsc::Receiver<TransportSendRequest>,
     tcp_conns: TcpConnMap,
 ) -> std::io::Result<()> {
     let local_addr = sock.local_addr()?;
@@ -158,8 +166,8 @@ async fn run_sip_udp_loop(
                     peer: TransportPeer::Udp(src),
                     data,
                 };
-                if let Err(e) = sip_tx.send(input) {
-                    log::warn!("[packet] failed to send to SIP handler: {:?}", e);
+                if let Err(e) = sip_tx.try_send(input) {
+                    log::warn!("[packet] SIP input dropped (channel full): {:?}", e);
                 }
             }
             Some(req) = sip_send_rx.recv() => {
@@ -178,13 +186,12 @@ async fn run_sip_udp_loop(
                         let _ = sock.send_to(&req.payload, dst).await.ok();
                     }
                     TransportPeer::Tcp(conn_id) => {
-                        let tx = tcp_conns
-                            .lock()
-                            .unwrap()
-                            .get(&conn_id)
-                            .map(|conn| conn.tx.clone());
+                        let tx = {
+                            let map = tcp_conns.lock().await;
+                            map.get(&conn_id).map(|conn| conn.tx.clone())
+                        };
                         if let Some(tx) = tx {
-                            let _ = tx.send(req.payload);
+                            let _ = tx.try_send(req.payload);
                         } else {
                             log::warn!("[sip send] unknown tcp conn_id={}", conn_id);
                         }
@@ -216,7 +223,7 @@ async fn run_rtp_udp_loop(sock: UdpSocket, rtp_rx: RtpReceiver) -> std::io::Resu
         };
 
         // rtp レイヤへ委譲（解析と session への転送）
-        rtp_rx.handle_raw(raw);
+        rtp_rx.handle_raw(raw).await;
     }
 }
 
@@ -236,12 +243,12 @@ async fn run_rtp_udp_loop(sock: UdpSocket, rtp_rx: RtpReceiver) -> std::io::Resu
 ///
 /// ```
 /// # use tokio::net::TcpListener;
-/// # use tokio::sync::mpsc::unbounded_channel;
+/// # use tokio::sync::mpsc;
 /// # use std::sync::{Arc, atomic::AtomicU64};
 /// # use std::time::Duration;
 /// # async fn example() -> std::io::Result<()> {
 /// let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-/// let (sip_tx, _sip_rx) = unbounded_channel();
+/// let (sip_tx, _sip_rx) = mpsc::channel(16);
 /// // Placeholder for the real TcpConnMap type used by the library:
 /// let tcp_conns = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 /// let conn_seq = Arc::new(AtomicU64::new(1));
@@ -257,7 +264,7 @@ async fn run_rtp_udp_loop(sock: UdpSocket, rtp_rx: RtpReceiver) -> std::io::Resu
 /// ```
 async fn run_sip_tcp_accept_loop(
     listener: TcpListener,
-    sip_tx: UnboundedSender<SipInput>,
+    sip_tx: mpsc::Sender<SipInput>,
     tcp_conns: TcpConnMap,
     conn_seq: Arc<AtomicU64>,
     idle_timeout: Duration,
@@ -286,7 +293,7 @@ async fn handle_sip_tcp_conn(
     conn_id: ConnId,
     peer: SocketAddr,
     stream: TcpStream,
-    sip_tx: UnboundedSender<SipInput>,
+    sip_tx: mpsc::Sender<SipInput>,
     tcp_conns: TcpConnMap,
     idle_timeout: Duration,
 ) -> std::io::Result<()> {
@@ -305,7 +312,7 @@ async fn handle_sip_tcp_conn(
 async fn run_sip_tls_accept_loop(
     listener: TcpListener,
     acceptor: TlsAcceptor,
-    sip_tx: UnboundedSender<SipInput>,
+    sip_tx: mpsc::Sender<SipInput>,
     tcp_conns: TcpConnMap,
     conn_seq: Arc<AtomicU64>,
     idle_timeout: Duration,
@@ -350,7 +357,7 @@ async fn handle_sip_stream_conn<S>(
     conn_id: ConnId,
     peer: SocketAddr,
     stream: S,
-    sip_tx: UnboundedSender<SipInput>,
+    sip_tx: mpsc::Sender<SipInput>,
     tcp_conns: TcpConnMap,
     idle_timeout: Duration,
     label: &'static str,
@@ -359,10 +366,10 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let (mut reader, mut writer) = tokio::io::split(stream);
-    let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(TCP_WRITE_CHANNEL_CAPACITY);
     tcp_conns
         .lock()
-        .unwrap()
+        .await
         .insert(conn_id, TcpConn { peer, tx: write_tx });
 
     const MAX_BUFFER: usize = 256 * 1024;
@@ -408,9 +415,9 @@ where
                                 peer: TransportPeer::Tcp(conn_id),
                                 data: msg,
                             };
-                            if let Err(e) = sip_tx.send(input) {
+                            if let Err(e) = sip_tx.try_send(input) {
                                 log::warn!(
-                                    "[sip {}] conn_id={} send to sip handler failed: {:?}",
+                                    "[sip {}] conn_id={} sip input dropped (channel full): {:?}",
                                     label,
                                     conn_id,
                                     e
@@ -444,7 +451,7 @@ where
         }
     }
 
-    tcp_conns.lock().unwrap().remove(&conn_id);
+    tcp_conns.lock().await.remove(&conn_id);
     Ok(())
 }
 

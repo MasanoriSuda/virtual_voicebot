@@ -1,19 +1,25 @@
 // src/rtp/packet.rs
 
-/// シンプルな RTP パケット表現.
-/// v1では CSRC / 拡張ヘッダは未対応（必要になったら拡張）。
+/// シンプルな RTP パケット表現。
+/// CSRC/拡張ヘッダは保持し、必要ならビルド/パースで反映する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RtpPacket {
     pub version: u8, // 通常は 2
     pub padding: bool,
-    pub extension: bool,
-    pub csrc_count: u8, // 今は 0 固定扱いでもOK
     pub marker: bool,
     pub payload_type: u8,
     pub sequence_number: u16,
     pub timestamp: u32,
     pub ssrc: u32,
+    pub csrcs: Vec<u32>,
+    pub extension: Option<RtpExtension>,
     pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RtpExtension {
+    pub profile: u16,
+    pub data: Vec<u8>,
 }
 
 impl RtpPacket {
@@ -28,13 +34,13 @@ impl RtpPacket {
         Self {
             version: 2,
             padding: false,
-            extension: false,
-            csrc_count: 0,
             marker: false,
             payload_type,
             sequence_number,
             timestamp,
             ssrc,
+            csrcs: Vec::new(),
+            extension: None,
             payload,
         }
     }

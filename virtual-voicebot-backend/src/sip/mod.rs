@@ -27,4 +27,4 @@ pub use codec::{
 pub use protocols::*;
 
 pub use core::{parse_offer_sdp, SipCore};
-pub use types::{SipConfig, SipEvent};
+pub use types::{SipCommand, SipConfig, SipEvent};

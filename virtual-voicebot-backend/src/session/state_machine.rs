@@ -1,4 +1,20 @@
-use crate::session::types::{next_session_state, SessState, SessionIn};
+use crate::session::types::{next_session_state, SessState, SessionControlIn};
+
+#[derive(Debug, Clone, Copy)]
+pub enum SessionEvent<'a> {
+    Input(&'a SessionControlIn),
+}
+
+impl<'a> From<&'a SessionControlIn> for SessionEvent<'a> {
+    fn from(value: &'a SessionControlIn) -> Self {
+        SessionEvent::Input(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionCommand {
+    Transition(SessState),
+}
 
 /// Pure session state machine: transitions only, no I/O.
 pub struct SessionStateMachine {
@@ -16,17 +32,41 @@ impl SessionStateMachine {
         self.state
     }
 
-    pub fn next_state(&self, event: &SessionIn) -> SessState {
-        next_session_state(self.state, event)
+    pub fn process_event(&self, event: SessionEvent<'_>) -> Vec<SessionCommand> {
+        let next = match event {
+            SessionEvent::Input(input) => next_session_state(self.state, input),
+        };
+        if next == self.state {
+            Vec::new()
+        } else {
+            vec![SessionCommand::Transition(next)]
+        }
     }
 
-    pub fn apply(&mut self, next: SessState) {
-        self.state = next;
+    pub fn apply_commands(&mut self, commands: &[SessionCommand]) {
+        for command in commands {
+            let SessionCommand::Transition(next) = command;
+            self.state = *next;
+        }
     }
+}
 
-    pub fn advance(&mut self, event: &SessionIn) -> SessState {
-        let next = self.next_state(event);
-        self.state = next;
-        next
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::types::CallId;
+
+    #[test]
+    fn process_event_emits_transition() {
+        let sm = SessionStateMachine::new();
+        let event = SessionControlIn::SipInvite {
+            call_id: CallId::new("call".to_string()).expect("valid test call id"),
+            from: "from".to_string(),
+            to: "to".to_string(),
+            offer: super::super::types::Sdp::pcmu("127.0.0.1", 10000),
+            session_timer: None,
+        };
+        let commands = sm.process_event(SessionEvent::from(&event));
+        assert_eq!(commands, vec![SessionCommand::Transition(SessState::Early)]);
     }
 }

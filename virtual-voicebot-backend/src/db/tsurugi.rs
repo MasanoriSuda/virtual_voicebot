@@ -1,12 +1,14 @@
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use log::warn;
 use tsubakuro_rust_core::prelude::{
     CommitOption, ConnectionOption, Session, SqlClient, SqlQueryResultFetch, TransactionOption,
 };
 
-use crate::db::port::{PhoneLookupFuture, PhoneLookupPort, PhoneLookupResult};
+use crate::ports::phone_lookup::{
+    PhoneLookupError, PhoneLookupFuture, PhoneLookupPort, PhoneLookupResult,
+};
 
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -19,7 +21,10 @@ impl TsurugiAdapter {
         Self { endpoint }
     }
 
-    async fn lookup_phone_inner(&self, phone_number: &str) -> Result<Option<PhoneLookupResult>> {
+    async fn lookup_phone_inner(
+        &self,
+        phone_number: &str,
+    ) -> anyhow::Result<Option<PhoneLookupResult>> {
         let mut connection_option = ConnectionOption::new();
         connection_option
             .set_endpoint_url(self.endpoint.as_str())
@@ -100,13 +105,14 @@ impl PhoneLookupPort for TsurugiAdapter {
                 })
             });
 
-            match tokio::time::timeout(LOOKUP_TIMEOUT, handle).await {
+            let result = match tokio::time::timeout(LOOKUP_TIMEOUT, handle).await {
                 Ok(join_result) => match join_result {
                     Ok(result) => result,
                     Err(err) => Err(anyhow!("tsurugi task: {}", err)),
                 },
                 Err(_) => Err(anyhow!("tsurugi lookup timed out")),
-            }
+            };
+            result.map_err(|e| PhoneLookupError::LookupFailed(e.to_string()))
         })
     }
 }

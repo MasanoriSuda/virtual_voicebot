@@ -19,5 +19,5 @@ pub struct TransportSendRequest {
     pub payload: Vec<u8>,
 }
 
-pub type TransportSendTx = tokio::sync::mpsc::UnboundedSender<TransportSendRequest>;
-pub type TransportSendRx = tokio::sync::mpsc::UnboundedReceiver<TransportSendRequest>;
+pub type TransportSendTx = tokio::sync::mpsc::Sender<TransportSendRequest>;
+pub type TransportSendRx = tokio::sync::mpsc::Receiver<TransportSendRequest>;

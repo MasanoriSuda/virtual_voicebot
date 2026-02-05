@@ -1,10 +1,10 @@
 use std::net::SocketAddr;
 
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 
-use crate::config::rtp_config;
+use crate::config::RtpConfig;
 use crate::rtp::codec::{codec_from_pt, encode_from_mulaw};
 use crate::rtp::rtcp::{build_sr, ntp_timestamp_now, RtcpSenderReport};
 use crate::rtp::stream_manager::StreamManager;
@@ -35,36 +35,41 @@ pub enum RtpTxCommand {
 
 #[derive(Clone)]
 pub struct RtpTxHandle {
-    tx: UnboundedSender<RtpTxCommand>,
+    tx: mpsc::Sender<RtpTxCommand>,
 }
 
 impl RtpTxHandle {
-    pub fn new() -> Self {
-        let (tx, rx) = unbounded_channel();
+    pub fn new(rtp_cfg: RtpConfig) -> Self {
+        const RTP_TX_CHANNEL_CAPACITY: usize = 256;
+        let (tx, rx) = mpsc::channel(RTP_TX_CHANNEL_CAPACITY);
         let streams = StreamManager::new();
-        tokio::spawn(async move { run_tx(streams, rx).await });
+        tokio::spawn(async move { run_tx(streams, rx, rtp_cfg.rtcp_interval).await });
         Self { tx }
     }
 
     pub fn start(&self, key: String, dst: SocketAddr, pt: u8, ssrc: u32, seq: u16, ts: u32) {
-        let _ = self.tx.send(RtpTxCommand::Start {
+        if let Err(err) = self.tx.try_send(RtpTxCommand::Start {
             key,
             dst,
             pt,
             ssrc,
             seq,
             ts,
-        });
+        }) {
+            log::warn!("[rtp tx] drop Start command (channel full): {:?}", err);
+        }
     }
 
     pub fn stop(&self, key: &str) {
-        let _ = self.tx.send(RtpTxCommand::Stop {
+        if let Err(err) = self.tx.try_send(RtpTxCommand::Stop {
             key: key.to_string(),
-        });
+        }) {
+            log::warn!("[rtp tx] drop Stop command (channel full): {:?}", err);
+        }
     }
 
     pub fn send_payload(&self, key: &str, payload: Vec<u8>) {
-        let _ = self.tx.send(RtpTxCommand::SendPayload {
+        let _ = self.tx.try_send(RtpTxCommand::SendPayload {
             key: key.to_string(),
             payload,
         });
@@ -74,16 +79,19 @@ impl RtpTxHandle {
         if delta == 0 {
             return;
         }
-        let _ = self.tx.send(RtpTxCommand::AdjustTimestamp {
+        let _ = self.tx.try_send(RtpTxCommand::AdjustTimestamp {
             key: key.to_string(),
             delta,
         });
     }
 }
 
-async fn run_tx(streams: StreamManager, mut rx: UnboundedReceiver<RtpTxCommand>) {
+async fn run_tx(
+    streams: StreamManager,
+    mut rx: mpsc::Receiver<RtpTxCommand>,
+    rtcp_interval: std::time::Duration,
+) {
     let mut sock: Option<UdpSocket> = None;
-    let rtcp_interval = rtp_config().rtcp_interval;
     let mut rtcp_tick = interval(rtcp_interval);
     rtcp_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 

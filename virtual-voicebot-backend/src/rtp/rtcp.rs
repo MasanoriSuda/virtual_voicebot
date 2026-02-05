@@ -18,10 +18,10 @@ pub struct RtcpSendRequest {
 }
 
 /// rtp→上位へ RTCP を通知するための I/F（現状は未使用）。
-pub type RtcpEventTx = tokio::sync::mpsc::UnboundedSender<RtcpEvent>;
+pub type RtcpEventTx = tokio::sync::mpsc::Sender<RtcpEvent>;
 
 /// 上位→rtp へ RTCP 送信を依頼するための I/F（現状は未使用）。
-pub type RtcpSendTx = tokio::sync::mpsc::UnboundedSender<RtcpSendRequest>;
+pub type RtcpSendTx = tokio::sync::mpsc::Sender<RtcpSendRequest>;
 
 /// 簡易判定: RTCP パケットかどうか（Version=2 かつ PT が 192-223 の範囲を検知）
 pub fn is_rtcp_packet(data: &[u8]) -> bool {

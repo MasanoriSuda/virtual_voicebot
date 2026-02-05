@@ -2,29 +2,14 @@
 // types.rs
 use std::time::Duration;
 
+use crate::ports::rtp_sink::{RtpEvent, RtpEventSendError, RtpEventSink};
+use crate::ports::session_lookup::{SessionLookup, SessionLookupFuture};
 use crate::session::b2bua::BLeg;
-
-#[derive(Clone, Debug)]
-pub struct Sdp {
-    pub ip: String,
-    pub port: u16,
-    pub payload_type: u8,
-    pub codec: String, // e.g. "PCMU/8000"
-}
+use thiserror::Error;
 
 /// Call-ID を表す（設計ドキュメント上はセッション識別子と一致させる）
-pub type CallId = String;
-
-impl Sdp {
-    pub fn pcmu(ip: impl Into<String>, port: u16) -> Self {
-        Self {
-            ip: ip.into(),
-            port,
-            payload_type: 0,
-            codec: "PCMU/8000".to_string(),
-        }
-    }
-}
+pub use crate::entities::CallId;
+pub use crate::ports::sip::{Sdp, SessionRefresher, SessionTimerInfo};
 
 #[derive(Clone, Debug)]
 pub struct MediaConfig {
@@ -43,18 +28,6 @@ impl MediaConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionRefresher {
-    Uac,
-    Uas,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct SessionTimerInfo {
-    pub expires: Duration,
-    pub refresher: SessionRefresher,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IvrState {
     #[default]
@@ -65,9 +38,9 @@ pub enum IvrState {
     B2buaMode,
 }
 
-/// sip/session 間で受け取るイベント（上位: sip・rtp・app からの入力）
+/// sip/session 間で受け取る制御イベント（SIP/タイマー/app など）
 #[derive(Debug)]
-pub enum SessionIn {
+pub enum SessionControlIn {
     /// SIP側からのINVITE入力
     SipInvite {
         call_id: CallId,
@@ -91,11 +64,6 @@ pub enum SessionIn {
     SipTransactionTimeout {
         call_id: CallId,
     },
-    /// RTP入力（メディア/PCM経路）
-    MediaRtpIn {
-        ts: u32,
-        payload: Vec<u8>,
-    },
     /// Bレグ確立（B2BUA）
     B2buaEstablished {
         b_leg: BLeg,
@@ -109,16 +77,8 @@ pub enum SessionIn {
         reason: String,
         status: Option<u16>,
     },
-    /// BレグからのRTP
-    BLegRtp {
-        payload: Vec<u8>,
-    },
     /// BレグからのBYE
     BLegBye,
-    /// DTMF tone detected (in-band)
-    Dtmf {
-        digit: char,
-    },
     /// IVR menu timeout
     IvrTimeout,
     /// 転送中アナウンスの繰り返し
@@ -145,7 +105,73 @@ pub enum SessionIn {
     SipSessionExpires {
         timer: SessionTimerInfo,
     },
-    Abort(anyhow::Error),
+    Abort(SessionError),
+}
+
+/// RTP/DTMF など高頻度メディアイベント
+#[derive(Debug)]
+pub enum SessionMediaIn {
+    /// RTP入力（メディア/PCM経路）
+    MediaRtpIn {
+        call_id: CallId,
+        stream_id: String,
+        ts: u32,
+        payload: Vec<u8>,
+    },
+    /// DTMF tone detected (in-band)
+    Dtmf {
+        call_id: CallId,
+        stream_id: String,
+        digit: char,
+    },
+    /// BレグからのRTP
+    BLegRtp {
+        call_id: CallId,
+        stream_id: String,
+        payload: Vec<u8>,
+    },
+}
+
+impl From<RtpEvent> for SessionMediaIn {
+    fn from(event: RtpEvent) -> Self {
+        match event {
+            RtpEvent::MediaRtpIn {
+                call_id,
+                stream_id,
+                ts,
+                payload,
+            } => SessionMediaIn::MediaRtpIn {
+                call_id,
+                stream_id,
+                ts,
+                payload,
+            },
+            RtpEvent::Dtmf {
+                call_id,
+                stream_id,
+                digit,
+            } => SessionMediaIn::Dtmf {
+                call_id,
+                stream_id,
+                digit,
+            },
+            RtpEvent::BLegRtp {
+                call_id,
+                stream_id,
+                payload,
+            } => SessionMediaIn::BLegRtp {
+                call_id,
+                stream_id,
+                payload,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum SessionError {
+    #[error("internal session error: {0}")]
+    Internal(String),
 }
 
 /// session → 上位（sip/rtp/app/metrics）への通知/指示
@@ -231,26 +257,26 @@ pub(crate) enum SessState {
 /// # Examples
 ///
 /// ```
-/// use crate::types::{next_session_state, SessState, SessionIn};
+/// use crate::types::{next_session_state, CallId, SessState, SessionControlIn, Sdp};
 ///
 /// let s = SessState::Idle;
-/// let next = next_session_state(s, &SessionIn::SipInvite { call_id: "".into(), from: "".into(), to: "".into(), offer: None, session_timer: None });
+/// let next = next_session_state(s, &SessionControlIn::SipInvite { call_id: CallId::new("call-1").unwrap(), from: "".into(), to: "".into(), offer: Sdp::pcmu("127.0.0.1", 10000), session_timer: None });
 /// assert_eq!(next, SessState::Early);
 /// ```
-pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
+pub(crate) fn next_session_state(current: SessState, event: &SessionControlIn) -> SessState {
     match event {
-        SessionIn::SipBye
-        | SessionIn::SipCancel
-        | SessionIn::BLegBye
-        | SessionIn::AppHangup
-        | SessionIn::SessionTimerFired
-        | SessionIn::Abort(_) => SessState::Terminated,
-        SessionIn::RingDurationElapsed => current,
-        SessionIn::SipInvite { .. } => match current {
+        SessionControlIn::SipBye
+        | SessionControlIn::SipCancel
+        | SessionControlIn::BLegBye
+        | SessionControlIn::AppHangup
+        | SessionControlIn::SessionTimerFired
+        | SessionControlIn::Abort(_) => SessState::Terminated,
+        SessionControlIn::RingDurationElapsed => current,
+        SessionControlIn::SipInvite { .. } => match current {
             SessState::Idle => SessState::Early,
             _ => current,
         },
-        SessionIn::SipAck => match current {
+        SessionControlIn::SipAck => match current {
             SessState::Early => SessState::Established,
             _ => current,
         },
@@ -259,35 +285,168 @@ pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessS
 }
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc::UnboundedSender;
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot};
 
-pub type SessionMap = Arc<Mutex<HashMap<CallId, UnboundedSender<SessionIn>>>>;
-
-/// session manager の薄いラッパ（挙動は従来のマップ操作と同じ）
 #[derive(Clone)]
+pub struct SessionHandle {
+    pub control_tx: mpsc::Sender<SessionControlIn>,
+    pub media_tx: mpsc::Sender<SessionMediaIn>,
+}
+
+#[derive(Clone)]
+struct SessionMediaSink {
+    tx: mpsc::Sender<SessionMediaIn>,
+}
+
+impl SessionMediaSink {
+    fn new(tx: mpsc::Sender<SessionMediaIn>) -> Self {
+        Self { tx }
+    }
+}
+
+impl RtpEventSink for SessionMediaSink {
+    fn try_send(&self, event: RtpEvent) -> Result<(), RtpEventSendError> {
+        match self.tx.try_send(event.into()) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(RtpEventSendError::Full),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(RtpEventSendError::Closed),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// SessionRegistry keeps the active session channels keyed by CallId.
+///
+/// Register immediately after spawning a session and unregister on termination
+/// (e.g., after BYE/CANCEL handling or when the session task exits) to avoid
+/// stale entries or duplicate registrations.
 pub struct SessionRegistry {
-    inner: SessionMap,
+    tx: mpsc::Sender<RegistryCommand>,
+}
+
+enum RegistryCommand {
+    Register {
+        call_id: CallId,
+        handle: SessionHandle,
+        reply: oneshot::Sender<()>,
+    },
+    Unregister {
+        call_id: CallId,
+        reply: oneshot::Sender<Option<SessionHandle>>,
+    },
+    Get {
+        call_id: CallId,
+        reply: oneshot::Sender<Option<SessionHandle>>,
+    },
+    List {
+        reply: oneshot::Sender<Vec<CallId>>,
+    },
 }
 
 impl SessionRegistry {
-    pub fn new(inner: SessionMap) -> Self {
-        Self { inner }
+    pub fn new() -> Self {
+        let (tx, mut rx) = mpsc::channel(128);
+        tokio::spawn(async move {
+            let mut map: HashMap<CallId, SessionHandle> = HashMap::new();
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    RegistryCommand::Register {
+                        call_id,
+                        handle,
+                        reply,
+                    } => {
+                        map.insert(call_id, handle);
+                        let _ = reply.send(());
+                    }
+                    RegistryCommand::Unregister { call_id, reply } => {
+                        let removed = map.remove(&call_id);
+                        let _ = reply.send(removed);
+                    }
+                    RegistryCommand::Get { call_id, reply } => {
+                        let found = map.get(&call_id).cloned();
+                        let _ = reply.send(found);
+                    }
+                    RegistryCommand::List { reply } => {
+                        let list = map.keys().cloned().collect();
+                        let _ = reply.send(list);
+                    }
+                }
+            }
+        });
+        Self { tx }
     }
 
-    pub fn insert(&self, call_id: CallId, tx: UnboundedSender<SessionIn>) {
-        self.inner.lock().unwrap().insert(call_id, tx);
+    pub async fn insert(&self, call_id: CallId, handle: SessionHandle) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(RegistryCommand::Register {
+                call_id,
+                handle,
+                reply: reply_tx,
+            })
+            .await
+            .is_ok()
+        {
+            let _ = reply_rx.await;
+        }
     }
 
-    pub fn get(&self, call_id: &CallId) -> Option<UnboundedSender<SessionIn>> {
-        self.inner.lock().unwrap().get(call_id).cloned()
+    pub async fn get(&self, call_id: &CallId) -> Option<SessionHandle> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(RegistryCommand::Get {
+                call_id: call_id.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        reply_rx.await.ok().flatten()
     }
 
-    pub fn remove(&self, call_id: &CallId) -> Option<UnboundedSender<SessionIn>> {
-        self.inner.lock().unwrap().remove(call_id)
+    pub async fn remove(&self, call_id: &CallId) -> Option<SessionHandle> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(RegistryCommand::Unregister {
+                call_id: call_id.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        reply_rx.await.ok().flatten()
     }
 
-    pub fn list(&self) -> Vec<CallId> {
-        self.inner.lock().unwrap().keys().cloned().collect()
+    pub async fn list(&self) -> Vec<CallId> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(RegistryCommand::List { reply: reply_tx })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        reply_rx.await.unwrap_or_default()
+    }
+}
+
+impl SessionLookup for SessionRegistry {
+    fn rtp_sink(&self, call_id: CallId) -> SessionLookupFuture<Option<Arc<dyn RtpEventSink>>> {
+        let registry = self.clone();
+        Box::pin(async move {
+            registry.get(&call_id).await.map(|handle| {
+                let sink = SessionMediaSink::new(handle.media_tx);
+                Arc::new(sink) as Arc<dyn RtpEventSink>
+            })
+        })
     }
 }

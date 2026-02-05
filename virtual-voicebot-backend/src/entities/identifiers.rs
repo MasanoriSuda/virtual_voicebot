@@ -1,12 +1,24 @@
 use std::fmt;
 
+use thiserror::Error;
+
 /// SIP Call-ID に対応
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallId(String);
 
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum CallIdError {
+    #[error("CallId is empty")]
+    Empty,
+}
+
 impl CallId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn new(value: impl Into<String>) -> Result<Self, CallIdError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(CallIdError::Empty);
+        }
+        Ok(Self(value))
     }
 
     pub fn as_str(&self) -> &str {

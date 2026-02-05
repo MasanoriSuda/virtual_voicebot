@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use std::fmt::{self, Write};
 
-use crate::session::types::Sdp;
+use crate::ports::sip::Sdp;
 use crate::sip::message::{SipHeader, SipMethod, SipRequest, SipResponse};
 
 /// 追加で使いやすい Builder スタイル
@@ -378,7 +378,7 @@ impl fmt::Display for SipResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::types::Sdp;
+    use crate::ports::sip::Sdp;
 
     /// Verifies that a final SDP response for an INVITE to a `sips:` URI uses a `sips:` Contact header.
     ///

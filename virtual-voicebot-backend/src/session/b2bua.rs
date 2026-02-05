@@ -8,15 +8,14 @@ use anyhow::{anyhow, Result};
 use log::{info, warn};
 use rand::Rng;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc;
 use tokio::sync::Notify;
 use tokio::time::sleep;
 
-use crate::config;
-use crate::config::RegistrarConfig;
+use crate::config::{RegistrarConfig, RegistrarTransport, SessionRuntimeConfig};
 use crate::rtp::codec::{codec_from_pt, decode_to_mulaw};
 use crate::rtp::parser::parse_rtp_packet;
-use crate::session::types::{Sdp, SessionIn};
+use crate::session::types::{CallId, Sdp, SessionControlIn, SessionMediaIn};
 use crate::sip::auth::{build_authorization_header, parse_digest_challenge};
 use crate::sip::auth_cache::{self, DigestAuthChallenge, DigestAuthHeader};
 use crate::sip::b2bua_bridge::{self, B2buaRegistration, B2buaSipMessage};
@@ -24,6 +23,7 @@ use crate::sip::builder::response_simple_from_request;
 use crate::sip::message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
 use crate::sip::{parse_cseq_header, parse_offer_sdp, parse_uri, SipRequestBuilder};
 use crate::transport::TransportPeer;
+use crate::utils::mask_pii;
 
 const RTP_BUFFER_SIZE: usize = 2048;
 const DEFAULT_SIP_PORT: u16 = 5060;
@@ -68,20 +68,30 @@ impl BLeg {
 }
 
 pub fn spawn_transfer(
-    a_call_id: String,
-    tx_in: UnboundedSender<SessionIn>,
+    a_call_id: CallId,
+    control_tx: mpsc::Sender<SessionControlIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> tokio::sync::oneshot::Sender<()> {
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        match run_transfer(a_call_id.clone(), tx_in.clone(), cancel_rx).await {
+        match run_transfer(
+            a_call_id.clone(),
+            control_tx.clone(),
+            media_tx.clone(),
+            cancel_rx,
+            runtime_cfg,
+        )
+        .await
+        {
             Ok(Some(b_leg)) => {
-                let _ = tx_in.send(SessionIn::B2buaEstablished { b_leg });
+                let _ = control_tx.try_send(SessionControlIn::B2buaEstablished { b_leg });
             }
             Ok(None) => {
                 info!("[b2bua {}] transfer cancelled", a_call_id);
             }
             Err(err) => {
-                let _ = tx_in.send(SessionIn::B2buaFailed {
+                let _ = control_tx.try_send(SessionControlIn::B2buaFailed {
                     reason: err.to_string(),
                     status: None,
                 });
@@ -92,21 +102,32 @@ pub fn spawn_transfer(
 }
 
 pub fn spawn_outbound(
-    a_call_id: String,
+    a_call_id: CallId,
     number: String,
-    tx_in: UnboundedSender<SessionIn>,
+    control_tx: mpsc::Sender<SessionControlIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> tokio::sync::oneshot::Sender<()> {
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        match run_outbound(a_call_id.clone(), number, tx_in.clone(), cancel_rx).await {
+        match run_outbound(
+            a_call_id.clone(),
+            number,
+            control_tx.clone(),
+            media_tx.clone(),
+            cancel_rx,
+            runtime_cfg,
+        )
+        .await
+        {
             Ok(Some(b_leg)) => {
-                let _ = tx_in.send(SessionIn::B2buaEstablished { b_leg });
+                let _ = control_tx.try_send(SessionControlIn::B2buaEstablished { b_leg });
             }
             Ok(None) => {
                 info!("[b2bua {}] outbound cancelled", a_call_id);
             }
             Err(err) => {
-                let _ = tx_in.send(SessionIn::B2buaFailed {
+                let _ = control_tx.try_send(SessionControlIn::B2buaFailed {
                     reason: err.to_string(),
                     status: err.downcast_ref::<OutboundError>().map(|e| e.status),
                 });
@@ -117,21 +138,22 @@ pub fn spawn_outbound(
 }
 
 async fn run_transfer(
-    a_call_id: String,
-    tx_in: UnboundedSender<SessionIn>,
+    a_call_id: CallId,
+    control_tx: mpsc::Sender<SessionControlIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> Result<Option<BLeg>> {
-    let cfg = config::Config::from_env()?;
-    let target_uri = config::transfer_target_uri();
+    let target_uri = runtime_cfg.transfer_target_uri.clone();
     let target_addr = resolve_target_addr(&target_uri)?;
 
-    let sip_port = cfg.sip_port;
-    let via_host = cfg.advertised_ip.clone();
+    let sip_port = runtime_cfg.sip_port;
+    let via_host = runtime_cfg.advertised_ip.clone();
     let via = build_via(via_host.as_str(), sip_port);
     let local_tag = generate_tag();
     let from_header = format!(
         "<sip:rustbot@{}:{}>;tag={}",
-        cfg.advertised_ip, sip_port, local_tag
+        runtime_cfg.advertised_ip, sip_port, local_tag
     );
     let to_header = format!("<{}>", target_uri);
     let b_call_id = format!("b2bua-{}-{}", a_call_id, rand::thread_rng().gen::<u32>());
@@ -139,7 +161,7 @@ async fn run_transfer(
 
     let rtp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
     let rtp_port = rtp_socket.local_addr()?.port();
-    let sdp = build_sdp(cfg.advertised_ip.as_str(), rtp_port);
+    let sdp = build_sdp(runtime_cfg.advertised_ip.as_str(), rtp_port);
 
     let cseq: u32 = 1;
     let invite = SipRequestBuilder::new(SipMethod::Invite, target_uri.clone())
@@ -151,7 +173,7 @@ async fn run_transfer(
         .header("CSeq", format!("{cseq} INVITE"))
         .header(
             "Contact",
-            format!("<sip:rustbot@{}:{}>", cfg.advertised_ip, sip_port),
+            format!("<sip:rustbot@{}:{}>", runtime_cfg.advertised_ip, sip_port),
         )
         .body(sdp.as_bytes(), Some("application/sdp"))
         .build();
@@ -159,7 +181,7 @@ async fn run_transfer(
     log_invite("transfer", target_addr, &invite);
     send_b2bua_payload(TransportPeer::Udp(target_addr), invite.to_bytes())?;
 
-    let timeout = config::transfer_timeout();
+    let timeout = runtime_cfg.transfer_timeout;
     let timeout_sleep = sleep(timeout);
     tokio::pin!(timeout_sleep);
     let mut provisional_received = false;
@@ -293,14 +315,14 @@ async fn run_transfer(
                     a_call_id.clone(),
                     b_call_id.clone(),
                     sip_rx,
-                    tx_in.clone(),
+                    control_tx.clone(),
                     shutdown.clone(),
                     shutdown_notify.clone(),
                 );
                 spawn_rtp_listener(
                     a_call_id.clone(),
                     rtp_socket.clone(),
-                    tx_in.clone(),
+                    media_tx.clone(),
                     shutdown.clone(),
                     shutdown_notify.clone(),
                 );
@@ -356,17 +378,17 @@ impl RtpListenerGuard {
 
     fn start(
         &mut self,
-        a_call_id: &str,
+        a_call_id: CallId,
         rtp_socket: Arc<UdpSocket>,
-        tx_in: UnboundedSender<SessionIn>,
+        media_tx: mpsc::Sender<SessionMediaIn>,
     ) {
         if self.started {
             return;
         }
         spawn_rtp_listener(
-            a_call_id.to_string(),
+            a_call_id,
             rtp_socket,
-            tx_in,
+            media_tx,
             self.shutdown.clone(),
             self.shutdown_notify.clone(),
         );
@@ -388,31 +410,34 @@ impl Drop for RtpListenerGuard {
 }
 
 async fn run_outbound(
-    a_call_id: String,
+    a_call_id: CallId,
     number: String,
-    tx_in: UnboundedSender<SessionIn>,
+    control_tx: mpsc::Sender<SessionControlIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> Result<Option<BLeg>> {
-    let registrar =
-        config::registrar_config().ok_or_else(|| anyhow!("missing registrar config"))?;
+    let registrar = runtime_cfg
+        .registrar
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing registrar config"))?;
     if registrar.auth_password.is_none() {
         return Err(anyhow!("missing registrar auth password"));
     }
-    if registrar.transport != crate::config::RegistrarTransport::Udp {
+    if registrar.transport != RegistrarTransport::Udp {
         return Err(anyhow!("outbound transport must be UDP"));
     }
 
-    let outbound_cfg = config::outbound_config();
+    let outbound_cfg = &runtime_cfg.outbound;
     let outbound_domain = outbound_cfg.domain.clone();
     if outbound_domain.is_empty() {
         return Err(anyhow!("missing outbound domain"));
     }
 
-    let cfg = config::Config::from_env()?;
     let request_uri = format!("sip:{}@{}", number, outbound_domain);
     let sip_peer = registrar.addr;
 
-    let sip_port = cfg.sip_port;
+    let sip_port = runtime_cfg.sip_port;
     let from_header = format!(
         "<sip:{}@{}>;tag={}",
         registrar.user,
@@ -426,7 +451,7 @@ async fn run_outbound(
 
     let rtp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
     let rtp_port = rtp_socket.local_addr()?.port();
-    let sdp = build_sdp(cfg.advertised_ip.as_str(), rtp_port);
+    let sdp = build_sdp(runtime_cfg.advertised_ip.as_str(), rtp_port);
 
     let mut cseq: u32 = 1;
     let mut auth_attempts: u32 = 0;
@@ -467,9 +492,9 @@ async fn run_outbound(
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_notify = Arc::new(Notify::new());
     let mut rtp_guard = RtpListenerGuard::new(shutdown.clone(), shutdown_notify.clone());
-    rtp_guard.start(a_call_id.as_str(), rtp_socket.clone(), tx_in.clone());
+    rtp_guard.start(a_call_id.clone(), rtp_socket.clone(), media_tx.clone());
 
-    let timeout = config::transfer_timeout();
+    let timeout = runtime_cfg.transfer_timeout;
     let timeout_sleep = sleep(timeout);
     tokio::pin!(timeout_sleep);
     let mut provisional_received = false;
@@ -532,13 +557,13 @@ async fn run_outbound(
                         cancel_sent = true;
                     }
                     if resp.status_code == 180 {
-                        let _ = tx_in.send(SessionIn::B2buaRinging);
+                        let _ = control_tx.try_send(SessionControlIn::B2buaRinging);
                     } else if resp.status_code == 183
                         && !early_media_sent
                         && !resp.body.is_empty()
                     {
-                        let _ = tx_in.send(SessionIn::B2buaEarlyMedia);
-                        rtp_guard.start(a_call_id.as_str(), rtp_socket.clone(), tx_in.clone());
+                        let _ = control_tx.try_send(SessionControlIn::B2buaEarlyMedia);
+                        rtp_guard.start(a_call_id.clone(), rtp_socket.clone(), media_tx.clone());
                         early_media_sent = true;
                     }
                     continue;
@@ -670,11 +695,11 @@ async fn run_outbound(
                     a_call_id.clone(),
                     call_id.clone(),
                     sip_rx,
-                    tx_in.clone(),
+                    control_tx.clone(),
                     shutdown.clone(),
                     shutdown_notify.clone(),
                 );
-                rtp_guard.start(a_call_id.as_str(), rtp_socket.clone(), tx_in.clone());
+                rtp_guard.start(a_call_id.clone(), rtp_socket.clone(), media_tx.clone());
 
                 let b_leg = BLeg {
                     call_id,
@@ -699,10 +724,10 @@ async fn run_outbound(
 }
 
 fn spawn_sip_listener(
-    a_call_id: String,
+    a_call_id: CallId,
     b_call_id: String,
-    mut sip_rx: UnboundedReceiver<B2buaSipMessage>,
-    tx_in: UnboundedSender<SessionIn>,
+    mut sip_rx: mpsc::Receiver<B2buaSipMessage>,
+    control_tx: mpsc::Sender<SessionControlIn>,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
 ) {
@@ -729,7 +754,7 @@ fn spawn_sip_listener(
                                 if let Some(resp) = response_simple_from_request(&req, 200, "OK") {
                                     let _ = send_b2bua_payload(peer, resp.to_bytes());
                                 }
-                                let _ = tx_in.send(SessionIn::BLegBye);
+                                let _ = control_tx.try_send(SessionControlIn::BLegBye);
                                 break;
                             }
                         }
@@ -745,9 +770,9 @@ fn spawn_sip_listener(
 }
 
 fn spawn_rtp_listener(
-    a_call_id: String,
+    a_call_id: CallId,
     rtp_socket: Arc<UdpSocket>,
-    tx_in: UnboundedSender<SessionIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
 ) {
@@ -777,7 +802,11 @@ fn spawn_rtp_listener(
                         }
                     };
                     let payload = decode_to_mulaw(codec, &pkt.payload);
-                    let _ = tx_in.send(SessionIn::BLegRtp { payload });
+                    let _ = media_tx.try_send(SessionMediaIn::BLegRtp {
+                        call_id: a_call_id.clone(),
+                        stream_id: "b-leg".to_string(),
+                        payload,
+                    });
                 }
             }
         }
@@ -1115,9 +1144,9 @@ fn log_invite(label: &str, peer: SocketAddr, request: &SipRequest) {
     if !log::log_enabled!(log::Level::Info) {
         return;
     }
-    let from = request.header_value("From").unwrap_or("-");
-    let to = request.header_value("To").unwrap_or("-");
-    let contact = request.header_value("Contact").unwrap_or("-");
+    let from = mask_pii(request.header_value("From").unwrap_or("-"));
+    let to = mask_pii(request.header_value("To").unwrap_or("-"));
+    let contact = mask_pii(request.header_value("Contact").unwrap_or("-"));
     let call_id = request.header_value("Call-ID").unwrap_or("-");
     let auth_header = if request.header_value("Authorization").is_some() {
         "Authorization"
@@ -1136,8 +1165,8 @@ fn log_cancel(label: &str, peer: SocketAddr, request: &SipRequest) {
     if !log::log_enabled!(log::Level::Info) {
         return;
     }
-    let from = request.header_value("From").unwrap_or("-");
-    let to = request.header_value("To").unwrap_or("-");
+    let from = mask_pii(request.header_value("From").unwrap_or("-"));
+    let to = mask_pii(request.header_value("To").unwrap_or("-"));
     let call_id = request.header_value("Call-ID").unwrap_or("-");
     let cseq = request.header_value("CSeq").unwrap_or("-");
     info!(
