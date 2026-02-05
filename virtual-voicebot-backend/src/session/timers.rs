@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot};
 
-use super::types::SessionIn;
+use super::types::SessionControlIn;
 
 pub struct SessionTimers {
     keepalive_stop: Option<oneshot::Sender<()>>,
@@ -25,7 +25,7 @@ impl SessionTimers {
         }
     }
 
-    pub fn start_keepalive(&mut self, tx: mpsc::Sender<SessionIn>, interval: Duration) {
+    pub fn start_keepalive(&mut self, tx: mpsc::Sender<SessionControlIn>, interval: Duration) {
         if self.keepalive_stop.is_some() {
             return;
         }
@@ -35,7 +35,7 @@ impl SessionTimers {
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep(interval) => {
-                        let _ = tx.try_send(SessionIn::MediaTimerTick);
+                        let _ = tx.try_send(SessionControlIn::MediaTimerTick);
                     }
                     _ = &mut stop_rx => {
                         break;
@@ -53,7 +53,7 @@ impl SessionTimers {
 
     pub fn start_session_timer(
         &mut self,
-        tx: mpsc::Sender<SessionIn>,
+        tx: mpsc::Sender<SessionControlIn>,
         expires: Duration,
         refresh_after: Option<Duration>,
     ) {
@@ -69,7 +69,7 @@ impl SessionTimers {
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::time::sleep(timeout) => {
-                    let _ = tx.try_send(SessionIn::SessionTimerFired);
+                    let _ = tx.send(SessionControlIn::SessionTimerFired).await;
                 }
                 _ = &mut stop_rx => {}
             }
@@ -91,7 +91,7 @@ impl SessionTimers {
     pub fn update_session_expires(
         &mut self,
         expires: Duration,
-        tx: mpsc::Sender<SessionIn>,
+        tx: mpsc::Sender<SessionControlIn>,
         refresh_after: Option<Duration>,
     ) {
         self.session_expires = expires;
@@ -101,7 +101,7 @@ impl SessionTimers {
         }
     }
 
-    fn start_refresh_timer(&mut self, tx: mpsc::Sender<SessionIn>, refresh_after: Duration) {
+    fn start_refresh_timer(&mut self, tx: mpsc::Sender<SessionControlIn>, refresh_after: Duration) {
         if self.refresh_timer_stop.is_some() {
             return;
         }
@@ -111,7 +111,7 @@ impl SessionTimers {
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::time::sleep(refresh_after) => {
-                    let _ = tx.try_send(SessionIn::SessionRefreshDue);
+                    let _ = tx.send(SessionControlIn::SessionRefreshDue).await;
                 }
                 _ = &mut stop_rx => {}
             }

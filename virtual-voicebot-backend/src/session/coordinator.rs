@@ -29,7 +29,8 @@ use services::playback_service::PlaybackState;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
 const PLAYBACK_FRAME_INTERVAL: Duration = Duration::from_millis(20);
 const TRANSFER_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5);
-const SESSION_IN_CHANNEL_CAPACITY: usize = 64;
+const SESSION_CONTROL_CHANNEL_CAPACITY: usize = 64;
+const SESSION_MEDIA_CHANNEL_CAPACITY: usize = 64;
 
 pub(crate) const INTRO_MORNING_WAV_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -64,11 +65,6 @@ pub(crate) const TRANSFER_FAIL_WAV_PATH: &str = concat!(
     "/data/zundamon_transfer_fail.wav"
 );
 
-#[derive(Clone)]
-pub struct SessionHandle {
-    pub tx_in: mpsc::Sender<SessionIn>,
-}
-
 pub struct SessionCoordinator {
     state_machine: SessionStateMachine,
     call_id: CallId,
@@ -80,7 +76,8 @@ pub struct SessionCoordinator {
     peer_sdp: Option<Sdp>,
     local_sdp: Option<Sdp>,
     session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
-    tx_in: mpsc::Sender<SessionIn>,
+    control_tx: mpsc::Sender<SessionControlIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
     app_tx: AppEventTx,
     runtime_cfg: Arc<SessionRuntimeConfig>,
     media_cfg: MediaConfig,
@@ -128,8 +125,9 @@ impl SessionCoordinator {
         storage_port: Arc<dyn StoragePort>,
         runtime_cfg: Arc<SessionRuntimeConfig>,
     ) -> SessionHandle {
-        // Bounded channel to avoid unbounded backlog; media events are drop-on-full upstream.
-        let (tx_in, rx_in) = mpsc::channel(SESSION_IN_CHANNEL_CAPACITY);
+        // Bounded channels: control is reliable, media is drop-on-full upstream.
+        let (control_tx, control_rx) = mpsc::channel(SESSION_CONTROL_CHANNEL_CAPACITY);
+        let (media_tx, media_rx) = mpsc::channel(SESSION_MEDIA_CHANNEL_CAPACITY);
         let call_id_clone = call_id.clone();
         let mut s = Self {
             state_machine: SessionStateMachine::new(),
@@ -142,7 +140,8 @@ impl SessionCoordinator {
             peer_sdp: None,
             local_sdp: None,
             session_out_tx,
-            tx_in: tx_in.clone(),
+            control_tx: control_tx.clone(),
+            media_tx: media_tx.clone(),
             app_tx,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg,
@@ -176,50 +175,69 @@ impl SessionCoordinator {
             session_refresher: None,
         };
         tokio::spawn(async move {
-            s.run(rx_in).await;
+            s.run(control_rx, media_rx).await;
         });
-        SessionHandle { tx_in }
+        SessionHandle {
+            control_tx,
+            media_tx,
+        }
     }
 
-    /// Runs the session's main event loop, processing incoming `SessionIn` events,
+    /// Runs the session's main event loop, processing incoming control/media events,
     /// periodic playback ticks, timers, media, SIP/B2BUA actions, IVR flow, and
     /// performing cleanup when the input channel closes or the session ends.
     ///
     /// This method drives the session state machine: it receives events from the
-    /// provided `mpsc::Receiver<SessionIn>`, advances the internal `SessState`,
+    /// provided control/media receivers, advances the internal `SessState`,
     /// handles playback and recording, manages RTP and SIP interactions, and emits
     /// outgoing actions via the session's configured channels. The loop exits when
     /// the receiver is closed; recorders are stopped after the loop finishes.
     ///
     /// # Examples
     ///
-    /// ```
-    /// use tokio::sync::mpsc::Receiver;
+    /// ```no_run
+    /// use tokio::sync::mpsc;
     ///
-    /// // In an async context where `session` and `rx` are available:
-    /// async fn run_session_example(mut session: crate::session::Session, rx: Receiver<crate::session::SessionIn>) {
-    ///     // This will run until `rx` is closed or the session ends.
-    ///     session.run(rx).await;
+    /// async fn run_session_example(mut session: crate::session::Session) {
+    ///     let (_control_tx, control_rx) = mpsc::channel(1);
+    ///     let (_media_tx, media_rx) = mpsc::channel(1);
+    ///     // This will run until control_rx is closed or the session ends.
+    ///     session.run(control_rx, media_rx).await;
     /// }
     /// ```
-    async fn run(&mut self, mut rx: mpsc::Receiver<SessionIn>) {
+    async fn run(
+        &mut self,
+        mut control_rx: mpsc::Receiver<SessionControlIn>,
+        mut media_rx: mpsc::Receiver<SessionMediaIn>,
+    ) {
         let mut playback_tick = interval(PLAYBACK_FRAME_INTERVAL);
         playback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut media_open = true;
         loop {
             tokio::select! {
                 biased;
+                maybe_ev = control_rx.recv() => {
+                    let Some(ev) = maybe_ev else { break; };
+                    let current_state = self.state_machine.state();
+                    let commands = self.state_machine.process_event(SessionEvent::from(&ev));
+                    let advance_state = self.handle_control_event(current_state, ev).await;
+                    if advance_state {
+                        self.state_machine.apply_commands(&commands);
+                    }
+                }
                 _ = playback_tick.tick() => {
                     if self.playback.is_some() {
                         self.step_playback();
                     }
                 }
-                maybe_ev = rx.recv() => {
-                    let Some(ev) = maybe_ev else { break; };
-                    let current_state = self.state_machine.state();
-                    let commands = self.state_machine.process_event(SessionEvent::from(&ev));
-                    let advance_state = self.handle_event(current_state, ev).await;
-                    if advance_state {
-                        self.state_machine.apply_commands(&commands);
+                maybe_media = media_rx.recv(), if media_open => {
+                    match maybe_media {
+                        Some(ev) => {
+                            self.handle_media_event(ev).await;
+                        }
+                        None => {
+                            media_open = false;
+                        }
                     }
                 }
             }
@@ -319,7 +337,8 @@ mod tests {
     fn build_test_session(storage_port: Arc<dyn StoragePort>) -> SessionCoordinator {
         let (session_out_tx, _session_out_rx) = mpsc::channel(32);
         let (app_tx, _app_rx) = crate::ports::app::app_event_channel(16);
-        let (tx_in, _rx_in) = mpsc::channel(SESSION_IN_CHANNEL_CAPACITY);
+        let (control_tx, _control_rx) = mpsc::channel(SESSION_CONTROL_CHANNEL_CAPACITY);
+        let (media_tx, _media_rx) = mpsc::channel(SESSION_MEDIA_CHANNEL_CAPACITY);
         let base_cfg = config::Config::from_env().expect("config loads");
         let runtime_cfg = Arc::new(SessionRuntimeConfig::from_env(&base_cfg));
         SessionCoordinator {
@@ -336,7 +355,8 @@ mod tests {
             peer_sdp: Some(Sdp::pcmu("127.0.0.1", 10000)),
             local_sdp: None,
             session_out_tx,
-            tx_in,
+            control_tx,
+            media_tx,
             app_tx,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),

@@ -6,7 +6,7 @@ use crate::session::types::{SessionRefresher, SessionTimerInfo};
 impl SessionCoordinator {
     pub(crate) fn start_keepalive_timer(&mut self) {
         self.timers
-            .start_keepalive(self.tx_in.clone(), super::super::KEEPALIVE_INTERVAL);
+            .start_keepalive(self.control_tx.clone(), super::super::KEEPALIVE_INTERVAL);
     }
 
     pub(crate) fn stop_keepalive_timer(&mut self) {
@@ -22,7 +22,7 @@ impl SessionCoordinator {
         }
         let refresh_after = self.refresh_after(expires);
         self.timers
-            .start_session_timer(self.tx_in.clone(), expires, refresh_after);
+            .start_session_timer(self.control_tx.clone(), expires, refresh_after);
     }
 
     pub(crate) fn stop_session_timer(&mut self) {
@@ -34,7 +34,7 @@ impl SessionCoordinator {
         self.session_refresher = Some(timer.refresher);
         let refresh_after = self.refresh_after(timer.expires);
         self.timers
-            .update_session_expires(timer.expires, self.tx_in.clone(), refresh_after);
+            .update_session_expires(timer.expires, self.control_tx.clone(), refresh_after);
     }
 
     pub(crate) fn refresh_after(&self, expires: Duration) -> Option<Duration> {
@@ -57,13 +57,13 @@ impl SessionCoordinator {
         if let Some(cancel) = self.ring_delay_cancel.take() {
             let _ = cancel.send(());
         }
-        let tx = self.tx_in.clone();
+        let tx = self.control_tx.clone();
         let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
         self.ring_delay_cancel = Some(cancel_tx);
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::time::sleep(duration) => {
-                    let _ = tx.send(crate::session::types::SessionIn::RingDurationElapsed);
+                    let _ = tx.send(crate::session::types::SessionControlIn::RingDurationElapsed).await;
                 }
                 _ = &mut cancel_rx => {}
             }

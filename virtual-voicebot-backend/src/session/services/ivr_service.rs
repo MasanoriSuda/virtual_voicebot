@@ -2,7 +2,7 @@ use chrono::{Local, Timelike};
 use tokio::sync::oneshot;
 
 use super::super::SessionCoordinator;
-use crate::session::types::{IvrState, SessionIn};
+use crate::session::types::{IvrState, SessionControlIn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IvrAction {
@@ -47,12 +47,12 @@ impl SessionCoordinator {
     pub(crate) fn start_ivr_timeout(&mut self) {
         let timeout = self.runtime_cfg.ivr_timeout;
         let (stop_tx, mut stop_rx) = oneshot::channel();
-        let tx = self.tx_in.clone();
+        let tx = self.control_tx.clone();
         self.ivr_timeout_stop = Some(stop_tx);
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::time::sleep(timeout) => {
-                    let _ = tx.send(SessionIn::IvrTimeout);
+                    let _ = tx.send(SessionControlIn::IvrTimeout).await;
                 }
                 _ = &mut stop_rx => {}
             }

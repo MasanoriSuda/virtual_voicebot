@@ -15,7 +15,7 @@ use tokio::time::sleep;
 use crate::config::{RegistrarConfig, RegistrarTransport, SessionRuntimeConfig};
 use crate::rtp::codec::{codec_from_pt, decode_to_mulaw};
 use crate::rtp::parser::parse_rtp_packet;
-use crate::session::types::{Sdp, SessionIn};
+use crate::session::types::{CallId, Sdp, SessionControlIn, SessionMediaIn};
 use crate::sip::auth::{build_authorization_header, parse_digest_challenge};
 use crate::sip::auth_cache::{self, DigestAuthChallenge, DigestAuthHeader};
 use crate::sip::b2bua_bridge::{self, B2buaRegistration, B2buaSipMessage};
@@ -68,21 +68,30 @@ impl BLeg {
 }
 
 pub fn spawn_transfer(
-    a_call_id: String,
-    tx_in: mpsc::Sender<SessionIn>,
+    a_call_id: CallId,
+    control_tx: mpsc::Sender<SessionControlIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> tokio::sync::oneshot::Sender<()> {
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        match run_transfer(a_call_id.clone(), tx_in.clone(), cancel_rx, runtime_cfg).await {
+        match run_transfer(
+            a_call_id.clone(),
+            control_tx.clone(),
+            media_tx.clone(),
+            cancel_rx,
+            runtime_cfg,
+        )
+        .await
+        {
             Ok(Some(b_leg)) => {
-                let _ = tx_in.try_send(SessionIn::B2buaEstablished { b_leg });
+                let _ = control_tx.try_send(SessionControlIn::B2buaEstablished { b_leg });
             }
             Ok(None) => {
                 info!("[b2bua {}] transfer cancelled", a_call_id);
             }
             Err(err) => {
-                let _ = tx_in.try_send(SessionIn::B2buaFailed {
+                let _ = control_tx.try_send(SessionControlIn::B2buaFailed {
                     reason: err.to_string(),
                     status: None,
                 });
@@ -93,22 +102,32 @@ pub fn spawn_transfer(
 }
 
 pub fn spawn_outbound(
-    a_call_id: String,
+    a_call_id: CallId,
     number: String,
-    tx_in: mpsc::Sender<SessionIn>,
+    control_tx: mpsc::Sender<SessionControlIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> tokio::sync::oneshot::Sender<()> {
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        match run_outbound(a_call_id.clone(), number, tx_in.clone(), cancel_rx, runtime_cfg).await {
+        match run_outbound(
+            a_call_id.clone(),
+            number,
+            control_tx.clone(),
+            media_tx.clone(),
+            cancel_rx,
+            runtime_cfg,
+        )
+        .await
+        {
             Ok(Some(b_leg)) => {
-                let _ = tx_in.try_send(SessionIn::B2buaEstablished { b_leg });
+                let _ = control_tx.try_send(SessionControlIn::B2buaEstablished { b_leg });
             }
             Ok(None) => {
                 info!("[b2bua {}] outbound cancelled", a_call_id);
             }
             Err(err) => {
-                let _ = tx_in.try_send(SessionIn::B2buaFailed {
+                let _ = control_tx.try_send(SessionControlIn::B2buaFailed {
                     reason: err.to_string(),
                     status: err.downcast_ref::<OutboundError>().map(|e| e.status),
                 });
@@ -119,8 +138,9 @@ pub fn spawn_outbound(
 }
 
 async fn run_transfer(
-    a_call_id: String,
-    tx_in: mpsc::Sender<SessionIn>,
+    a_call_id: CallId,
+    control_tx: mpsc::Sender<SessionControlIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> Result<Option<BLeg>> {
@@ -295,14 +315,14 @@ async fn run_transfer(
                     a_call_id.clone(),
                     b_call_id.clone(),
                     sip_rx,
-                    tx_in.clone(),
+                    control_tx.clone(),
                     shutdown.clone(),
                     shutdown_notify.clone(),
                 );
                 spawn_rtp_listener(
                     a_call_id.clone(),
                     rtp_socket.clone(),
-                    tx_in.clone(),
+                    media_tx.clone(),
                     shutdown.clone(),
                     shutdown_notify.clone(),
                 );
@@ -358,17 +378,17 @@ impl RtpListenerGuard {
 
     fn start(
         &mut self,
-        a_call_id: &str,
+        a_call_id: CallId,
         rtp_socket: Arc<UdpSocket>,
-        tx_in: mpsc::Sender<SessionIn>,
+        media_tx: mpsc::Sender<SessionMediaIn>,
     ) {
         if self.started {
             return;
         }
         spawn_rtp_listener(
-            a_call_id.to_string(),
+            a_call_id,
             rtp_socket,
-            tx_in,
+            media_tx,
             self.shutdown.clone(),
             self.shutdown_notify.clone(),
         );
@@ -390,9 +410,10 @@ impl Drop for RtpListenerGuard {
 }
 
 async fn run_outbound(
-    a_call_id: String,
+    a_call_id: CallId,
     number: String,
-    tx_in: mpsc::Sender<SessionIn>,
+    control_tx: mpsc::Sender<SessionControlIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> Result<Option<BLeg>> {
@@ -471,7 +492,7 @@ async fn run_outbound(
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_notify = Arc::new(Notify::new());
     let mut rtp_guard = RtpListenerGuard::new(shutdown.clone(), shutdown_notify.clone());
-    rtp_guard.start(a_call_id.as_str(), rtp_socket.clone(), tx_in.clone());
+    rtp_guard.start(a_call_id.clone(), rtp_socket.clone(), media_tx.clone());
 
     let timeout = runtime_cfg.transfer_timeout;
     let timeout_sleep = sleep(timeout);
@@ -536,13 +557,13 @@ async fn run_outbound(
                         cancel_sent = true;
                     }
                     if resp.status_code == 180 {
-                        let _ = tx_in.try_send(SessionIn::B2buaRinging);
+                        let _ = control_tx.try_send(SessionControlIn::B2buaRinging);
                     } else if resp.status_code == 183
                         && !early_media_sent
                         && !resp.body.is_empty()
                     {
-                        let _ = tx_in.try_send(SessionIn::B2buaEarlyMedia);
-                        rtp_guard.start(a_call_id.as_str(), rtp_socket.clone(), tx_in.clone());
+                        let _ = control_tx.try_send(SessionControlIn::B2buaEarlyMedia);
+                        rtp_guard.start(a_call_id.clone(), rtp_socket.clone(), media_tx.clone());
                         early_media_sent = true;
                     }
                     continue;
@@ -674,11 +695,11 @@ async fn run_outbound(
                     a_call_id.clone(),
                     call_id.clone(),
                     sip_rx,
-                    tx_in.clone(),
+                    control_tx.clone(),
                     shutdown.clone(),
                     shutdown_notify.clone(),
                 );
-                rtp_guard.start(a_call_id.as_str(), rtp_socket.clone(), tx_in.clone());
+                rtp_guard.start(a_call_id.clone(), rtp_socket.clone(), media_tx.clone());
 
                 let b_leg = BLeg {
                     call_id,
@@ -703,10 +724,10 @@ async fn run_outbound(
 }
 
 fn spawn_sip_listener(
-    a_call_id: String,
+    a_call_id: CallId,
     b_call_id: String,
     mut sip_rx: mpsc::Receiver<B2buaSipMessage>,
-    tx_in: mpsc::Sender<SessionIn>,
+    control_tx: mpsc::Sender<SessionControlIn>,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
 ) {
@@ -733,7 +754,7 @@ fn spawn_sip_listener(
                                 if let Some(resp) = response_simple_from_request(&req, 200, "OK") {
                                     let _ = send_b2bua_payload(peer, resp.to_bytes());
                                 }
-                                let _ = tx_in.try_send(SessionIn::BLegBye);
+                                let _ = control_tx.try_send(SessionControlIn::BLegBye);
                                 break;
                             }
                         }
@@ -749,9 +770,9 @@ fn spawn_sip_listener(
 }
 
 fn spawn_rtp_listener(
-    a_call_id: String,
+    a_call_id: CallId,
     rtp_socket: Arc<UdpSocket>,
-    tx_in: mpsc::Sender<SessionIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
 ) {
@@ -781,7 +802,11 @@ fn spawn_rtp_listener(
                         }
                     };
                     let payload = decode_to_mulaw(codec, &pkt.payload);
-                    let _ = tx_in.try_send(SessionIn::BLegRtp { payload });
+                    let _ = media_tx.try_send(SessionMediaIn::BLegRtp {
+                        call_id: a_call_id.clone(),
+                        stream_id: "b-leg".to_string(),
+                        payload,
+                    });
                 }
             }
         }

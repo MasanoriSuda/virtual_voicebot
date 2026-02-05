@@ -1,12 +1,12 @@
-use crate::session::types::{next_session_state, SessState, SessionIn};
+use crate::session::types::{next_session_state, SessState, SessionControlIn};
 
 #[derive(Debug, Clone, Copy)]
 pub enum SessionEvent<'a> {
-    Input(&'a SessionIn),
+    Input(&'a SessionControlIn),
 }
 
-impl<'a> From<&'a SessionIn> for SessionEvent<'a> {
-    fn from(value: &'a SessionIn) -> Self {
+impl<'a> From<&'a SessionControlIn> for SessionEvent<'a> {
+    fn from(value: &'a SessionControlIn) -> Self {
         SessionEvent::Input(value)
     }
 }
@@ -59,7 +59,7 @@ mod tests {
     #[test]
     fn process_event_emits_transition() {
         let sm = SessionStateMachine::new();
-        let event = SessionIn::SipInvite {
+        let event = SessionControlIn::SipInvite {
             call_id: CallId::new("call".to_string()).expect("valid test call id"),
             from: "from".to_string(),
             to: "to".to_string(),

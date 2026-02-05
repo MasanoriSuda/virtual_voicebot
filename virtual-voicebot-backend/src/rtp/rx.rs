@@ -16,7 +16,7 @@ use crate::rtp::rtcp::{
     build_rr, is_rtcp_packet, parse_rtcp_packets, RtcpEvent, RtcpEventTx, RtcpPacket,
     RtcpReceiverReport, RtcpReportBlock,
 };
-use crate::session::{SessionIn, SessionRegistry};
+use crate::session::{SessionMediaIn, SessionRegistry};
 use crate::session::types::CallId;
 
 /// transport 層から受け取る RTP 生パケット
@@ -123,6 +123,7 @@ impl RtpReceiver {
             let sess_tx_opt = self.session_registry.get(&call_id).await;
 
             if let Some(sess_tx) = sess_tx_opt {
+                let media_tx = sess_tx.media_tx.clone();
                 match parse_rtp_packet(&raw.data) {
                     Ok(pkt) => {
                         self.rtcp_reporter.update_rtp(
@@ -189,9 +190,15 @@ impl RtpReceiver {
                                     "[rtp recv] dtmf detected call_id={} digit={}",
                                     call_id, digit
                                 );
-                                let _ = sess_tx.try_send(SessionIn::Dtmf { digit });
+                                let _ = media_tx.try_send(SessionMediaIn::Dtmf {
+                                    call_id: call_id.clone(),
+                                    stream_id: "a-leg".to_string(),
+                                    digit,
+                                });
                             }
-                            let _ = sess_tx.try_send(SessionIn::MediaRtpIn {
+                            let _ = media_tx.try_send(SessionMediaIn::MediaRtpIn {
+                                call_id: call_id.clone(),
+                                stream_id: "a-leg".to_string(),
                                 ts: frame.ts,
                                 payload,
                             });

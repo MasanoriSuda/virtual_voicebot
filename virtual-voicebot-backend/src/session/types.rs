@@ -66,9 +66,9 @@ pub enum IvrState {
     B2buaMode,
 }
 
-/// sip/session 間で受け取るイベント（上位: sip・rtp・app からの入力）
+/// sip/session 間で受け取る制御イベント（SIP/タイマー/app など）
 #[derive(Debug)]
-pub enum SessionIn {
+pub enum SessionControlIn {
     /// SIP側からのINVITE入力
     SipInvite {
         call_id: CallId,
@@ -92,11 +92,6 @@ pub enum SessionIn {
     SipTransactionTimeout {
         call_id: CallId,
     },
-    /// RTP入力（メディア/PCM経路）
-    MediaRtpIn {
-        ts: u32,
-        payload: Vec<u8>,
-    },
     /// Bレグ確立（B2BUA）
     B2buaEstablished {
         b_leg: BLeg,
@@ -110,16 +105,8 @@ pub enum SessionIn {
         reason: String,
         status: Option<u16>,
     },
-    /// BレグからのRTP
-    BLegRtp {
-        payload: Vec<u8>,
-    },
     /// BレグからのBYE
     BLegBye,
-    /// DTMF tone detected (in-band)
-    Dtmf {
-        digit: char,
-    },
     /// IVR menu timeout
     IvrTimeout,
     /// 転送中アナウンスの繰り返し
@@ -147,6 +134,30 @@ pub enum SessionIn {
         timer: SessionTimerInfo,
     },
     Abort(SessionError),
+}
+
+/// RTP/DTMF など高頻度メディアイベント
+#[derive(Debug)]
+pub enum SessionMediaIn {
+    /// RTP入力（メディア/PCM経路）
+    MediaRtpIn {
+        call_id: CallId,
+        stream_id: String,
+        ts: u32,
+        payload: Vec<u8>,
+    },
+    /// DTMF tone detected (in-band)
+    Dtmf {
+        call_id: CallId,
+        stream_id: String,
+        digit: char,
+    },
+    /// BレグからのRTP
+    BLegRtp {
+        call_id: CallId,
+        stream_id: String,
+        payload: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -238,26 +249,26 @@ pub(crate) enum SessState {
 /// # Examples
 ///
 /// ```
-/// use crate::types::{next_session_state, CallId, SessState, SessionIn};
+/// use crate::types::{next_session_state, CallId, SessState, SessionControlIn, Sdp};
 ///
 /// let s = SessState::Idle;
-/// let next = next_session_state(s, &SessionIn::SipInvite { call_id: CallId::new("call-1").unwrap(), from: "".into(), to: "".into(), offer: None, session_timer: None });
+/// let next = next_session_state(s, &SessionControlIn::SipInvite { call_id: CallId::new("call-1").unwrap(), from: "".into(), to: "".into(), offer: Sdp::pcmu("127.0.0.1", 10000), session_timer: None });
 /// assert_eq!(next, SessState::Early);
 /// ```
-pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessState {
+pub(crate) fn next_session_state(current: SessState, event: &SessionControlIn) -> SessState {
     match event {
-        SessionIn::SipBye
-        | SessionIn::SipCancel
-        | SessionIn::BLegBye
-        | SessionIn::AppHangup
-        | SessionIn::SessionTimerFired
-        | SessionIn::Abort(_) => SessState::Terminated,
-        SessionIn::RingDurationElapsed => current,
-        SessionIn::SipInvite { .. } => match current {
+        SessionControlIn::SipBye
+        | SessionControlIn::SipCancel
+        | SessionControlIn::BLegBye
+        | SessionControlIn::AppHangup
+        | SessionControlIn::SessionTimerFired
+        | SessionControlIn::Abort(_) => SessState::Terminated,
+        SessionControlIn::RingDurationElapsed => current,
+        SessionControlIn::SipInvite { .. } => match current {
             SessState::Idle => SessState::Early,
             _ => current,
         },
-        SessionIn::SipAck => match current {
+        SessionControlIn::SipAck => match current {
             SessState::Early => SessState::Established,
             _ => current,
         },
@@ -267,6 +278,12 @@ pub(crate) fn next_session_state(current: SessState, event: &SessionIn) -> SessS
 
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
+
+#[derive(Clone)]
+pub struct SessionHandle {
+    pub control_tx: mpsc::Sender<SessionControlIn>,
+    pub media_tx: mpsc::Sender<SessionMediaIn>,
+}
 
 #[derive(Clone)]
 /// SessionRegistry keeps the active session channels keyed by CallId.
@@ -281,16 +298,16 @@ pub struct SessionRegistry {
 enum RegistryCommand {
     Register {
         call_id: CallId,
-        tx: mpsc::Sender<SessionIn>,
+        handle: SessionHandle,
         reply: oneshot::Sender<()>,
     },
     Unregister {
         call_id: CallId,
-        reply: oneshot::Sender<Option<mpsc::Sender<SessionIn>>>,
+        reply: oneshot::Sender<Option<SessionHandle>>,
     },
     Get {
         call_id: CallId,
-        reply: oneshot::Sender<Option<mpsc::Sender<SessionIn>>>,
+        reply: oneshot::Sender<Option<SessionHandle>>,
     },
     List {
         reply: oneshot::Sender<Vec<CallId>>,
@@ -301,11 +318,15 @@ impl SessionRegistry {
     pub fn new() -> Self {
         let (tx, mut rx) = mpsc::channel(128);
         tokio::spawn(async move {
-            let mut map: HashMap<CallId, mpsc::Sender<SessionIn>> = HashMap::new();
+            let mut map: HashMap<CallId, SessionHandle> = HashMap::new();
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    RegistryCommand::Register { call_id, tx, reply } => {
-                        map.insert(call_id, tx);
+                    RegistryCommand::Register {
+                        call_id,
+                        handle,
+                        reply,
+                    } => {
+                        map.insert(call_id, handle);
                         let _ = reply.send(());
                     }
                     RegistryCommand::Unregister { call_id, reply } => {
@@ -326,13 +347,13 @@ impl SessionRegistry {
         Self { tx }
     }
 
-    pub async fn insert(&self, call_id: CallId, tx: mpsc::Sender<SessionIn>) {
+    pub async fn insert(&self, call_id: CallId, handle: SessionHandle) {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
             .tx
             .send(RegistryCommand::Register {
                 call_id,
-                tx,
+                handle,
                 reply: reply_tx,
             })
             .await
@@ -342,7 +363,7 @@ impl SessionRegistry {
         }
     }
 
-    pub async fn get(&self, call_id: &CallId) -> Option<mpsc::Sender<SessionIn>> {
+    pub async fn get(&self, call_id: &CallId) -> Option<SessionHandle> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
             .tx
@@ -358,7 +379,7 @@ impl SessionRegistry {
         reply_rx.await.ok().flatten()
     }
 
-    pub async fn remove(&self, call_id: &CallId) -> Option<mpsc::Sender<SessionIn>> {
+    pub async fn remove(&self, call_id: &CallId) -> Option<SessionHandle> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
             .tx

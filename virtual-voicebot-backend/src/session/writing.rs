@@ -60,7 +60,7 @@ pub async fn spawn_session(
     ingest_port: Arc<dyn IngestPort>,
     storage_port: Arc<dyn StoragePort>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
-) -> tokio::sync::mpsc::Sender<SessionIn> {
+) -> SessionHandle {
     let handle = spawn_call(
         call_id.clone(),
         from_uri,
@@ -76,6 +76,6 @@ pub async fn spawn_session(
         runtime_cfg,
     );
     // Session manager の薄いラッパ経由で登録
-    registry.insert(call_id, handle.tx_in.clone()).await;
-    handle.tx_in
+    registry.insert(call_id, handle.clone()).await;
+    handle
 }

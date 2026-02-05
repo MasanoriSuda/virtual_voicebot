@@ -3,7 +3,7 @@ use tokio::sync::oneshot;
 use tokio::time::{interval, MissedTickBehavior};
 
 use super::super::SessionCoordinator;
-use crate::session::types::SessionIn;
+use crate::session::types::SessionControlIn;
 
 impl SessionCoordinator {
     pub(crate) fn cancel_transfer(&mut self) {
@@ -16,7 +16,7 @@ impl SessionCoordinator {
     pub(crate) fn start_transfer_announce(&mut self) {
         self.stop_transfer_announce();
         let (stop_tx, mut stop_rx) = oneshot::channel();
-        let tx = self.tx_in.clone();
+        let tx = self.control_tx.clone();
         self.transfer_announce_stop = Some(stop_tx);
         tokio::spawn(async move {
             let mut tick = interval(super::super::TRANSFER_ANNOUNCE_INTERVAL);
@@ -25,7 +25,7 @@ impl SessionCoordinator {
             loop {
                 tokio::select! {
                     _ = tick.tick() => {
-                        let _ = tx.send(SessionIn::TransferAnnounce);
+                        let _ = tx.send(SessionControlIn::TransferAnnounce).await;
                     }
                     _ = &mut stop_rx => {
                         break;

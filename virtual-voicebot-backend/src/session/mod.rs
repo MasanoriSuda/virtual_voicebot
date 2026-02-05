@@ -13,10 +13,10 @@ pub mod types;
 pub mod writing;
 
 #[allow(unused_imports)]
-pub use session::{Session, SessionCoordinator, SessionHandle};
+pub use session::{Session, SessionCoordinator};
 pub use state_machine::SessionStateMachine;
 pub use types::SessionRegistry;
 #[allow(unused_imports)]
-pub use types::{MediaConfig, Sdp, SessionIn, SessionOut};
+pub use types::{MediaConfig, Sdp, SessionControlIn, SessionHandle, SessionMediaIn, SessionOut};
 #[allow(unused_imports)]
 pub use writing::{spawn_call, spawn_session};
