@@ -6,31 +6,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/
 import { Badge } from "./ui/badge"
 import {
   Phone,
-  Clock,
   TrendingUp,
-  TrendingDown,
-  Users,
-  PhoneIncoming,
-  PhoneOutgoing,
   Pause,
   ArrowRightLeft,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import Link from "next/link"
-import { HourlyCallChart } from "./charts/hourly-call-chart"
 import { WeeklyTrendChart } from "./charts/weekly-trend-chart"
-
-// Mock data
-const kpiData = {
-  totalCalls: 156,
-  totalCallsChange: 12,
-  avgDuration: "2:34",
-  avgDurationChange: -5,
-  answerRate: 94.2,
-  answerRateChange: 2.1,
-  availableOperators: 8,
-  totalOperators: 12,
-}
+import { KpiCards } from "./dashboard/kpi-cards"
+import { HourlyChart } from "./dashboard/hourly-chart"
 
 const liveCallsData = [
   {
@@ -65,54 +49,11 @@ export function DashboardContent() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          title="本日の総通話数"
-          titleEn="Today's Calls"
-          value={kpiData.totalCalls.toString()}
-          change={kpiData.totalCallsChange}
-          icon={Phone}
-        />
-        <KpiCard
-          title="平均通話時間"
-          titleEn="Avg Duration"
-          value={kpiData.avgDuration}
-          change={kpiData.avgDurationChange}
-          icon={Clock}
-        />
-        <KpiCard
-          title="応答率"
-          titleEn="Answer Rate"
-          value={`${kpiData.answerRate}%`}
-          change={kpiData.answerRateChange}
-          icon={TrendingUp}
-          showProgress
-          progress={kpiData.answerRate}
-        />
-        <KpiCard
-          title="待機中オペレーター"
-          titleEn="Available Operators"
-          value={`${kpiData.availableOperators}/${kpiData.totalOperators}`}
-          icon={Users}
-          showStatus
-          statusActive={kpiData.availableOperators > 0}
-        />
-      </div>
+      <KpiCards />
 
       {/* Charts Section */}
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <PhoneIncoming className="h-5 w-5 text-primary" />
-              時間帯別通話数
-            </CardTitle>
-            <CardDescription>Hourly Call Volume</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <HourlyCallChart />
-          </CardContent>
-        </Card>
+        <HourlyChart />
 
         <Card>
           <CardHeader>
@@ -184,82 +125,6 @@ export function DashboardContent() {
         </CardContent>
       </Card>
     </div>
-  )
-}
-
-interface KpiCardProps {
-  title: string
-  titleEn: string
-  value: string
-  change?: number
-  icon: React.ElementType
-  showProgress?: boolean
-  progress?: number
-  showStatus?: boolean
-  statusActive?: boolean
-}
-
-function KpiCard({
-  title,
-  titleEn,
-  value,
-  change,
-  icon: Icon,
-  showProgress,
-  progress,
-  showStatus,
-  statusActive,
-}: KpiCardProps) {
-  return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">
-          {title}
-          <span className="block text-xs text-muted-foreground font-normal">{titleEn}</span>
-        </CardTitle>
-        <Icon className="h-5 w-5 text-muted-foreground" />
-      </CardHeader>
-      <CardContent>
-        <div className="flex items-end justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-3xl font-bold">{value}</span>
-            {showStatus && (
-              <span
-                className={cn(
-                  "w-2 h-2 rounded-full",
-                  statusActive ? "bg-green-500" : "bg-muted"
-                )}
-              />
-            )}
-          </div>
-          {change !== undefined && (
-            <div
-              className={cn(
-                "flex items-center text-sm",
-                change >= 0 ? "text-green-600" : "text-red-600"
-              )}
-            >
-              {change >= 0 ? (
-                <TrendingUp className="h-4 w-4 mr-1" />
-              ) : (
-                <TrendingDown className="h-4 w-4 mr-1" />
-              )}
-              {Math.abs(change)}%
-            </div>
-          )}
-        </div>
-        {showProgress && progress !== undefined && (
-          <div className="mt-3">
-            <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
-              <div
-                className="h-full bg-primary rounded-full transition-all"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
   )
 }
 

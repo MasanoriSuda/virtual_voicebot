@@ -1,55 +1,34 @@
 import type { Call, CallDetail, Utterance } from "./types"
+import { mockCalls as mockRecords } from "./mock-data"
+
+function toLegacyStatus(status: "ended" | "missed" | "in_call"): Call["status"] {
+  switch (status) {
+    case "in_call":
+      return "active"
+    case "missed":
+      return "failed"
+    default:
+      return "completed"
+  }
+}
 
 // Mock data
-const mockCalls: Call[] = [
-  {
-    id: "1",
-    from: "090-1234-5678",
-    to: "0120-xxx-xxx",
-    callerNumber: "090-1234-5678",
-    startTime: "2025-01-15T10:30:00Z",
-    duration: 180,
-    durationSec: 180,
-    status: "completed",
-    summary: "お問い合わせ対応完了。配送状況の確認",
-    recordingUrl: "/mock-audio.mp3", // Mock recording URL
-  },
-  {
-    id: "2",
-    from: "080-9876-5432",
-    to: "0120-xxx-xxx",
-    callerNumber: "080-9876-5432",
-    startTime: "2025-01-15T11:15:00Z",
-    duration: 120,
-    durationSec: 120,
-    status: "completed",
-    summary: "商品の返品手続きについて案内",
-    recordingUrl: "/mock-audio.mp3",
-  },
-  {
-    id: "3",
-    from: "070-5555-1234",
-    to: "0120-xxx-xxx",
-    callerNumber: "070-5555-1234",
-    startTime: "2025-01-15T14:20:00Z",
-    duration: 0,
-    durationSec: 0,
-    status: "active",
-    summary: "通話中...",
-    // No recordingUrl for active calls
-  },
-  {
-    id: "4",
-    from: "090-1111-2222",
-    to: "0120-xxx-xxx",
-    callerNumber: "090-1111-2222",
-    startTime: "2025-01-14T09:00:00Z",
-    duration: 90,
-    durationSec: 90,
-    status: "failed",
-    summary: "接続エラー",
-  },
-]
+const mockCalls: Call[] = mockRecords.map((record) => ({
+  id: record.id,
+  from: record.from,
+  fromName: record.fromName,
+  to: record.to,
+  callerNumber: record.from,
+  callId: record.callId,
+  direction: record.direction,
+  startTime: record.startedAt,
+  endedAt: record.endedAt,
+  duration: record.durationSec,
+  durationSec: record.durationSec,
+  status: toLegacyStatus(record.status),
+  summary: record.summary,
+  recordingUrl: record.recordingUrl ?? undefined,
+}))
 
 const mockUtterances: Record<string, Utterance[]> = {
   "1": [
