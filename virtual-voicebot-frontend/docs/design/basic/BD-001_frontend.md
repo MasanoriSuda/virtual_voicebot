@@ -7,8 +7,9 @@
 | ID | BD-001 |
 | ステータス | Draft |
 | 作成日 | 2026-02-02 |
+| 更新日 | 2026-02-05 |
 | 関連Issue | #89 |
-| 対応RD | RD-005 |
+| 対応RD | [RD-005](../../requirements/RD-005_frontend.md) |
 | 対応IT | - |
 
 ---
@@ -326,31 +327,13 @@ model Transcript {
 ### 7.2 IF-002: KPI 取得（Frontend → Backend）【post-MVP】
 
 > **MVP での扱い**: KPI は post-MVP で API 化予定。MVP ではモック表示で UI/導線のみ検証する。
-> Frontend は静的 JSON またはフィクスチャを使用し、Backend API は呼び出さない。
 
 | 項目 | 内容 |
 |------|------|
 | エンドポイント | `GET /api/kpi`（**post-MVP**） |
 | 呼出元 | Frontend |
 | 呼出先 | Backend |
-| プロトコル | HTTP |
-| 同期/非同期 | 同期 |
 | MVP 対応 | **モックデータ使用**（API 未実装） |
-
-#### レスポンス（post-MVP 予定）
-
-```json
-{
-  "totalCalls": 142,
-  "avgDurationSec": 154,
-  "answerRate": 0.87,
-  "hourlyVolume": [
-    { "hour": 0, "inbound": 2, "outbound": 0 },
-    { "hour": 1, "inbound": 1, "outbound": 0 },
-    ...
-  ]
-}
-```
 
 ---
 
@@ -443,3 +426,4 @@ model Transcript {
 | 2026-02-02 | 1.0 | 初版作成 | Claude Code |
 | 2026-02-02 | 1.1 | Codex P2 対応: KPI API を post-MVP へ移動、recordingUrl 直接参照に変更 | Claude Code |
 | 2026-02-02 | 1.2 | #62 対応: SQLite → PostgreSQL に変更 | Claude Code |
+| 2026-02-05 | 2.0 | #107 対応: 新構造（virtual-voicebot-frontend/docs/）へ移行・書き直し | Claude Code |

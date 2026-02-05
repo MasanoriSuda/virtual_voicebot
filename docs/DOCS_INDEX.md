@@ -1,7 +1,7 @@
 # ドキュメント一覧 (DOCS_INDEX)
 
 **ステータス**: ドラフト
-**最終更新**: 2025-12-28
+**最終更新**: 2026-02-05
 
 ---
 
@@ -113,9 +113,46 @@
 
 ## 4. Frontend (virtual-voicebot-frontend/)
 
+### 4.1 ルートドキュメント
+
 | ファイル | 内容 | 状態 |
 |---------|------|------|
 | [README.md](../virtual-voicebot-frontend/README.md) | Frontend概要 | 要確認 |
+
+### 4.2 プロセス定義 (docs/process/)
+
+| ファイル | 内容 | 正本 |
+|---------|------|:----:|
+| [v-model.md](../virtual-voicebot-frontend/docs/process/v-model.md) | Frontend V字モデル・成果物定義 | ✓ |
+| [quality-gate.md](../virtual-voicebot-frontend/docs/process/quality-gate.md) | Frontend 品質ゲート定義 | ✓ |
+
+### 4.3 要件仕様 (docs/requirements/)
+
+| ファイル | 内容 | 正本 |
+|---------|------|:----:|
+| [index.md](../virtual-voicebot-frontend/docs/requirements/index.md) | 要件仕様一覧 | - |
+| [RD-005_frontend.md](../virtual-voicebot-frontend/docs/requirements/RD-005_frontend.md) | 管理画面 MVP 要件 | ✓ |
+
+### 4.4 設計書 (docs/design/)
+
+| ファイル | 内容 | 正本 |
+|---------|------|:----:|
+| [index.md](../virtual-voicebot-frontend/docs/design/index.md) | 設計書一覧 | - |
+| [BD-001_frontend.md](../virtual-voicebot-frontend/docs/design/basic/BD-001_frontend.md) | 管理画面 基本設計 | ✓ |
+
+### 4.5 テスト仕様 (docs/test/)
+
+| ファイル | 内容 | 正本 |
+|---------|------|:----:|
+| [plan.md](../virtual-voicebot-frontend/docs/test/plan.md) | テスト計画書 | ✓ |
+
+### 4.6 ステアリング (docs/steering/)
+
+| ファイル | 内容 | 正本 |
+|---------|------|:----:|
+| [index.md](../virtual-voicebot-frontend/docs/steering/index.md) | ステアリング一覧 | - |
+| [GUIDE.md](../virtual-voicebot-frontend/docs/steering/GUIDE.md) | ステアリング運用ガイド | ✓ |
+| [STEER-107](../virtual-voicebot-frontend/docs/steering/STEER-107_frontend-docs-structure.md) | ドキュメント体系構築 | ✓ |
 
 ---
 

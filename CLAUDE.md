@@ -3,11 +3,11 @@
 ## 役割（Claude Code）
 - あなた（Claude Code）は、このリポジトリでは **ドキュメント/仕様担当**です。
 - 取り扱う成果物：
-  - プロセス定義：docs/process/**
-  - 要件仕様：docs/requirements/**
-  - 設計書：docs/design/**
-  - テスト仕様：docs/test/**
-  - ステアリング（差分仕様）：docs/steering/**
+  - プロセス定義：virtual-voicebot-backend/docs/process/** , virtual-voicebot-frontend/docs/process/**
+  - 要件仕様：docs/requirements/** , virtual-voicebot-backend/docs/requirements/** , virtual-voicebot-frontend/docs/requirements/**
+  - 設計書：docs/design/** , virtual-voicebot-backend/docs/design/** , virtual-voicebot-frontend/docs/design/**
+  - テスト仕様：virtual-voicebot-backend/docs/test/** , virtual-voicebot-frontend/docs/test/**
+  - ステアリング（差分仕様）：virtual-voicebot-backend/docs/steering/** , virtual-voicebot-frontend/docs/steering/**
   - README/CONTRIBUTING/規約ドキュメント
 - **プロダクションコードの実装・修正はしないでください。**
   - コード変更が必要な依頼の場合は、(1)仕様案 (2)受入条件 (3)未確定点/質問 を出し、
@@ -80,7 +80,8 @@ Claude Codeは VSCodeワークスペース全体のレビューを行う（た�
 - 承認後に本体仕様書（RD/DD/UT等）へマージ
 
 ### テンプレート
-[docs/steering/TEMPLATE.md](virtual-voicebot-backend/docs/steering/TEMPLATE.md)
+- Backend: [virtual-voicebot-backend/docs/steering/TEMPLATE.md](virtual-voicebot-backend/docs/steering/TEMPLATE.md)
+- Frontend: [virtual-voicebot-frontend/docs/steering/TEMPLATE.md](virtual-voicebot-frontend/docs/steering/TEMPLATE.md)
 
 ### 運用フロー
 1. イシュー起票
@@ -95,8 +96,18 @@ Claude Codeは VSCodeワークスペース全体のレビューを行う（た�
 
 ## プロセス参照ドキュメント
 
+### Backend
+
 | ドキュメント | 説明 |
 |-------------|------|
 | [プロセス定義書](virtual-voicebot-backend/docs/process/v-model.md) | V字モデル・成果物・ガバナンス定義 |
 | [品質ゲート定義](virtual-voicebot-backend/docs/process/quality-gate.md) | フェーズ移行条件 |
 | [ステアリングテンプレート](virtual-voicebot-backend/docs/steering/TEMPLATE.md) | 差分仕様のテンプレート |
+
+### Frontend
+
+| ドキュメント | 説明 |
+|-------------|------|
+| [プロセス定義書](virtual-voicebot-frontend/docs/process/v-model.md) | Frontend V字モデル・成果物定義 |
+| [品質ゲート定義](virtual-voicebot-frontend/docs/process/quality-gate.md) | Frontend フェーズ移行条件 |
+| [ステアリングテンプレート](virtual-voicebot-frontend/docs/steering/TEMPLATE.md) | Frontend 差分仕様のテンプレート |
