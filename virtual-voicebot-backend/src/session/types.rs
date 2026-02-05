@@ -2,30 +2,14 @@
 // types.rs
 use std::time::Duration;
 
+use crate::ports::rtp_sink::{RtpEvent, RtpEventSendError, RtpEventSink};
+use crate::ports::session_lookup::{SessionLookup, SessionLookupFuture};
 use crate::session::b2bua::BLeg;
 use thiserror::Error;
 
-#[derive(Clone, Debug)]
-pub struct Sdp {
-    pub ip: String,
-    pub port: u16,
-    pub payload_type: u8,
-    pub codec: String, // e.g. "PCMU/8000"
-}
-
 /// Call-ID を表す（設計ドキュメント上はセッション識別子と一致させる）
 pub use crate::entities::CallId;
-
-impl Sdp {
-    pub fn pcmu(ip: impl Into<String>, port: u16) -> Self {
-        Self {
-            ip: ip.into(),
-            port,
-            payload_type: 0,
-            codec: "PCMU/8000".to_string(),
-        }
-    }
-}
+pub use crate::ports::sip::{Sdp, SessionRefresher, SessionTimerInfo};
 
 #[derive(Clone, Debug)]
 pub struct MediaConfig {
@@ -42,18 +26,6 @@ impl MediaConfig {
             payload_type: 0,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionRefresher {
-    Uac,
-    Uas,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct SessionTimerInfo {
-    pub expires: Duration,
-    pub refresher: SessionRefresher,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -158,6 +130,42 @@ pub enum SessionMediaIn {
         stream_id: String,
         payload: Vec<u8>,
     },
+}
+
+impl From<RtpEvent> for SessionMediaIn {
+    fn from(event: RtpEvent) -> Self {
+        match event {
+            RtpEvent::MediaRtpIn {
+                call_id,
+                stream_id,
+                ts,
+                payload,
+            } => SessionMediaIn::MediaRtpIn {
+                call_id,
+                stream_id,
+                ts,
+                payload,
+            },
+            RtpEvent::Dtmf {
+                call_id,
+                stream_id,
+                digit,
+            } => SessionMediaIn::Dtmf {
+                call_id,
+                stream_id,
+                digit,
+            },
+            RtpEvent::BLegRtp {
+                call_id,
+                stream_id,
+                payload,
+            } => SessionMediaIn::BLegRtp {
+                call_id,
+                stream_id,
+                payload,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -277,12 +285,34 @@ pub(crate) fn next_session_state(current: SessState, event: &SessionControlIn) -
 }
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Clone)]
 pub struct SessionHandle {
     pub control_tx: mpsc::Sender<SessionControlIn>,
     pub media_tx: mpsc::Sender<SessionMediaIn>,
+}
+
+#[derive(Clone)]
+struct SessionMediaSink {
+    tx: mpsc::Sender<SessionMediaIn>,
+}
+
+impl SessionMediaSink {
+    fn new(tx: mpsc::Sender<SessionMediaIn>) -> Self {
+        Self { tx }
+    }
+}
+
+impl RtpEventSink for SessionMediaSink {
+    fn try_send(&self, event: RtpEvent) -> Result<(), RtpEventSendError> {
+        match self.tx.try_send(event.into()) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(RtpEventSendError::Full),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(RtpEventSendError::Closed),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -406,5 +436,17 @@ impl SessionRegistry {
             return Vec::new();
         }
         reply_rx.await.unwrap_or_default()
+    }
+}
+
+impl SessionLookup for SessionRegistry {
+    fn rtp_sink(&self, call_id: CallId) -> SessionLookupFuture<Option<Arc<dyn RtpEventSink>>> {
+        let registry = self.clone();
+        Box::pin(async move {
+            registry.get(&call_id).await.map(|handle| {
+                let sink = SessionMediaSink::new(handle.media_tx);
+                Arc::new(sink) as Arc<dyn RtpEventSink>
+            })
+        })
     }
 }

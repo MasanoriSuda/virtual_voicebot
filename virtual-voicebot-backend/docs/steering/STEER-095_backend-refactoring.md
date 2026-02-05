@@ -137,6 +137,32 @@
 | 35 | RtpPacket が CSRC/拡張ヘッダ非対応宣言だがパーサは黙ってスキップ | packet.rs:4, parser.rs:44 | extension/csrc_count>0 を明示的エラー化、または構造体に保持 |
 | 36 | SessionIn::Abort(anyhow::Error) が境界を越えドメインエラー喪失 | types.rs:148 | SessionError などのドメインエラー型に寄せる |
 
+### 2.7 Phase 4 実装後レビュー（Codex 2026-02-05）
+
+**指摘（重大）**
+
+| # | 指摘 | 根拠 | 方向性 |
+|---|------|------|--------|
+| 37 | rtp が session に直接依存しており依存方向違反 | rx.rs:19-20（SessionMediaIn, SessionRegistry, CallId） | ports に RtpEventSink trait/DTO を定義し、rtp は trait にのみ依存。CallId は entities/ から参照 |
+| 38 | sip が session 型に依存しており Clean Architecture の依存方向に反する | core.rs:2（CallId, Sdp, SessionOut, SessionRefresher, SessionTimerInfo）, builder.rs:4, types.rs:1 | SessionOut → ports::sip に SipCommand 定義。Sdp → entities/ or ports/ に移動。CallId → entities/ 参照 |
+| 39 | transport が session に直接依存しており依存方向違反 | packet.rs:15-16（SessionRegistry, CallId） | rtp と同じく ports 経由に統一。CallId → entities/ 参照 |
+
+**指摘（中）**
+
+| # | 指摘 | 根拠 | 方向性 |
+|---|------|------|--------|
+| 40 | RTP 受信ホットパスで全セッション共有の Arc<Mutex<HashMap>> を使用 | rx.rs:33-36（jitter, dtmf, rtp_port_map） | セッション単位に分離、or DashMap/シャーディングでロック粒度を下げる |
+| 41 | raw.src だけで call_id を引くため多通話/NAT/RTCP mux で誤紐付けリスク | rx.rs:90-120 | 5-tuple or SSRC を含むキーに拡張。SDP から RTCP ポート/RTCP mux を読み取り +1 前提を廃止 |
+
+**指摘（軽）**
+
+| # | 指摘 | 根拠 | 方向性 |
+|---|------|------|--------|
+| 42 | AiServices が集約トレイトで ISP に抵触 | ports/ai.rs:27-30, app/mod.rs | 個別 trait 注入に変更。or app 内部 facade に閉じる |
+| 43 | app/mod.rs が 790 行で分割規約違反 | app/mod.rs | handlers/, types.rs, error.rs 等へ分割（別チケット対応） |
+
+> **備考**: #43（mod.rs 行数超過）は Phase 5 スコープ外とし別チケットで対応。対象は app/mod.rs(790行), session/handlers/mod.rs(705行), ai/mod.rs(654行)
+
 ---
 
 ## 3. 現状と理想の対比
@@ -513,7 +539,7 @@ impl HttpIngestAdapter {
 | 20 | Arc<Mutex<HashMap>> 設計明確化 | 並行設計意図（軽） | 小 |
 | 23 | AiServices 分割 | 境界責務（軽） | 小 |
 
-### Phase 4: 並行処理・スケーラビリティ改善
+### Phase 4 ✅ 完了: 並行処理・スケーラビリティ改善
 
 **重大/中**
 
@@ -531,6 +557,31 @@ impl HttpIngestAdapter {
 |---|------|------|---------|
 | 35 | RtpPacket CSRC/extension 仕様明確化（エラー化 or 構造体保持） | 期待仕様曖昧 | 小 |
 | 36 | SessionIn::Abort → SessionError（ドメインエラー型） | 境界越えエラー喪失 | 小 |
+
+### Phase 5: L3→session 例外撤廃（Protocol層 ports 経由統一）
+
+> BD-003 §6.2 の「L3→session（コールバック）」許可を撤廃し、L3 は ports のみに依存する設計に統一する。
+
+**重大**
+
+| # | 対応 | 理由 | 工数目安 |
+|---|------|------|---------|
+| 37 | rtp → session 依存解消（ports::rtp_sink trait 導入） | BD-003 依存方向違反 | 中 |
+| 38 | sip → session 依存解消（ports::sip に SipCommand/Sdp 定義） | BD-003 依存方向違反 | 大 |
+| 39 | transport → session 依存解消（ports 経由に統一） | BD-003 依存方向違反 | 中 |
+
+**中**
+
+| # | 対応 | 理由 | 工数目安 |
+|---|------|------|---------|
+| 40 | RTP 受信ハンドラのセッション状態をセッション単位に分離 | ロック競合・スケーラビリティ | 中 |
+| 41 | rtp_port_map 紐付けを 5-tuple/SSRC に拡張、or 制約のドキュメント強化 | 誤紐付けリスク | 中 |
+
+**軽**
+
+| # | 対応 | 理由 | 工数目安 |
+|---|------|------|---------|
+| 42 | AiServices を個別 trait 注入に変更、or ISP 例外の設計意図を明文化 | ISP 違反 | 小 |
 
 ---
 
@@ -602,7 +653,7 @@ impl HttpIngestAdapter {
   - 根拠: types.rs（アクセスパターン設計意図が薄い）
   - 方向性: どこで register/unregister するかの規約をコメントで明確化
 
-### Phase 4（並行処理・スケーラビリティ改善）
+### Phase 4 ✅ 完了（並行処理・スケーラビリティ改善）
 
 **重大/中**
 - [x] AC-28: イベントチャネルが mpsc::channel で bounded になり、バックプレッシャポリシーが明文化されている
@@ -629,6 +680,38 @@ impl HttpIngestAdapter {
   - 根拠: types.rs:148
   - 方向性: SessionError に寄せる
 
+### Phase 5（L3→session 例外撤廃・Protocol層 ports 経由統一）
+
+**重大**
+- [x] AC-35: rtp モジュールが session に直接依存していない
+  - 根拠: rx.rs で `ports::rtp_sink`/`ports::session_lookup`/`entities::CallId` のみに依存
+  - 対応: RtpEvent/RtpEventSink と SessionLookup を ports に定義し、session 側で実装
+- [x] AC-36: sip モジュールが session に直接依存していない
+  - 根拠: core.rs/builder.rs/types.rs が `ports::sip`/`entities::CallId` のみに依存
+  - 対応: SipCommand/SipEvent/Sdp/SessionTimerInfo を ports に移動し、SipCore は SipCommand を処理
+- [x] AC-37: transport モジュールが session に直接依存していない
+  - 根拠: packet.rs が `ports::session_lookup`/`entities::CallId` のみに依存
+  - 対応: run_packet_loop は SessionLookup を受け取り、SessionRegistry 実装で接続
+- [x] AC-38: BD-003 §6.2 が更新されている（L3→session 許可削除、L3→ports のみ）
+  - 方向性: BD-003 v2.1 改訂
+  - 対応: BD-003 v2.1 で §6.2 L3→session 例外撤廃、§6.3 に禁止例追加済み
+- [x] AC-39: BD-003 依存関係図が更新されている（L3→session 矢印削除、L3→ports 矢印追加）
+  - 方向性: BD-003_dependency-diagram.md 更新
+  - 対応: 依存関係図 v2.0 で目標/現状の2図構成に変更、検証結果に違反3件追記済み
+
+**中**
+- [ ] AC-40: RTP 受信ハンドラのセッション状態がセッション単位に分離されている、or 共有の設計意図が明文化されている
+  - 根拠: rx.rs:33-36（jitter, dtmf, rtp_port_map が全セッション共有の Arc<Mutex<HashMap>>）
+  - 方向性: セッション単位分離、or DashMap/シャーディング + 設計意図コメント
+- [ ] AC-41: 同時通話の RTP 紐付けが 5-tuple/SSRC を含むキーに拡張されている、or 単一通話制約が docs に明文化されている
+  - 根拠: rx.rs:90-120（raw.src のみで call_id 紐付け）
+  - 方向性: 5-tuple/SSRC キー拡張、or 制約をドキュメント・コード双方で明示
+
+**軽**
+- [ ] AC-42: AiServices が個別 trait 注入に変更されている、or ISP 例外の設計意図がコメントで明文化されている
+  - 根拠: ports/ai.rs:27-30（AsrPort + IntentPort + LlmPort + WeatherPort + TtsPort + SerPort の集約）
+  - 方向性: AppWorker に個別 trait 注入、or facade の設計意図を明文化
+
 ---
 
 ## 6. 決定事項・未確定事項
@@ -648,6 +731,8 @@ impl HttpIngestAdapter {
   - **決定: PoC暫定処置のため撤廃** - StoragePort を ports/ に移動
 - [x] Q6: db::port を db に置く理由は？
   - **決定: PoC暫定処置のため ports/ へ移動** - PhoneLookupPort を ports/phone_lookup に
+- [x] Q7: BD-003 §6.2 の L3→session（コールバック）許可を維持するか撤廃するか？
+  - **決定: 撤廃** - L3 は ports のみに依存する設計に統一。BD-003 v2.1 で改訂
 
 ---
 
@@ -681,4 +766,5 @@ impl HttpIngestAdapter {
 | 2026-02-03 | 2.5 | Phase 3 AC-19〜27 に根拠・方向性詳細を追加 | Claude Code |
 | 2026-02-03 | 2.6 | Phase 3 実装後レビュー追記（#30-36: unbounded_channel、rtp_port_map同時通話、OnceLock、sync::Mutex、AppWorker履歴、RtpPacket仕様、SessionIn::Abort）、Phase 4 追加、AC-28〜34 追加 | Claude Code |
 | 2026-02-05 | 2.7 | Phase 3 完了マーク追加（AC-19〜27 全達成） | Claude Code |
-| 2026-02-04 | 2.8 | Phase 4 AC-28〜34 実装完了（bounded channel、RTP同時通話、注入、tokio::Mutex、履歴上限、RTP仕様、SessionError） | Codex |
+| 2026-02-05 | 2.8 | Phase 4 AC-28〜34 実装完了（bounded channel、RTP同時通話、注入、tokio::Mutex、履歴上限、RTP仕様、SessionError） | Codex |
+| 2026-02-05 | 2.9 | Phase 4 完了マーク、Phase 4 後レビュー追記（#37-43: L3→session依存方向違反、RTP共有状態、SSRC紐付け、AiServices ISP、mod.rs行数超過）、Phase 5 追加（L3→session例外撤廃）、AC-35〜42 追加、Q7 決定 | Claude Code |

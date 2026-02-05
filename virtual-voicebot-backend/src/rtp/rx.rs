@@ -16,8 +16,9 @@ use crate::rtp::rtcp::{
     build_rr, is_rtcp_packet, parse_rtcp_packets, RtcpEvent, RtcpEventTx, RtcpPacket,
     RtcpReceiverReport, RtcpReportBlock,
 };
-use crate::session::{SessionMediaIn, SessionRegistry};
-use crate::session::types::CallId;
+use crate::entities::CallId;
+use crate::ports::rtp_sink::RtpEvent;
+use crate::ports::session_lookup::SessionLookup;
 
 /// transport 層から受け取る RTP 生パケット
 #[derive(Debug, Clone)]
@@ -30,7 +31,7 @@ pub struct RawRtp {
 /// transport → rtp → session の受信経路ハンドラ。
 /// 役割: 生パケットをパースし、call_id を引いて session へ MediaRtpIn を送る。
 pub struct RtpReceiver {
-    session_registry: SessionRegistry,
+    session_lookup: Arc<dyn SessionLookup>,
     rtp_port_map: Arc<Mutex<HashMap<SocketAddr, CallId>>>,
     jitter: Arc<Mutex<HashMap<CallId, JitterBuffer>>>,
     dtmf: Arc<Mutex<HashMap<CallId, DtmfDetector>>>,
@@ -41,14 +42,14 @@ pub struct RtpReceiver {
 
 impl RtpReceiver {
     pub fn new(
-        session_registry: SessionRegistry,
+        session_lookup: Arc<dyn SessionLookup>,
         rtp_port_map: Arc<Mutex<HashMap<SocketAddr, CallId>>>,
         rtcp_tx: Option<RtcpEventTx>,
         rtp_cfg: RtpConfig,
     ) -> Self {
         let rtcp_reporter = RtcpReporter::new(rtp_cfg.rtcp_interval);
         Self {
-            session_registry,
+            session_lookup,
             rtp_port_map,
             jitter: Arc::new(Mutex::new(HashMap::new())),
             dtmf: Arc::new(Mutex::new(HashMap::new())),
@@ -120,10 +121,9 @@ impl RtpReceiver {
         };
 
         if let Some(call_id) = call_id_opt {
-            let sess_tx_opt = self.session_registry.get(&call_id).await;
+            let sink_opt = self.session_lookup.rtp_sink(call_id.clone()).await;
 
-            if let Some(sess_tx) = sess_tx_opt {
-                let media_tx = sess_tx.media_tx.clone();
+            if let Some(sink) = sink_opt {
                 match parse_rtp_packet(&raw.data) {
                     Ok(pkt) => {
                         self.rtcp_reporter.update_rtp(
@@ -190,13 +190,13 @@ impl RtpReceiver {
                                     "[rtp recv] dtmf detected call_id={} digit={}",
                                     call_id, digit
                                 );
-                                let _ = media_tx.try_send(SessionMediaIn::Dtmf {
+                                let _ = sink.try_send(RtpEvent::Dtmf {
                                     call_id: call_id.clone(),
                                     stream_id: "a-leg".to_string(),
                                     digit,
                                 });
                             }
-                            let _ = media_tx.try_send(SessionMediaIn::MediaRtpIn {
+                            let _ = sink.try_send(RtpEvent::MediaRtpIn {
                                 call_id: call_id.clone(),
                                 stream_id: "a-leg".to_string(),
                                 ts: frame.ts,

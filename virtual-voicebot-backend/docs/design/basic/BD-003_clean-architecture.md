@@ -8,8 +8,8 @@
 | ID | BD-003 |
 | ステータス | Approved |
 | 作成日 | 2026-01-31 |
-| 改訂日 | 2026-02-03 |
-| バージョン | 2.0 |
+| 改訂日 | 2026-02-05 |
+| バージョン | 2.1 |
 | 関連Issue | #52, #65, #95 |
 | 関連RD | RD-001 |
 | 付録 | [依存関係図](BD-003_dependency-diagram.md) |
@@ -385,7 +385,7 @@ src/
 | **L0: Foundation** | entities, config, error, logging | なし | すべて |
 | **L1: Ports** | ports | entities, error | adapters, infrastructure |
 | **L2: Adapters** | ai, db, http, notification, recording, media | ports, config, error | session, app, entities直接 |
-| **L3: Infrastructure** | sip, rtp, transport | config, session（コールバック） | app, entities直接 |
+| **L3: Infrastructure** | sip, rtp, transport | config, ports | app, entities直接, session直接 |
 | **L4: Session** | session | ports, entities, config, L3 | app, http, db直接 |
 | **L5: Application** | app | ports, session, config | adapters直接, infrastructure直接 |
 | **L6: Entry** | main | すべて | - |
@@ -411,6 +411,21 @@ use crate::db::TsurugiAdapter;  // NG
 
 // ✅ 正しい: app → ports::phone_lookup
 use crate::ports::phone_lookup::PhoneLookupPort;  // OK
+
+// ❌ 禁止: rtp/sip/transport → session 直接（v2.1 で撤廃）
+// src/rtp/rx.rs で以下は禁止
+use crate::session::SessionRegistry;  // NG
+use crate::session::types::CallId;    // NG（entities/ から参照すべき）
+
+// ✅ 正しい: rtp → ports + entities
+use crate::entities::CallId;              // OK
+use crate::ports::rtp_sink::RtpEventSink; // OK（trait 経由）
+
+// ❌ 禁止: sip → session 直接
+use crate::session::types::SessionOut;  // NG
+
+// ✅ 正しい: sip → ports::sip
+use crate::ports::sip::SipCommand;  // OK（trait/enum 経由）
 ```
 
 ---
@@ -459,4 +474,5 @@ use crate::ports::phone_lookup::PhoneLookupPort;  // OK
 |------|-----------|---------|--------|
 | 2026-01-31 | 1.0 | 初版作成（STEER-085 §5 より昇格） | @MasanoriSuda + Claude Code |
 | 2026-02-03 | 2.0 | §6 ディレクトリ構造を現行実装に合わせて改訂、モジュール層対応表追加、禁止依存の具体例追加、依存関係図付録追加（#95 対応） | Claude Code |
+| 2026-02-05 | 2.1 | §6.2 L3→session（コールバック）許可を撤廃、L3→ports のみに変更。§6.3 に rtp/sip→session 禁止例を追加（#95 Phase 5 対応） | Claude Code |
 

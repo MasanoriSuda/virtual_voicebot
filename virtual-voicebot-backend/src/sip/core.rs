@@ -1,5 +1,6 @@
 use crate::config;
-use crate::session::types::{CallId, Sdp, SessionOut, SessionRefresher, SessionTimerInfo};
+use crate::entities::CallId;
+use crate::ports::sip::{Sdp, SessionRefresher, SessionTimerInfo, SipCommand};
 use crate::sip::b2bua_bridge;
 use crate::sip::builder::{
     response_final_with_sdp, response_options_from_request, response_provisional_from_request,
@@ -800,7 +801,7 @@ impl SipCore {
             }
         };
 
-        // 新規 INVITE: トランザクション生成（レスポンスは SessionOut 経由で送るためここでは送信しない）
+        // 新規 INVITE: トランザクション生成（レスポンスは SipCommand 経由で送るためここでは送信しない）
         let mut tx = InviteServerTransaction::new(peer);
         tx.invite_req = Some(req.clone());
         let ctx = InviteContext {
@@ -1038,7 +1039,7 @@ impl SipCore {
             };
         }
 
-        // 最終応答は SessionOut::SipSendBye200 等から送るため、ここでは送信しない
+        // 最終応答は SipCommand::SendBye200 等から送るため、ここでは送信しない
         tx.last_request = Some(req);
 
         if emit_bye_event {
@@ -1390,7 +1391,7 @@ impl SipCore {
         }
     }
 
-    /// Process a SessionOut command by sending the corresponding SIP message(s)
+    /// Process a SipCommand by sending the corresponding SIP message(s)
     /// and updating transaction state.
     ///
     /// This applies the requested outgoing session action (provisional responses,
@@ -1402,14 +1403,15 @@ impl SipCore {
     /// # Examples
     ///
     /// ```no_run
-    /// # use crate::sip::{SipCore, CallId, SessionOut};
-    /// # fn example(core: &mut SipCore, call_id: &CallId, out: SessionOut) {
-    /// core.handle_session_out(call_id, out);
+    /// # use crate::entities::CallId;
+    /// # use crate::sip::{SipCore, SipCommand};
+    /// # fn example(core: &mut SipCore, call_id: &CallId, cmd: SipCommand) {
+    /// core.handle_sip_command(call_id, cmd);
     /// # }
     /// ```
-    pub fn handle_session_out(&mut self, call_id: &CallId, out: SessionOut) {
-        match out {
-            SessionOut::SipSend100 => {
+    pub fn handle_sip_command(&mut self, call_id: &CallId, cmd: SipCommand) {
+        match cmd {
+            SipCommand::Send100 => {
                 if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(resp) = response_provisional_from_request(&ctx.req, 100, "Trying") {
                         let bytes = resp.to_bytes();
@@ -1419,7 +1421,7 @@ impl SipCore {
                     }
                 }
             }
-            SessionOut::SipSend180 => {
+            SipCommand::Send180 => {
                 let provision = if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(mut resp) =
                         response_provisional_from_request(&ctx.req, 180, "Ringing")
@@ -1460,7 +1462,7 @@ impl SipCore {
                     self.send_payload(peer, bytes);
                 }
             }
-            SessionOut::SipSend183 { answer } => {
+            SipCommand::Send183 { answer } => {
                 let provision = if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(mut resp) = response_final_with_sdp(
                         &ctx.req,
@@ -1516,7 +1518,7 @@ impl SipCore {
                     self.send_payload(peer, bytes);
                 }
             }
-            SessionOut::SipSend200 { answer } => {
+            SipCommand::Send200 { answer } => {
                 if let Some(ctx) = self.invites.get_mut(call_id) {
                     if let Some(mut resp) = response_final_with_sdp(
                         &ctx.req,
@@ -1548,7 +1550,7 @@ impl SipCore {
                     }
                 }
             }
-            SessionOut::SipSendUpdate { expires } => {
+            SipCommand::SendUpdate { expires } => {
                 let (peer, payload) = if let Some(ctx) = self.invites.get_mut(call_id) {
                     let peer = ctx.tx.peer;
                     let payload = build_update_request(ctx, &self.cfg, expires);
@@ -1562,7 +1564,7 @@ impl SipCore {
                     log::warn!("[sip update] failed to build UPDATE call_id={}", call_id);
                 }
             }
-            SessionOut::SipSendError { code, reason } => {
+            SipCommand::SendError { code, reason } => {
                 if self.active_call_id.as_ref() == Some(call_id) {
                     self.active_call_id = None;
                 }
@@ -1584,7 +1586,7 @@ impl SipCore {
                     self.stop_reliable_provisional(call_id);
                 }
             }
-            SessionOut::SipSendBye => {
+            SipCommand::SendBye => {
                 if self.active_call_id.as_ref() == Some(call_id) {
                     self.active_call_id = None;
                 }
@@ -1602,7 +1604,7 @@ impl SipCore {
                 }
                 self.invites.remove(call_id);
             }
-            SessionOut::SipSendBye200 => {
+            SipCommand::SendBye200 => {
                 if self.active_call_id.as_ref() == Some(call_id) {
                     self.active_call_id = None;
                 }
@@ -1618,7 +1620,6 @@ impl SipCore {
                 }
                 self.invites.remove(call_id);
             }
-            _ => { /* 他の SessionOut は現状未配線 */ }
         }
     }
 

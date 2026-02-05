@@ -12,8 +12,8 @@ use tokio_rustls::TlsAcceptor;
 use crate::config::{self, RtpConfig};
 use crate::rtp::rtcp::RtcpEventTx;
 use crate::rtp::rx::{RawRtp, RtpReceiver};
-use crate::session::SessionRegistry;
-use crate::session::types::CallId;
+use crate::entities::CallId;
+use crate::ports::session_lookup::SessionLookup;
 use crate::transport::{tls, ConnId, TransportPeer, TransportSendRequest};
 
 /// packet層 → SIP層 に渡す入力
@@ -47,7 +47,7 @@ type TcpConnMap = Arc<Mutex<HashMap<ConnId, TcpConn>>>;
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use tokio::net::{UdpSocket, TcpListener};
 /// use tokio::sync::mpsc;
 /// use std::net::SocketAddr;
@@ -58,8 +58,9 @@ type TcpConnMap = Arc<Mutex<HashMap<ConnId, TcpConn>>>;
 ///     let rtp_sock = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
 ///     let (sip_tx, _sip_rx) = mpsc::channel(16);
 ///     let (send_tx, send_rx) = mpsc::channel(16);
-///     // Minimal placeholders for session_registry, rtp_port_map, rtcp_tx
-///     let session_registry = crate::session::SessionRegistry::new();
+///     // Minimal placeholders for session_lookup, rtp_port_map, rtcp_tx
+///     let session_lookup: std::sync::Arc<dyn crate::ports::session_lookup::SessionLookup> =
+///         std::sync::Arc::new(crate::session::SessionRegistry::new());
 ///     let rtp_port_map = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 ///     let rtcp_tx = None;
 ///     let rtp_cfg = crate::config::rtp_config().clone();
@@ -73,7 +74,7 @@ type TcpConnMap = Arc<Mutex<HashMap<ConnId, TcpConn>>>;
 ///             rtp_sock,
 ///             sip_tx,
 ///             send_rx,
-///             session_registry,
+///             session_lookup,
 ///             rtp_port_map,
 ///             rtcp_tx,
 ///             rtp_cfg,
@@ -89,7 +90,7 @@ pub async fn run_packet_loop(
     rtp_sock: UdpSocket,
     sip_tx: mpsc::Sender<SipInput>,
     mut sip_send_rx: tokio::sync::mpsc::Receiver<TransportSendRequest>,
-    session_registry: SessionRegistry,
+    session_lookup: Arc<dyn SessionLookup>,
     rtp_port_map: RtpPortMap,
     rtcp_tx: Option<RtcpEventTx>,
     rtp_cfg: RtpConfig,
@@ -100,12 +101,7 @@ pub async fn run_packet_loop(
 
     let tcp_conns: TcpConnMap = Arc::new(Mutex::new(HashMap::new()));
     let conn_seq = Arc::new(AtomicU64::new(1));
-    let rtp_rx = RtpReceiver::new(
-        session_registry.clone(),
-        rtp_port_map.clone(),
-        rtcp_tx,
-        rtp_cfg,
-    );
+    let rtp_rx = RtpReceiver::new(session_lookup.clone(), rtp_port_map.clone(), rtcp_tx, rtp_cfg);
 
     if let Some(listener) = sip_tcp_listener {
         let sip_tx = sip_tx.clone();

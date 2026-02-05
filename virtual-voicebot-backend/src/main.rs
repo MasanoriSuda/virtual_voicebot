@@ -26,9 +26,10 @@ use crate::app::AppNotificationPort;
 use crate::db::TsurugiAdapter;
 use crate::notification::{LineAdapter, NoopNotification};
 use crate::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
+use crate::ports::session_lookup::SessionLookup;
 use crate::rtp::tx::RtpTxHandle;
 use crate::session::{spawn_session, MediaConfig, SessionControlIn, SessionOut, SessionRegistry};
-use crate::sip::{b2bua_bridge, SipConfig, SipCore, SipEvent};
+use crate::sip::{b2bua_bridge, SipCommand, SipConfig, SipCore, SipEvent};
 use crate::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendRequest};
 
 const SIP_INPUT_CHANNEL_CAPACITY: usize = 256;
@@ -115,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
     // packetループ起動（UDP受信 → SIP/RTP振り分け → セッションへ）
     {
         let rtp_port_map_for_packet = rtp_port_map.clone();
-        let session_registry_for_packet = session_registry.clone();
+        let session_lookup_for_packet: Arc<dyn SessionLookup> = Arc::new(session_registry.clone());
         let rtp_cfg_for_packet = rtp_cfg.clone();
         tokio::spawn(async move {
             if let Err(e) = run_packet_loop(
@@ -124,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
                 rtp_sock,
                 sip_tx,
                 sip_send_rx,
-                session_registry_for_packet,
+                session_lookup_for_packet,
                 rtp_port_map_for_packet,
                 None,
                 rtp_cfg_for_packet,
@@ -384,6 +385,13 @@ async fn main() -> anyhow::Result<()> {
                                 .await;
                         }
                     }
+                    SessionOut::AppRequestTts { text } => {
+                        log::debug!(
+                            "[main] AppRequestTts received (stub): call_id={} text_len={}",
+                            call_id,
+                            text.len()
+                        );
+                    }
                     SessionOut::Metrics { name, value } => {
                         if name == "rtp_in" {
                             log::debug!(
@@ -401,8 +409,32 @@ async fn main() -> anyhow::Result<()> {
                             );
                         }
                     }
-                    other => {
-                        sip_core.handle_session_out(&call_id, other);
+                    SessionOut::SipSend100 => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::Send100);
+                    }
+                    SessionOut::SipSend180 => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::Send180);
+                    }
+                    SessionOut::SipSend183 { answer } => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::Send183 { answer });
+                    }
+                    SessionOut::SipSend200 { answer } => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::Send200 { answer });
+                    }
+                    SessionOut::SipSendUpdate { expires } => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::SendUpdate { expires });
+                    }
+                    SessionOut::SipSendError { code, reason } => {
+                        sip_core.handle_sip_command(
+                            &call_id,
+                            SipCommand::SendError { code, reason },
+                        );
+                    }
+                    SessionOut::SipSendBye => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::SendBye);
+                    }
+                    SessionOut::SipSendBye200 => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::SendBye200);
                     }
                 }
             }
