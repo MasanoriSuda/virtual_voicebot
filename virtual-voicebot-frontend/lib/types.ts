@@ -3,9 +3,13 @@ export type CallStatus = "active" | "completed" | "failed"
 export interface Call {
   id: string
   from: string // caller number
+  fromName?: string
   to: string // bot/service number
   callerNumber: string // for backward compatibility
+  callId?: string
+  direction?: "inbound" | "outbound" | "missed"
   startTime: string
+  endedAt?: string | null
   duration: number // in seconds
   durationSec: number // explicit duration in seconds
   status: CallStatus

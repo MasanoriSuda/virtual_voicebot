@@ -1,0 +1,203 @@
+export type CallStatus = "ended" | "missed" | "in_call"
+export type CallDirection = "inbound" | "outbound" | "missed"
+
+export type CallRecord = {
+  id: string
+  callId: string
+  from: string
+  fromName: string
+  to: string
+  startedAt: string
+  endedAt: string | null
+  status: CallStatus
+  durationSec: number
+  summary: string
+  recordingUrl: string | null
+  direction: CallDirection
+}
+
+export const mockCalls: CallRecord[] = [
+  {
+    id: "1",
+    callId: "c_001",
+    from: "+81-90-1234-5678",
+    fromName: "田中太郎",
+    to: "+81-3-1234-5678",
+    startedAt: "2026-02-02T10:30:00Z",
+    endedAt: "2026-02-02T10:35:00Z",
+    status: "ended",
+    durationSec: 300,
+    summary: "配送状況の確認。住所変更あり。",
+    recordingUrl: "/mock/recording.wav",
+    direction: "inbound",
+  },
+  {
+    id: "2",
+    callId: "c_002",
+    from: "+81-80-2222-1111",
+    fromName: "佐藤花子",
+    to: "+81-3-1234-5678",
+    startedAt: "2026-02-02T09:05:00Z",
+    endedAt: "2026-02-02T09:07:45Z",
+    status: "ended",
+    durationSec: 165,
+    summary: "IVRで担当部署へ転送。",
+    recordingUrl: "/mock/recording.wav",
+    direction: "inbound",
+  },
+  {
+    id: "3",
+    callId: "c_003",
+    from: "+81-50-8888-1111",
+    fromName: "株式会社アーク",
+    to: "+81-3-1234-5678",
+    startedAt: "2026-02-02T08:12:00Z",
+    endedAt: null,
+    status: "in_call",
+    durationSec: 72,
+    summary: "契約更新の問い合わせ。",
+    recordingUrl: null,
+    direction: "inbound",
+  },
+  {
+    id: "4",
+    callId: "c_004",
+    from: "+81-70-3333-2222",
+    fromName: "山本一郎",
+    to: "+81-3-1234-5678",
+    startedAt: "2026-02-01T17:48:00Z",
+    endedAt: "2026-02-01T17:50:10Z",
+    status: "ended",
+    durationSec: 130,
+    summary: "不在着信の折り返し。",
+    recordingUrl: "/mock/recording.wav",
+    direction: "outbound",
+  },
+  {
+    id: "5",
+    callId: "c_005",
+    from: "+81-90-9999-0001",
+    fromName: "匿名",
+    to: "+81-3-1234-5678",
+    startedAt: "2026-02-01T16:20:00Z",
+    endedAt: "2026-02-01T16:20:20Z",
+    status: "missed",
+    durationSec: 0,
+    summary: "迷惑電話。",
+    recordingUrl: null,
+    direction: "missed",
+  },
+  {
+    id: "6",
+    callId: "c_006",
+    from: "+81-3-4444-5555",
+    fromName: "株式会社ミドリ",
+    to: "+81-3-1234-5678",
+    startedAt: "2026-02-01T14:12:00Z",
+    endedAt: "2026-02-01T14:18:20Z",
+    status: "ended",
+    durationSec: 380,
+    summary: "請求書の送付依頼。",
+    recordingUrl: "/mock/recording.wav",
+    direction: "inbound",
+  },
+  {
+    id: "7",
+    callId: "c_007",
+    from: "+81-90-5555-1212",
+    fromName: "川村莉子",
+    to: "+81-3-1234-5678",
+    startedAt: "2026-01-31T11:05:00Z",
+    endedAt: "2026-01-31T11:08:00Z",
+    status: "ended",
+    durationSec: 180,
+    summary: "納期確認。",
+    recordingUrl: "/mock/recording.wav",
+    direction: "inbound",
+  },
+  {
+    id: "8",
+    callId: "c_008",
+    from: "+81-90-7777-8888",
+    fromName: "高橋光",
+    to: "+81-3-1234-5678",
+    startedAt: "2026-01-31T09:32:00Z",
+    endedAt: "2026-01-31T09:36:30Z",
+    status: "ended",
+    durationSec: 270,
+    summary: "録音確認の依頼。",
+    recordingUrl: null,
+    direction: "outbound",
+  },
+  {
+    id: "9",
+    callId: "c_009",
+    from: "+81-80-2323-4545",
+    fromName: "森田梢",
+    to: "+81-3-1234-5678",
+    startedAt: "2026-01-30T18:40:00Z",
+    endedAt: "2026-01-30T18:42:50Z",
+    status: "ended",
+    durationSec: 170,
+    summary: "IVRの操作で担当者へ接続。",
+    recordingUrl: "/mock/recording.wav",
+    direction: "inbound",
+  },
+  {
+    id: "10",
+    callId: "c_010",
+    from: "+81-90-1111-2222",
+    fromName: "営業担当",
+    to: "+81-3-1234-5678",
+    startedAt: "2026-01-30T15:22:00Z",
+    endedAt: "2026-01-30T15:28:20Z",
+    status: "ended",
+    durationSec: 380,
+    summary: "新規案件の相談。",
+    recordingUrl: "/mock/recording.wav",
+    direction: "outbound",
+  },
+]
+
+export const mockKPI = {
+  totalCalls: 142,
+  totalCallsChange: 12.5,
+  avgDurationSec: 154,
+  avgDurationChange: -5.2,
+  answerRate: 0.87,
+  answerRateChange: 3.1,
+  activeCalls: 3,
+}
+
+export const mockHourlyVolume = [
+  { hour: 0, inbound: 2, outbound: 0 },
+  { hour: 1, inbound: 1, outbound: 0 },
+  { hour: 2, inbound: 0, outbound: 1 },
+  { hour: 3, inbound: 0, outbound: 0 },
+  { hour: 4, inbound: 0, outbound: 0 },
+  { hour: 5, inbound: 1, outbound: 0 },
+  { hour: 6, inbound: 2, outbound: 1 },
+  { hour: 7, inbound: 3, outbound: 2 },
+  { hour: 8, inbound: 7, outbound: 3 },
+  { hour: 9, inbound: 12, outbound: 6 },
+  { hour: 10, inbound: 14, outbound: 8 },
+  { hour: 11, inbound: 10, outbound: 5 },
+  { hour: 12, inbound: 8, outbound: 4 },
+  { hour: 13, inbound: 9, outbound: 6 },
+  { hour: 14, inbound: 11, outbound: 7 },
+  { hour: 15, inbound: 13, outbound: 9 },
+  { hour: 16, inbound: 9, outbound: 5 },
+  { hour: 17, inbound: 6, outbound: 4 },
+  { hour: 18, inbound: 5, outbound: 3 },
+  { hour: 19, inbound: 4, outbound: 2 },
+  { hour: 20, inbound: 3, outbound: 2 },
+  { hour: 21, inbound: 2, outbound: 1 },
+  { hour: 22, inbound: 2, outbound: 1 },
+  { hour: 23, inbound: 1, outbound: 0 },
+]
+
+export const mockTranscript = [
+  { time: "00:00", speaker: "A", text: "お電話ありがとうございます。" },
+  { time: "00:05", speaker: "B", text: "配送状況を確認したいのですが。" },
+  { time: "00:10", speaker: "A", text: "かしこまりました。お名前をお願いします。" },
+]

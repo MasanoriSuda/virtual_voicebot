@@ -1,177 +1,87 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import type { Call } from "@/lib/types"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "./ui/card"
-import { Input } from "./ui/input"
-import { Button } from "./ui/button"
-import { Badge } from "./ui/badge"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "./ui/table"
+import { DateRange } from "react-day-picker"
+import { Download } from "lucide-react"
+import { endOfDay, startOfDay, subDays } from "date-fns"
+
+import { FilterBar, isWithinRange, directionLabel } from "@/components/calls/filter-bar"
+import { CallsTable } from "@/components/calls/calls-table"
+import { CallDetailDrawer } from "@/components/calls/call-detail-drawer"
+import { Button } from "@/components/ui/button"
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "./ui/select"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "./ui/dropdown-menu"
-import {
-  Search,
-  Download,
-  Phone,
-  PhoneIncoming,
-  PhoneOutgoing,
-  PhoneMissed,
-  ChevronLeft,
-  ChevronRight,
-  MoreHorizontal,
-  Eye,
-  Calendar,
-} from "lucide-react"
-import { cn } from "@/lib/utils"
-import { CallDetailDrawer } from "./call-detail-drawer"
+} from "@/components/ui/select"
+import type { CallRecord } from "@/lib/mock-data"
 
 interface CallHistoryContentProps {
   initialCalls: Call[]
 }
 
-type CallTypeFilter = "all" | "inbound" | "outbound" | "missed"
-type DateRangeFilter = "today" | "yesterday" | "week" | "custom"
+const pageSizeOptions = [10, 25, 50]
 
 export function CallHistoryContent({ initialCalls }: CallHistoryContentProps) {
-  const [calls] = useState<Call[]>(initialCalls)
-  const [searchQuery, setSearchQuery] = useState("")
-  const [callTypeFilter, setCallTypeFilter] = useState<CallTypeFilter>("all")
-  const [dateRangeFilter, setDateRangeFilter] = useState<DateRangeFilter>("week")
-  const [itemsPerPage, setItemsPerPage] = useState(10)
-  const [currentPage, setCurrentPage] = useState(1)
-  const [selectedCallId, setSelectedCallId] = useState<string | null>(null)
+  const [dateRange, setDateRange] = useState<DateRange | undefined>(() => {
+    const today = new Date()
+    return { from: startOfDay(subDays(today, 6)), to: endOfDay(today) }
+  })
+  const [typeFilter, setTypeFilter] = useState("all")
+  const [search, setSearch] = useState("")
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc")
+  const [pageSize, setPageSize] = useState(10)
+  const [page, setPage] = useState(1)
+  const [selectedCall, setSelectedCall] = useState<CallRecord | null>(null)
+
+  const records = useMemo(() => initialCalls.map(toRecord), [initialCalls])
 
   const filteredCalls = useMemo(() => {
-    let result = calls
+    return records.filter((call) => {
+      const matchesType = typeFilter === "all" || call.direction === typeFilter
+      const matchesSearch =
+        search.trim().length === 0 ||
+        [call.from, call.fromName, call.to, call.callId]
+          .join(" ")
+          .toLowerCase()
+          .includes(search.toLowerCase())
+      const matchesDate = isWithinRange(new Date(call.startedAt), dateRange)
+      return matchesType && matchesSearch && matchesDate
+    })
+  }, [dateRange, records, search, typeFilter])
 
-    // Search filter
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase()
-      result = result.filter((call) => {
-        const matchesNumber =
-          call.from.toLowerCase().includes(query) ||
-          call.to.toLowerCase().includes(query)
-        return matchesNumber
-      })
-    }
+  const sortedCalls = useMemo(() => {
+    return [...filteredCalls].sort((a, b) => {
+      const delta = new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
+      return sortDirection === "asc" ? delta : -delta
+    })
+  }, [filteredCalls, sortDirection])
 
-    // Call type filter
-    if (callTypeFilter !== "all") {
-      result = result.filter((call) => {
-        if (callTypeFilter === "missed") return call.status === "failed"
-        if (callTypeFilter === "inbound") return true // Mock: treat all as inbound for demo
-        if (callTypeFilter === "outbound") return false
-        return true
-      })
-    }
+  const totalPages = Math.max(1, Math.ceil(sortedCalls.length / pageSize))
+  const pagedCalls = sortedCalls.slice((page - 1) * pageSize, page * pageSize)
+  const startIndex = sortedCalls.length === 0 ? 0 : (page - 1) * pageSize + 1
+  const endIndex = Math.min(page * pageSize, sortedCalls.length)
 
-    // Date range filter
-    const now = new Date()
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    const startOfYesterday = new Date(startOfToday)
-    startOfYesterday.setDate(startOfYesterday.getDate() - 1)
-    const startOfWeek = new Date(startOfToday)
-    startOfWeek.setDate(startOfWeek.getDate() - 7)
+  useEffect(() => {
+    setPage(1)
+  }, [dateRange, typeFilter, search, pageSize])
 
-    if (dateRangeFilter === "today") {
-      result = result.filter((call) => new Date(call.startTime) >= startOfToday)
-    } else if (dateRangeFilter === "yesterday") {
-      result = result.filter((call) => {
-        const callDate = new Date(call.startTime)
-        return callDate >= startOfYesterday && callDate < startOfToday
-      })
-    } else if (dateRangeFilter === "week") {
-      result = result.filter((call) => new Date(call.startTime) >= startOfWeek)
-    }
-
-    return result
-  }, [calls, searchQuery, callTypeFilter, dateRangeFilter])
-
-  const totalPages = Math.ceil(filteredCalls.length / itemsPerPage)
-  const paginatedCalls = filteredCalls.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  )
-
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins}:${secs.toString().padStart(2, "0")}`
-  }
-
-  const formatDateTime = (isoString: string) => {
-    const date = new Date(isoString)
-    return new Intl.DateTimeFormat("ja-JP", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(date)
-  }
-
-  const getCallDirectionIcon = (call: Call) => {
-    if (call.status === "failed") {
-      return <PhoneMissed className="h-4 w-4 text-red-500" />
-    }
-    // Mock logic: odd IDs are inbound, even are outbound
-    const isInbound = Number.parseInt(call.id) % 2 === 1
-    return isInbound ? (
-      <PhoneIncoming className="h-4 w-4 text-green-600" />
-    ) : (
-      <PhoneOutgoing className="h-4 w-4 text-primary" />
-    )
-  }
-
-  const getStatusBadge = (status: Call["status"]) => {
-    const config = {
-      active: {
-        label: "通話中",
-        className: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
-      },
-      completed: {
-        label: "完了",
-        className: "bg-secondary text-secondary-foreground",
-      },
-      failed: {
-        label: "不在",
-        className: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300",
-      },
-    }
-
-    return (
-      <Badge variant="outline" className={cn("font-normal", config[status].className)}>
-        {config[status].label}
-      </Badge>
-    )
+  const handleSortToggle = () => {
+    setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"))
   }
 
   const handleExportCSV = () => {
-    const headers = ["日時", "発信者", "着信先", "通話時間", "ステータス"]
-    const rows = filteredCalls.map((call) => [
-      formatDateTime(call.startTime),
-      call.from,
+    const headers = ["日時", "方向", "発信者", "着信先", "通話時間", "ステータス"]
+    const rows = sortedCalls.map((call) => [
+      formatDateTime(call.startedAt),
+      directionLabel(call.direction),
+      `${call.fromName} ${call.from}`,
       call.to,
-      formatDuration(call.duration),
-      call.status,
+      formatDuration(call.durationSec),
+      statusLabel(call.status),
     ])
 
     const csvContent = [headers, ...rows].map((row) => row.join(",")).join("\n")
@@ -191,198 +101,142 @@ export function CallHistoryContent({ initialCalls }: CallHistoryContentProps) {
           <p className="text-muted-foreground">Call History</p>
         </div>
 
-        <Card>
-          <CardHeader className="pb-4">
-            <div className="flex flex-col sm:flex-row gap-4 justify-between">
-              <div className="flex flex-wrap gap-2">
-                {/* Date Range Filter */}
-                <Select
-                  value={dateRangeFilter}
-                  onValueChange={(v) => {
-                    setDateRangeFilter(v as DateRangeFilter)
-                    setCurrentPage(1)
-                  }}
-                >
-                  <SelectTrigger className="w-[140px]">
-                    <Calendar className="h-4 w-4 mr-2" />
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="today">今日</SelectItem>
-                    <SelectItem value="yesterday">昨日</SelectItem>
-                    <SelectItem value="week">過去7日</SelectItem>
-                    <SelectItem value="custom">カスタム</SelectItem>
-                  </SelectContent>
-                </Select>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex-1">
+            <FilterBar
+              dateRange={dateRange}
+              onDateChange={setDateRange}
+              typeFilter={typeFilter}
+              onTypeChange={setTypeFilter}
+              search={search}
+              onSearchChange={setSearch}
+            />
+          </div>
+          <Button variant="outline" onClick={handleExportCSV} className="bg-transparent">
+            <Download className="mr-2 h-4 w-4" />
+            CSV出力
+          </Button>
+        </div>
 
-                {/* Call Type Filter */}
-                <Select
-                  value={callTypeFilter}
-                  onValueChange={(v) => {
-                    setCallTypeFilter(v as CallTypeFilter)
-                    setCurrentPage(1)
-                  }}
-                >
-                  <SelectTrigger className="w-[120px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">すべて</SelectItem>
-                    <SelectItem value="inbound">着信</SelectItem>
-                    <SelectItem value="outbound">発信</SelectItem>
-                    <SelectItem value="missed">不在</SelectItem>
-                  </SelectContent>
-                </Select>
+        <CallsTable
+          calls={pagedCalls}
+          sortDirection={sortDirection}
+          onSortToggle={handleSortToggle}
+          onRowClick={setSelectedCall}
+        />
 
-                {/* Search */}
-                <div className="relative flex-1 min-w-[200px]">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    placeholder="電話番号または名前で検索..."
-                    value={searchQuery}
-                    onChange={(e) => {
-                      setSearchQuery(e.target.value)
-                      setCurrentPage(1)
-                    }}
-                    className="pl-9"
-                  />
-                </div>
-              </div>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            表示件数
+            <Select value={pageSize.toString()} onValueChange={(v) => setPageSize(Number(v))}>
+              <SelectTrigger className="w-[90px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {pageSizeOptions.map((size) => (
+                  <SelectItem key={size} value={size.toString()}>
+                    {size}件
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span>
+              {sortedCalls.length} 件中 {startIndex} - {endIndex} を表示
+            </span>
+          </div>
 
-              {/* Export */}
-              <Button variant="outline" onClick={handleExportCSV} className="shrink-0 bg-transparent">
-                <Download className="h-4 w-4 mr-2" />
-                CSV出力
-              </Button>
-            </div>
-          </CardHeader>
-
-          <CardContent className="p-0">
-            <div className="border-t">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-[180px]">日時</TableHead>
-                    <TableHead className="w-[60px]">方向</TableHead>
-                    <TableHead>発信者</TableHead>
-                    <TableHead>着信先</TableHead>
-                    <TableHead className="w-[100px]">通話時間</TableHead>
-                    <TableHead className="w-[100px]">ステータス</TableHead>
-                    <TableHead className="w-[80px]" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {paginatedCalls.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={7} className="h-32">
-                        <div className="flex flex-col items-center justify-center text-muted-foreground">
-                          <Phone className="h-10 w-10 mb-2 opacity-50" />
-                          <p>該当する通話履歴がありません</p>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    paginatedCalls.map((call) => (
-                      <TableRow
-                        key={call.id}
-                        className="cursor-pointer hover:bg-muted/50"
-                        onClick={() => setSelectedCallId(call.id)}
-                      >
-                        <TableCell className="font-medium">
-                          {formatDateTime(call.startTime)}
-                        </TableCell>
-                        <TableCell>{getCallDirectionIcon(call)}</TableCell>
-                        <TableCell>{call.from}</TableCell>
-                        <TableCell className="text-muted-foreground">{call.to}</TableCell>
-                        <TableCell className="font-mono">
-                          {formatDuration(call.duration)}
-                        </TableCell>
-                        <TableCell>{getStatusBadge(call.status)}</TableCell>
-                        <TableCell>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <MoreHorizontal className="h-4 w-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => setSelectedCallId(call.id)}>
-                                <Eye className="h-4 w-4 mr-2" />
-                                詳細を見る
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-
-            {/* Pagination */}
-            <div className="flex items-center justify-between px-4 py-4 border-t">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <span>表示件数:</span>
-                <Select
-                  value={itemsPerPage.toString()}
-                  onValueChange={(v) => {
-                    setItemsPerPage(Number(v))
-                    setCurrentPage(1)
-                  }}
-                >
-                  <SelectTrigger className="w-[70px] h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="10">10</SelectItem>
-                    <SelectItem value="25">25</SelectItem>
-                    <SelectItem value="50">50</SelectItem>
-                  </SelectContent>
-                </Select>
-                <span>
-                  / 全{filteredCalls.length}件
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
+            {Array.from({ length: totalPages }).map((_, index) => {
+              const pageNumber = index + 1
+              return (
                 <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-8 w-8 bg-transparent"
-                  disabled={currentPage === 1}
-                  onClick={() => setCurrentPage((p) => p - 1)}
+                  key={pageNumber}
+                  variant={pageNumber === page ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setPage(pageNumber)}
                 >
-                  <ChevronLeft className="h-4 w-4" />
+                  {pageNumber}
                 </Button>
-                <span className="text-sm min-w-[80px] text-center">
-                  {currentPage} / {totalPages || 1}
-                </span>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-8 w-8 bg-transparent"
-                  disabled={currentPage >= totalPages}
-                  onClick={() => setCurrentPage((p) => p + 1)}
-                >
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+              )
+            })}
+          </div>
+        </div>
       </div>
 
       <CallDetailDrawer
-        callId={selectedCallId}
-        open={!!selectedCallId}
-        onClose={() => setSelectedCallId(null)}
+        call={selectedCall}
+        open={Boolean(selectedCall)}
+        onOpenChange={(open) => !open && setSelectedCall(null)}
       />
     </>
   )
+}
+
+function toRecord(call: Call): CallRecord {
+  const status = toStatus(call.status)
+  const direction = toDirection(call)
+
+  return {
+    id: call.id,
+    callId: call.callId ?? `c_${call.id.toString().padStart(3, "0")}`,
+    from: call.from,
+    fromName: call.fromName ?? "不明",
+    to: call.to,
+    startedAt: call.startTime,
+    endedAt: call.endedAt ?? null,
+    status,
+    durationSec: call.durationSec ?? call.duration,
+    summary: call.summary,
+    recordingUrl: call.recordingUrl ?? null,
+    direction,
+  }
+}
+
+function toStatus(status: Call["status"]): CallRecord["status"] {
+  switch (status) {
+    case "active":
+      return "in_call"
+    case "failed":
+      return "missed"
+    default:
+      return "ended"
+  }
+}
+
+function toDirection(call: Call): CallRecord["direction"] {
+  if (call.direction) return call.direction
+  if (call.status === "failed") return "missed"
+  const idNumber = Number.parseInt(call.id, 10)
+  if (Number.isNaN(idNumber)) return "inbound"
+  return idNumber % 2 === 0 ? "outbound" : "inbound"
+}
+
+function formatDuration(seconds: number) {
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value)
+  return new Intl.DateTimeFormat("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date)
+}
+
+function statusLabel(status: CallRecord["status"]) {
+  switch (status) {
+    case "ended":
+      return "完了"
+    case "missed":
+      return "不在"
+    case "in_call":
+      return "通話中"
+    default:
+      return "-"
+  }
 }
