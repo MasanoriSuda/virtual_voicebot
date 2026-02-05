@@ -20,6 +20,7 @@ impl NoopNotification {
 impl RingingNotifier for NoopNotification {
     fn notify_ringing(
         &self,
+        _call_id: crate::shared::entities::CallId,
         _from: String,
         _timestamp: DateTime<FixedOffset>,
     ) -> NotificationFuture {
@@ -38,7 +39,7 @@ impl MissedCallNotifier for NoopNotification {
 }
 
 impl CallEndedNotifier for NoopNotification {
-    fn notify_ended(&self, _from: String, _duration_sec: u64) -> NotificationFuture {
+    fn notify_ended(&self, _call_id: &str, _from: String, _duration_sec: u64) -> NotificationFuture {
         Box::pin(async move { Ok(()) })
     }
 }
@@ -98,15 +99,21 @@ impl LineAdapter {
 }
 
 impl RingingNotifier for LineAdapter {
-    fn notify_ringing(&self, from: String, timestamp: DateTime<FixedOffset>) -> NotificationFuture {
+    fn notify_ringing(
+        &self,
+        call_id: crate::shared::entities::CallId,
+        from: String,
+        timestamp: DateTime<FixedOffset>,
+    ) -> NotificationFuture {
         let text = format!(
-            "着信: {} ({})",
+            "着信: {} ({}) [call_id={}]",
             if from.trim().is_empty() {
                 "unknown"
             } else {
                 from.as_str()
             },
-            Self::format_timestamp(timestamp)
+            Self::format_timestamp(timestamp),
+            call_id
         );
         self.push_message(text)
     }
@@ -128,15 +135,16 @@ impl MissedCallNotifier for LineAdapter {
 }
 
 impl CallEndedNotifier for LineAdapter {
-    fn notify_ended(&self, from: String, duration_sec: u64) -> NotificationFuture {
+    fn notify_ended(&self, call_id: &str, from: String, duration_sec: u64) -> NotificationFuture {
         let text = format!(
-            "通話終了: {} ({}秒)",
+            "通話終了: {} ({}秒) [call_id={}]",
             if from.trim().is_empty() {
                 "unknown"
             } else {
                 from.as_str()
             },
-            duration_sec
+            duration_sec,
+            call_id
         );
         self.push_message(text)
     }

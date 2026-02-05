@@ -5,7 +5,7 @@
 - 録音のメタデータ（開始時刻、長さ、発話区間との整合に必要な情報）を管理する。
 
 ## 詳細設計
-- 正本: [docs/recording.md](../../docs/recording.md)
+- 正本: [DD-007_recording.md](../../docs/design/detail/DD-007_recording.md)
 
 ## 責務
 - session/rtp から渡される音声ストリームを録音用に収集する

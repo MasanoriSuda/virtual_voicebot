@@ -6,7 +6,7 @@
 
 ## 詳細設計
 - API契約（正本）: [docs/contract.md](../../../docs/contract.md)
-- 録音設計: [docs/recording.md](../../docs/recording.md)
+- 録音設計: [DD-007_recording.md](../../docs/design/detail/DD-007_recording.md)
 
 ## 責務
 - REST:

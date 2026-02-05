@@ -29,14 +29,16 @@ impl SessionCoordinator {
                 return false;
             }
         };
+        let payload_type = 0; // PCMU
+        let ssrc = rand::random::<u32>();
         self.rtp
-            .start(self.call_id.to_string(), dst_addr, 0, 0x12345678, 0, 0);
+            .start(self.call_id.to_string(), dst_addr, payload_type, ssrc, 0, 0);
         let _ = self.session_out_tx.try_send((
             self.call_id.clone(),
             SessionOut::RtpStartTx {
                 dst_ip: ip,
                 dst_port: port,
-                pt: 0,
+                pt: payload_type,
             },
         ));
         self.a_leg_rtp_started = true;

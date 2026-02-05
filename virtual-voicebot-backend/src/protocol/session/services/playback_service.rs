@@ -1,9 +1,12 @@
-use anyhow::Error;
+use anyhow::{anyhow, Error};
 
 use super::super::SessionCoordinator;
 use log::{info, warn};
+use tokio::task::spawn_blocking;
+use tokio::time::timeout;
 
 use crate::protocol::session::types::IvrState;
+use crate::shared::config;
 
 #[derive(Debug)]
 pub(crate) struct PlaybackState {
@@ -12,7 +15,7 @@ pub(crate) struct PlaybackState {
 }
 
 impl SessionCoordinator {
-    pub(crate) fn start_playback(&mut self, paths: &[&str]) -> Result<(), Error> {
+    pub(crate) async fn start_playback(&mut self, paths: &[&str]) -> Result<(), Error> {
         let Some(_dst) = self.peer_rtp_addr() else {
             warn!(
                 "[session {}] start_playback skipped: no peer RTP address",
@@ -22,9 +25,19 @@ impl SessionCoordinator {
         };
         self.cancel_playback();
         self.stop_ivr_timeout();
+        let io_timeout = config::timeouts().recording_io;
         let mut frames = Vec::new();
         for path in paths {
-            let mut loaded = self.storage_port.load_wav_as_pcmu_frames(path)?;
+            let storage_port = self.storage_port.clone();
+            let path = (*path).to_string();
+            let load = spawn_blocking(move || storage_port.load_wav_as_pcmu_frames(&path));
+            let mut loaded = match timeout(io_timeout, load).await {
+                Ok(joined) => joined
+                    .map_err(|e| anyhow!("load_wav_as_pcmu_frames task failed: {}", e))??,
+                Err(_) => {
+                    return Err(anyhow!("load_wav_as_pcmu_frames timed out"));
+                }
+            };
             frames.append(&mut loaded);
         }
         if frames.is_empty() {

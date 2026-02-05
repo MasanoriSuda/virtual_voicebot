@@ -141,17 +141,17 @@ impl RtpReceiver {
                             );
                             return;
                         }
-        let frames = self
-            .reorder(
-                &call_id,
-                            RtpFrame {
-                                seq: pkt.sequence_number,
-                                ts: pkt.timestamp,
-                                pt: pkt.payload_type,
-                                payload: pkt.payload,
-                            },
-                        )
-            .await;
+                        let frames = self
+                            .reorder(
+                                &call_id,
+                                RtpFrame {
+                                    seq: pkt.sequence_number,
+                                    ts: pkt.timestamp,
+                                    pt: pkt.payload_type,
+                                    payload: pkt.payload,
+                                },
+                            )
+                            .await;
                         if frames.is_empty() {
                             warn!(
                                 "[rtp recv] drop late/dup seq={} from {} (call_id={})",

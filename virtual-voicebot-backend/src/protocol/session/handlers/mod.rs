@@ -182,7 +182,7 @@ impl SessionCoordinator {
 
                 if !self.outbound_mode {
                     self.ivr_state = IvrState::IvrMenuWaiting;
-                    if let Err(e) = self.start_playback(&[super::IVR_INTRO_WAV_PATH]) {
+                    if let Err(e) = self.start_playback(&[super::IVR_INTRO_WAV_PATH]).await {
                         warn!(
                             "[session {}] failed to send IVR intro wav: {:?}",
                             self.call_id, e
@@ -221,11 +221,13 @@ impl SessionCoordinator {
                     }
                 }
                 if let Some(b_leg) = &self.b_leg {
+                    let payload_type = 0; // PCMU
+                    let ssrc = rand::random::<u32>();
                     self.rtp.start(
                         b_leg.rtp_key.clone(),
                         b_leg.remote_rtp_addr,
-                        0,
-                        0x22334455,
+                        payload_type,
+                        ssrc,
                         0,
                         0,
                     );
@@ -259,10 +261,13 @@ impl SessionCoordinator {
                 } else {
                     self.ivr_state = IvrState::IvrMenuWaiting;
                     self.b_leg = None;
-                    if let Err(e) = self.start_playback(&[
-                        super::TRANSFER_FAIL_WAV_PATH,
-                        super::IVR_INTRO_AGAIN_WAV_PATH,
-                    ]) {
+                    if let Err(e) = self
+                        .start_playback(&[
+                            super::TRANSFER_FAIL_WAV_PATH,
+                            super::IVR_INTRO_AGAIN_WAV_PATH,
+                        ])
+                        .await
+                    {
                         warn!(
                             "[session {}] failed to play transfer fail flow: {:?}",
                             self.call_id, e
@@ -315,7 +320,7 @@ impl SessionCoordinator {
             }
             (_, SessionControlIn::TransferAnnounce) => {
                 if self.ivr_state == IvrState::Transferring && self.playback.is_none() {
-                    if let Err(e) = self.start_playback(&[super::TRANSFER_WAV_PATH]) {
+                    if let Err(e) = self.start_playback(&[super::TRANSFER_WAV_PATH]).await {
                         warn!(
                             "[session {}] failed to replay transfer wav: {:?}",
                             self.call_id, e
@@ -395,7 +400,7 @@ impl SessionCoordinator {
                 warn!("[session {}] transaction timeout notified", self.call_id);
             }
             (SessState::Established, SessionControlIn::AppBotAudioFile { path }) => {
-                if let Err(e) = self.start_playback(&[path.as_str()]) {
+                if let Err(e) = self.start_playback(&[path.as_str()]).await {
                     warn!(
                         "[session {}] failed to send app audio: {:?}",
                         self.call_id, e
@@ -451,7 +456,10 @@ impl SessionCoordinator {
                 if self.ivr_state == IvrState::IvrMenuWaiting {
                     info!("[session {}] IVR timeout, replaying menu", self.call_id);
                     self.stop_ivr_timeout();
-                    if let Err(e) = self.start_playback(&[super::IVR_INTRO_AGAIN_WAV_PATH]) {
+                    if let Err(e) = self
+                        .start_playback(&[super::IVR_INTRO_AGAIN_WAV_PATH])
+                        .await
+                    {
                         warn!(
                             "[session {}] failed to replay IVR menu: {:?}",
                             self.call_id, e
@@ -611,7 +619,10 @@ impl SessionCoordinator {
                 match action {
                     IvrAction::EnterVoicebot => {
                         info!("[session {}] starting voicebot intro", self.call_id);
-                        if let Err(e) = self.start_playback(&[super::VOICEBOT_INTRO_WAV_PATH]) {
+                        if let Err(e) = self
+                            .start_playback(&[super::VOICEBOT_INTRO_WAV_PATH])
+                            .await
+                        {
                             warn!("[session {}] voicebot intro failed: {:?}", self.call_id, e);
                             self.ivr_state = IvrState::VoicebotMode;
                             self.capture.reset();
@@ -622,10 +633,13 @@ impl SessionCoordinator {
                     }
                     IvrAction::PlaySendai => {
                         info!("[session {}] playing sendai info", self.call_id);
-                        if let Err(e) = self.start_playback(&[
-                            super::IVR_SENDAI_WAV_PATH,
-                            super::IVR_INTRO_AGAIN_WAV_PATH,
-                        ]) {
+                        if let Err(e) = self
+                            .start_playback(&[
+                                super::IVR_SENDAI_WAV_PATH,
+                                super::IVR_INTRO_AGAIN_WAV_PATH,
+                            ])
+                            .await
+                        {
                             warn!(
                                 "[session {}] failed to play sendai flow: {:?}",
                                 self.call_id, e
@@ -641,7 +655,7 @@ impl SessionCoordinator {
                         }
                         info!("[session {}] initiating transfer to B-leg", self.call_id);
                         self.ivr_state = IvrState::Transferring;
-                        if let Err(e) = self.start_playback(&[super::TRANSFER_WAV_PATH]) {
+                        if let Err(e) = self.start_playback(&[super::TRANSFER_WAV_PATH]).await {
                             warn!(
                                 "[session {}] failed to play transfer wav: {:?}",
                                 self.call_id, e
@@ -657,7 +671,10 @@ impl SessionCoordinator {
                     }
                     IvrAction::ReplayMenu => {
                         info!("[session {}] replaying IVR menu", self.call_id);
-                        if let Err(e) = self.start_playback(&[super::IVR_INTRO_AGAIN_WAV_PATH]) {
+                        if let Err(e) = self
+                            .start_playback(&[super::IVR_INTRO_AGAIN_WAV_PATH])
+                            .await
+                        {
                             warn!(
                                 "[session {}] failed to replay IVR menu: {:?}",
                                 self.call_id, e
@@ -667,10 +684,13 @@ impl SessionCoordinator {
                     }
                     IvrAction::Invalid => {
                         info!("[session {}] invalid DTMF: '{}'", self.call_id, digit);
-                        if let Err(e) = self.start_playback(&[
-                            super::IVR_INVALID_WAV_PATH,
-                            super::IVR_INTRO_AGAIN_WAV_PATH,
-                        ]) {
+                        if let Err(e) = self
+                            .start_playback(&[
+                                super::IVR_INVALID_WAV_PATH,
+                                super::IVR_INTRO_AGAIN_WAV_PATH,
+                            ])
+                            .await
+                        {
                             warn!(
                                 "[session {}] failed to play invalid flow: {:?}",
                                 self.call_id, e

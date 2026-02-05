@@ -261,7 +261,7 @@ impl AppWorker {
                             call_id
                         );
                     }
-                    self.notify_ringing(from, timestamp);
+                    self.notify_ringing(call_id.clone(), from, timestamp);
                 }
                 AppEvent::CallStarted { call_id, caller } => {
                     if call_id != self.call_id {
@@ -324,7 +324,7 @@ impl AppWorker {
                             call_id
                         );
                     }
-                    self.notify_ended(from, reason, duration_sec, timestamp);
+                    self.notify_ended(call_id.as_str(), from, reason, duration_sec, timestamp);
                     break;
                 }
             }
@@ -603,15 +603,20 @@ impl AppWorker {
     /// // Assume `worker` is a mutable AppWorker instance.
     /// // The first call schedules a ringing notification; the second call is ignored.
     /// let ts = chrono::FixedOffset::east_opt(9 * 3600).unwrap().now();
-    /// worker.notify_ringing("+819012345678".to_string(), ts);
-    /// worker.notify_ringing(" +819012345678".to_string(), ts);
+    /// worker.notify_ringing(CallId::new("call-123").unwrap(), "+819012345678".to_string(), ts);
+    /// worker.notify_ringing(CallId::new("call-123").unwrap(), " +819012345678".to_string(), ts);
     /// ```
-    fn notify_ringing(&mut self, from: String, timestamp: chrono::DateTime<chrono::FixedOffset>) {
+    fn notify_ringing(
+        &mut self,
+        call_id: CallId,
+        from: String,
+        timestamp: chrono::DateTime<chrono::FixedOffset>,
+    ) {
         if self.notification_state.ringing_notified {
             return;
         }
         self.notification_state.ringing_notified = true;
-        let fut = self.notification_port.notify_ringing(from, timestamp);
+        let fut = self.notification_port.notify_ringing(call_id, from, timestamp);
         self.spawn_notify("ringing", fut);
     }
 
@@ -632,11 +637,12 @@ impl AppWorker {
     /// // Assuming `worker` is a mutable AppWorker instance:
     /// use chrono::FixedOffset;
     /// let timestamp = chrono::Utc::now().with_timezone(&FixedOffset::east(0));
-    /// worker.notify_ended("alice".to_string(), EndReason::Bye, Some(42), timestamp);
-    /// worker.notify_ended("alice".to_string(), EndReason::Cancel, None, timestamp);
+    /// worker.notify_ended("call-123", "alice".to_string(), EndReason::Bye, Some(42), timestamp);
+    /// worker.notify_ended("call-123", "alice".to_string(), EndReason::Cancel, None, timestamp);
     /// ```
     fn notify_ended(
         &mut self,
+        call_id: &str,
         from: String,
         reason: EndReason,
         duration_sec: Option<u64>,
@@ -659,7 +665,9 @@ impl AppWorker {
                     return;
                 };
                 self.notification_state.ended_notified = true;
-                let fut = self.notification_port.notify_ended(from, duration_sec);
+                let fut = self
+                    .notification_port
+                    .notify_ended(call_id, from, duration_sec);
                 self.spawn_notify("ended", fut);
             }
             _ => {}
@@ -680,7 +688,10 @@ impl AppWorker {
     ///
     /// ```ignore
     /// // Run a notification in background and log if it fails.
-    /// self.spawn_notify("ringing", notification_port.notify_ringing(call_id.clone()));
+    /// self.spawn_notify(
+    ///     "ringing",
+    ///     notification_port.notify_ringing(call_id.clone(), from, timestamp),
+    /// );
     /// ```
     fn spawn_notify(&self, label: &'static str, fut: NotificationFuture) {
         let call_id = self.call_id.clone();

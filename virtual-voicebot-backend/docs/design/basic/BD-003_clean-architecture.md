@@ -302,7 +302,7 @@ pub trait TtsPort: Send + Sync {
 
 ### 6.1 現行構造（v3.0: 3層アーキテクチャ）
 
-```
+```text
 src/
 ├── main.rs                      # エントリポイント（Composition Root）
 │

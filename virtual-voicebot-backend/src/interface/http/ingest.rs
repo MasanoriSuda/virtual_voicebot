@@ -8,12 +8,11 @@ pub struct HttpIngestPort {
 }
 
 impl HttpIngestPort {
-    pub fn new(timeout: Duration) -> Self {
+    pub fn new(timeout: Duration) -> Result<Self, reqwest::Error> {
         let client = reqwest::Client::builder()
             .timeout(timeout)
-            .build()
-            .expect("failed to build ingest HTTP client");
-        Self { timeout, client }
+            .build()?;
+        Ok(Self { timeout, client })
     }
 }
 

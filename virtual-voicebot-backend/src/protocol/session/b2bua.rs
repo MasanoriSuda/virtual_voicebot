@@ -145,7 +145,7 @@ async fn run_transfer(
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> Result<Option<BLeg>> {
     let target_uri = runtime_cfg.transfer_target_uri.clone();
-    let target_addr = resolve_target_addr(&target_uri)?;
+    let target_addr = resolve_target_addr(&target_uri).await?;
 
     let sip_port = runtime_cfg.sip_port;
     let via_host = runtime_cfg.advertised_ip.clone();
@@ -279,7 +279,9 @@ async fn run_transfer(
                     .map(extract_contact_uri)
                     .unwrap_or(target_uri.as_str())
                     .to_string();
-                let sip_peer = resolve_target_addr(&remote_uri).unwrap_or(target_addr);
+                let sip_peer = resolve_target_addr(&remote_uri)
+                    .await
+                    .unwrap_or(target_addr);
 
                 let remote_sdp =
                     parse_offer_sdp(&resp.body).ok_or_else(|| anyhow!("missing SDP in 200 OK"))?;
@@ -857,14 +859,18 @@ fn send_non2xx_ack(
 /// # Examples
 ///
 /// ```no_run
-/// let addr = resolve_target_addr("sip:alice@example.com").unwrap();
+/// # async fn example() -> Result<(), anyhow::Error> {
+/// let addr = resolve_target_addr("sip:alice@example.com").await?;
 /// println!("{}", addr);
+/// # Ok(())
+/// # }
 /// ```
-fn resolve_target_addr(uri: &str) -> Result<SocketAddr> {
+async fn resolve_target_addr(uri: &str) -> Result<SocketAddr> {
     let parsed = parse_uri(uri)?;
     let port = parsed.port.unwrap_or(DEFAULT_SIP_PORT);
     let host = parsed.host;
-    let mut addrs = (host.as_str(), port).to_socket_addrs()?;
+    let addr_str = format!("{}:{}", host, port);
+    let mut addrs = tokio::net::lookup_host(&addr_str).await?;
     addrs
         .next()
         .ok_or_else(|| anyhow!("unable to resolve {}", host))

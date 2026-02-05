@@ -156,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
             Arc::new(NoopNotification::new())
         }
     };
-    let ingest_port = Arc::new(http::ingest::HttpIngestPort::new(timeouts.ingest_http));
+    let ingest_port = Arc::new(http::ingest::HttpIngestPort::new(timeouts.ingest_http)?);
     let storage_port = Arc::new(recording::storage::FileStoragePort::new());
     let mut sip_core = SipCore::new(
         SipConfig {

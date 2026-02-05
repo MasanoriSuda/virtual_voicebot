@@ -394,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_playback_clears_state() {
         let mut session = build_test_session(Arc::new(DummyStoragePort));
-        session.start_playback(&["dummy.wav"]).unwrap();
+        session.start_playback(&["dummy.wav"]).await.unwrap();
         assert!(session.playback.is_some());
         assert!(session.sending_audio);
         session.cancel_playback();

@@ -34,14 +34,23 @@ pub fn system_prompt() -> String {
 }
 
 fn read_prompt_file() -> Option<String> {
-    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let path = base.join(PROMPT_FILE_NAME);
-    let text = std::fs::read_to_string(path).ok()?;
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return None;
+    // Try current working directory first, then executable directory.
+    let paths = [
+        PathBuf::from(PROMPT_FILE_NAME),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(PROMPT_FILE_NAME)))
+            .unwrap_or_default(),
+    ];
+    for path in paths {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
     }
-    Some(trimmed.to_string())
+    None
 }
 
 /// LLM 呼び出しの薄いI/F（挙動は ai::handle_user_question_from_whisper のLLM部分と同じ）

@@ -29,8 +29,12 @@ impl IngestManager {
             return;
         };
         self.ingest_sent = true;
-        if let Err(e) = self.ingest_port.post(url, payload).await {
-            log::warn!("[ingest] failed to post: {:?}", e);
+        if let Err(e) = self.ingest_port.post(url, payload.clone()).await {
+            log::warn!(
+                "[ingest] call_id={} failed to post: {:?}",
+                payload.call_id,
+                e
+            );
         }
     }
 }

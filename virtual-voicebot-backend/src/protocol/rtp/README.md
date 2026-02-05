@@ -17,4 +17,4 @@
 - RTCP は SR/RR の基本実装あり、SDES(CNAME) は実装予定
 
 詳細設計
-- 正本: [docs/rtp.md](../../docs/rtp.md)
+- 正本: [DD-004_rtp.md](../../docs/design/detail/DD-004_rtp.md)

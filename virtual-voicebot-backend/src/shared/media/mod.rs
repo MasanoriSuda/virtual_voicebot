@@ -135,8 +135,22 @@ impl Recorder {
         }
         if let Some(w) = self.writer.as_mut() {
             for i in 0..FRAME_SAMPLES {
-                let _ = w.write_sample(rx_frame[i]);
-                let _ = w.write_sample(tx_frame[i]);
+                if let Err(e) = w.write_sample(rx_frame[i]) {
+                    log::warn!(
+                        "[recorder] call_id={} write_sample error: {:?}",
+                        self.call_id,
+                        e
+                    );
+                    return;
+                }
+                if let Err(e) = w.write_sample(tx_frame[i]) {
+                    log::warn!(
+                        "[recorder] call_id={} write_sample error: {:?}",
+                        self.call_id,
+                        e
+                    );
+                    return;
+                }
             }
             self.samples_written += FRAME_SAMPLES as u64;
         }

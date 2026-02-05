@@ -53,14 +53,23 @@ fn read_example_file() -> Option<String> {
 }
 
 fn read_prompt_from(name: &str) -> Option<String> {
-    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let path = base.join(name);
-    let text = std::fs::read_to_string(path).ok()?;
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return None;
+    // Try current working directory first, then executable directory.
+    let paths = [
+        PathBuf::from(name),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(name)))
+            .unwrap_or_default(),
+    ];
+    for path in paths {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
     }
-    Some(trimmed.to_string())
+    None
 }
 
 pub async fn classify_intent(text: String) -> Result<String> {

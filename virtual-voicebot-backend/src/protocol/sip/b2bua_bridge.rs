@@ -89,10 +89,16 @@ pub fn dispatch_message(peer: TransportPeer, message: &SipMessage) -> bool {
     let Some(sender) = sender else {
         return false;
     };
-    let _ = sender.try_send(B2buaSipMessage {
+    if let Err(err) = sender.try_send(B2buaSipMessage {
         peer,
         message: message.clone(),
-    });
+    }) {
+        log::warn!(
+            "[sip] b2bua message dropped (channel full/closed) call_id={} err={:?}",
+            call_id,
+            err
+        );
+    }
     true
 }
 
