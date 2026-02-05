@@ -1,5 +1,5 @@
 <!-- SOURCE_OF_TRUTH: Session詳細設計 -->
-# session モジュール詳細設計 (`src/session`)
+# session モジュール詳細設計 (`src/protocol/session`)
 
 ## 1. 目的・スコープ
 - 通話セッションのライフサイクル管理（生成/破棄/検索）と SIP/RTP 設定の橋渡しを行う。
@@ -35,30 +35,30 @@
 3. **終了**: BYE/エラー/終了で全タイマ停止
 
 ### 3.5 発火時の通知
-- `SessionTimeout` を `session → app` に送る。
-- app が `HangupRequested` を返した場合、session が BYE を sip へ送る。
+- `SessionTimeout` を `protocol/session → service/call_control` に送る。
+- service/call_control が `HangupRequested` を返した場合、protocol/session が BYE を protocol/sip へ送る。
 
 ## 4. keepalive / タイムアウト時の SessionOut
 - keepalive運用: 20〜30ms 程度の周期 tick で無音フレーム送出やメトリクス更新を行う。送出失敗が連続する場合は `SessionOut::StopRtpTx` と `SessionOut::SendSipBye200` をトリガ。
-- タイムアウト時のアクション: 原則 app に `SessionTimeout` を通知し方針を仰ぐ。即切断が必要な場合のみ直接 `SessionOut::StopRtpTx` / `SendSipBye200` を発火。
+- タイムアウト時のアクション: 原則 service/call_control に `SessionTimeout` を通知し方針を仰ぐ。即切断が必要な場合のみ直接 `SessionOut::StopRtpTx` / `SendSipBye200` を発火。
 - 任意メトリクス: `SessionOut::Metrics { name: "session_timeout", value: 1 }` などを発行しても良い。
 
 ## 5. イベントと責務（RTP/PCM とコール制御の分離）
 
-> **正本参照（2025-12-28 追記）**: session↔app イベント名の正本は [app.md](app.md) §2
+> **正本参照（2025-12-28 追記）**: protocol/session ↔ service/call_control イベント名の正本は [app.md](app.md) §2
 
 - SIP起点入力: `SessionIn::SipInvite` / `SipAck` / `SipBye` / `SipTransactionTimeout`
-- メディア入力: `SessionIn::PcmInputChunk`（rtp からデコード済み PCM を受ける）、keepalive tick は `MediaTimerTick`
-- app入力: `SessionIn::BotAudioReady` / `HangupRequested`（app.md §2 参照）
+- メディア入力: `SessionIn::PcmInputChunk`（protocol/rtp からデコード済み PCM を受ける）、keepalive tick は `MediaTimerTick`
+- service/call_control 入力: `SessionIn::BotAudioReady` / `HangupRequested`（app.md §2 参照）
 - SIP出力: `SessionOut::SipSend180` / `SipSend200` / `SipSendBye200`
-- RTP出力: `SessionOut::RtpStartTx` / `RtpStopTx` / `PcmOutputChunk`（app から受けた PCM を rtp へ転送）
-- app出力: `SessionOut::CallStarted` / `PcmReceived` / `CallEnded` / `SessionTimeout`（app.md §2 参照）
+- RTP出力: `SessionOut::RtpStartTx` / `RtpStopTx` / `PcmOutputChunk`（service/call_control から受けた PCM を protocol/rtp へ転送）
+- service/call_control 出力: `SessionOut::CallStarted` / `PcmReceived` / `CallEnded` / `SessionTimeout`（app.md §2 参照）
 - メトリクス: `SessionOut::Metrics`
 
 ## 6. 他モジュールとの責務境界
-- sip: 受信 SIP を `SessionIn::SipInvite/Ack/Bye/...` で通知。応答送信は `SessionOut::SipSend*` で依頼。
-- rtp: I/O と SSRC/Seq 管理・簡易ジッタは rtp。session は開始/停止と送信先設定だけ伝える（`RtpStartTx/RtpStopTx`）。rtp からは `PcmInputChunk` で PCM を受け取る。
-- app/ai: 対話・ASR/LLM/TTS は app/ai で完結。session はコール制御と PCM 経路制御のみ。app からは `BotAudioReady`（payload: `PcmOutputChunk`）で TTS 音声を受け取り、`HangupRequested` で BYE 指示を受ける（app.md §2 参照）。session は受け取った `PcmOutputChunk` を rtp へ転送する。
+- protocol/sip: 受信 SIP を `SessionIn::SipInvite/Ack/Bye/...` で通知。応答送信は `SessionOut::SipSend*` で依頼。
+- protocol/rtp: I/O と SSRC/Seq 管理・簡易ジッタは protocol/rtp。protocol/session は開始/停止と送信先設定だけ伝える（`RtpStartTx/RtpStopTx`）。protocol/rtp からは `PcmInputChunk` で PCM を受け取る。
+- service/call_control と service/ai: 対話・ASR/LLM/TTS は service/call_control と service/ai で完結。protocol/session はコール制御と PCM 経路制御のみ。service/call_control からは `BotAudioReady`（payload: `PcmOutputChunk`）で TTS 音声を受け取り、`HangupRequested` で BYE 指示を受ける（app.md §2 参照）。protocol/session は受け取った `PcmOutputChunk` を protocol/rtp へ転送する。
 
 ## 7. 実装状況
 

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use chrono::Local;
 use serde::Deserialize;
-use virtual_voicebot_backend::logging;
+use virtual_voicebot_backend::shared::logging;
 
 #[derive(Debug, Deserialize, Default)]
 struct TestsFile {

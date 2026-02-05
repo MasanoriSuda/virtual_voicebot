@@ -7,8 +7,8 @@ use reqwest::StatusCode;
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 
-use virtual_voicebot_backend::http;
-use virtual_voicebot_backend::logging;
+use virtual_voicebot_backend::interface::http;
+use virtual_voicebot_backend::shared::logging;
 
 struct ServerGuard(tokio::task::JoinHandle<()>);
 

@@ -34,9 +34,9 @@ virtual-voicebot-backend/
 - `meta.json`: 録音メタデータ
 
 ## 役割分担（責務）
-- **media モジュール（src/media/）**: PCM 等の音声を受け取り、録音ファイルを生成・保存。`storage/recordings/<callId>/` 配下の生成と更新を担当し、録音タイムラインの 0 秒基準を決めてメタに保存。
-- **http モジュール（src/http/）**: `docs/contract.md` に沿って録音を配信。ブラウザの `<audio>` 再生・シークのため、HTTP Range に対応する（**MVP 必須**）。
-- **session / rtp**: 録音の開始/停止などライフサイクルの指示を出す。RTP/RTCP の詳細処理は rtp が担当し、録音は media に委譲する。
+- **media モジュール（src/shared/media/）**: PCM 等の音声を受け取り、録音ファイルを生成・保存。`storage/recordings/<callId>/` 配下の生成と更新を担当し、録音タイムラインの 0 秒基準を決めてメタに保存。
+- **http モジュール（src/interface/http/）**: `docs/contract.md` に沿って録音を配信。ブラウザの `<audio>` 再生・シークのため、HTTP Range に対応する（**MVP 必須**）。
+- **session / rtp（protocol/session / protocol/rtp）**: 録音の開始/停止などライフサイクルの指示を出す。RTP/RTCP の詳細処理は protocol/rtp が担当し、録音は shared/media に委譲する。
 
 ## 録音のライフサイクル（MVP）
 - **開始**: 通話が成立し RTP ストリームが開始した時点で録音を開始

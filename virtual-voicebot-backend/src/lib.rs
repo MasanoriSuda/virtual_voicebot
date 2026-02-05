@@ -1,10 +1,10 @@
-pub mod config;
-pub mod db;
-pub mod entities;
-pub mod error;
-pub mod http;
-pub mod logging;
-pub mod notification;
-pub mod ports;
-pub mod recording;
-pub mod utils;
+pub mod interface;
+pub mod protocol;
+pub mod service;
+pub mod shared;
+
+// Backward-compatible re-exports (transitional).
+pub use interface::{db, http, notification};
+pub use protocol::{rtp, session, sip, transport};
+pub use service::{ai, call_control as app, recording};
+pub use shared::{config, entities, error, logging, media, ports, utils};

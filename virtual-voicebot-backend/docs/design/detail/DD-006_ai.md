@@ -1,6 +1,7 @@
 <!-- SOURCE_OF_TRUTH: AI連携設計 -->
 # ai モジュール詳細設計（asr / llm / tts）
 
+**配置**: `src/service/ai`
 **正本**: 本ファイルが ai モジュール I/F の正本です（2025-12-27 確定、Refs Issue #7 CX-3）
 
 ## 1. 共通方針
@@ -14,7 +15,7 @@
 - メディア（PCM）系は `stream_id` を併用する
 - 参照: design.md §13.1、AGENTS.md §3
 
-## 2. ASR (ai::asr)
+## 2. ASR (service/ai/asr)
 
 ### 入力 DTO
 ```rust
@@ -45,11 +46,11 @@ AsrError {
 ```
 
 ### チャネル構成
-- app → asr（入力チャネル）
-- asr → app（結果チャネル）
+- service/call_control → service/ai/asr（入力チャネル）
+- service/ai/asr → service/call_control（結果チャネル）
 - バックプレッシャ: 入力キュー溢れ時に古い PCM を破棄（ログのみ）
 
-## 3. LLM (ai::llm)
+## 3. LLM (service/ai/llm)
 
 ### 入力 DTO
 ```rust
@@ -78,10 +79,10 @@ LlmError {
 
 ### 呼び出しモデル
 - Future で渡し、await で受け取る（1リクエスト1レスポンス）
-- プロンプト組立: history/コンテキストは app が組み立てて渡す（llm は純クライアント）
+- プロンプト組立: history/コンテキストは service/call_control が組み立てて渡す（service/ai/llm は純クライアント）
 - ストリーミング応答: MVP では非対応、NEXT でトークンストリームを検討
 
-## 4. TTS (ai::tts)
+## 4. TTS (service/ai/tts)
 
 ### 入力 DTO
 ```rust
@@ -110,20 +111,20 @@ TtsError {
 ```
 
 ### チャネル構成
-- app → tts（リクエストチャネル）
-- tts → app（PCM/エラーチャネル）
+- service/call_control → service/ai/tts（リクエストチャネル）
+- service/ai/tts → service/call_control（PCM/エラーチャネル）
 - 終端: `is_last=true` で明示
 
-## 5. app から見た I/F まとめ
+## 5. service/call_control から見た I/F まとめ
 
-### app → ai イベント
+### service/call_control → service/ai イベント
 | イベント | 用途 |
 |----------|------|
 | `AsrInputPcm` | PCM チャンクを ASR に送信 |
 | `LlmRequest` | テキスト + 履歴を LLM に送信 |
 | `TtsRequest` | テキストを TTS に送信 |
 
-### ai → app イベント
+### service/ai → service/call_control イベント
 | イベント | 用途 |
 |----------|------|
 | `AsrResult` | 認識結果（partial/final） |
@@ -141,7 +142,7 @@ TtsError {
 
 ### キャンセル
 - 通話終了時に ASR/TTS チャネルを閉じる
-- 連続エラー時は app が BYE を選択可能
+- 連続エラー時は service/call_control が BYE を選択可能
 
 ## 6. エラーポリシー
 - design.md のエラーポリシーに従う
@@ -150,7 +151,7 @@ TtsError {
 
 ## 7. 現状の実装と差分メモ
 - 現状: WAV 一時ファイルを経由し、HTTP (`/transcribe`, `/audio_query`, `/synthesis`) や AWS SDK を直接呼び出している
-- 予定: app↔ai のチャネル経由で PCM/テキストを渡す形に置き換える（I/F 変更は別タスク）
+- 予定: service/call_control ↔ service/ai のチャネル経由で PCM/テキストを渡す形に置き換える（I/F 変更は別タスク）
 - ポリシー（タイムアウト/リトライ/フォールバック）は現状のまま維持し、移行後も踏襲する想定
 
 ## 8. 補助資料
