@@ -734,15 +734,17 @@ impl AppWorker {
         match self.phone_lookup.lookup_phone(caller.clone()).await {
             Ok(Some(result)) => {
                 log::debug!(
-                    "[app {}] phone lookup found caller={} ivr_enabled={}",
+                    "[app {}] phone lookup found caller={} category={:?} action_code={} ivr_flow_id={:?}",
                     self.call_id,
                     caller_masked,
-                    result.ivr_enabled
+                    result.caller_category,
+                    result.action_code,
+                    result.ivr_flow_id
                 );
             }
             Ok(None) => {
                 log::debug!(
-                    "[app {}] phone lookup not found caller={} (default ivr enabled)",
+                    "[app {}] phone lookup not found caller={} (no routing result)",
                     self.call_id,
                     caller_masked
                 );

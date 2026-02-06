@@ -445,19 +445,19 @@ pub fn outbound_config() -> &'static OutboundConfig {
 #[derive(Clone, Debug)]
 pub struct PhoneLookupConfig {
     pub enabled: bool,
-    pub tsurugi_endpoint: Option<String>,
+    pub database_url: Option<String>,
 }
 
 impl PhoneLookupConfig {
     fn from_env() -> Self {
         let enabled = env_bool("PHONE_LOOKUP_ENABLED", false);
-        let tsurugi_endpoint = env_non_empty("TSURUGI_ENDPOINT");
-        if enabled && tsurugi_endpoint.is_none() {
-            log::warn!("[config] PHONE_LOOKUP_ENABLED is true but TSURUGI_ENDPOINT is missing");
+        let database_url = env_non_empty("DATABASE_URL");
+        if enabled && database_url.is_none() {
+            log::warn!("[config] PHONE_LOOKUP_ENABLED is true but DATABASE_URL is missing");
         }
         Self {
             enabled,
-            tsurugi_endpoint,
+            database_url,
         }
     }
 }
@@ -472,15 +472,15 @@ pub fn phone_lookup_enabled() -> bool {
     phone_lookup_config().enabled
 }
 
-/// Returns the configured TSURUGI phone-lookup endpoint, if any.
+/// Returns the configured PostgreSQL DSN for phone lookup, if any.
 ///
 /// # Examples
 ///
 /// ```
-/// let _endpoint = tsurugi_endpoint();
+/// let _dsn = database_url();
 /// ```
-pub fn tsurugi_endpoint() -> Option<String> {
-    phone_lookup_config().tsurugi_endpoint.clone()
+pub fn database_url() -> Option<String> {
+    phone_lookup_config().database_url.clone()
 }
 
 #[derive(Clone, Debug)]

@@ -9,21 +9,23 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::interface::db::TsurugiAdapter;
+use crate::interface::db::PostgresAdapter;
 use crate::interface::http;
 use crate::interface::notification::{LineAdapter, NoopNotification};
 use crate::protocol::rtp::tx::RtpTxHandle;
 use crate::protocol::session::types::CallId;
-use crate::protocol::session::{spawn_session, MediaConfig, SessionControlIn, SessionOut, SessionRegistry};
+use crate::protocol::session::{
+    spawn_session, MediaConfig, SessionControlIn, SessionOut, SessionRegistry,
+};
 use crate::protocol::sip::{b2bua_bridge, SipCommand, SipConfig, SipCore, SipEvent};
 use crate::protocol::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendRequest};
 use crate::service::ai;
 use crate::service::call_control as app;
-use crate::service::recording;
 use crate::service::call_control::AppNotificationPort;
-use crate::shared::{config, logging};
+use crate::service::recording;
 use crate::shared::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
 use crate::shared::ports::session_lookup::SessionLookup;
+use crate::shared::{config, logging};
 
 const SIP_INPUT_CHANNEL_CAPACITY: usize = 256;
 const SIP_SEND_CHANNEL_CAPACITY: usize = 256;
@@ -131,9 +133,25 @@ async fn main() -> anyhow::Result<()> {
     // --- SIP処理ループ: packet層からのSIP入力をセッションへ結線 ---
     let ai_port = Arc::new(ai::DefaultAiPort::new());
     let phone_lookup: Arc<dyn PhoneLookupPort> = if config::phone_lookup_enabled() {
-        if let Some(endpoint) = config::tsurugi_endpoint() {
-            Arc::new(TsurugiAdapter::new(endpoint))
+        if let Some(database_url) = config::database_url() {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                PostgresAdapter::new(database_url),
+            )
+            .await
+            {
+                Ok(Ok(adapter)) => Arc::new(adapter),
+                Ok(Err(err)) => {
+                    log::warn!("[main] postgres adapter init failed: {}", err);
+                    Arc::new(NoopPhoneLookup::new())
+                }
+                Err(_) => {
+                    log::warn!("[main] postgres adapter init timed out");
+                    Arc::new(NoopPhoneLookup::new())
+                }
+            }
         } else {
+            log::warn!("[main] phone lookup enabled but DATABASE_URL is missing");
             Arc::new(NoopPhoneLookup::new())
         }
     } else {

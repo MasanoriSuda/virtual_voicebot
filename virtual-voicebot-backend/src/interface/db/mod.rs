@@ -1,3 +1,3 @@
-pub mod tsurugi;
+pub mod postgres;
 
-pub use tsurugi::TsurugiAdapter;
+pub use postgres::PostgresAdapter;

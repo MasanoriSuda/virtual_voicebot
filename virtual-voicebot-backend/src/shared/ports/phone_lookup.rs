@@ -2,11 +2,24 @@ use std::future::Future;
 use std::pin::Pin;
 
 use thiserror::Error;
+use uuid::Uuid;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallerCategory {
+    Spam,
+    Registered,
+    Unknown,
+    Anonymous,
+}
 
 #[derive(Clone, Debug)]
 pub struct PhoneLookupResult {
     pub phone_number: String,
-    pub ivr_enabled: bool,
+    pub caller_category: CallerCategory,
+    pub action_code: String,
+    pub ivr_flow_id: Option<Uuid>,
+    pub recording_enabled: bool,
+    pub announce_enabled: bool,
 }
 
 #[derive(Debug, Error)]

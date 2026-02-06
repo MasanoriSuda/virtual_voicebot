@@ -1,9 +1,13 @@
 pub mod ai;
 pub mod app;
+pub mod call_repository;
 pub mod ingest;
 pub mod notification;
 pub mod phone_lookup;
+pub mod recording_repository;
 pub mod rtp_sink;
 pub mod session_lookup;
+pub mod settings_port;
 pub mod sip;
 pub mod storage;
+pub mod sync_outbox_port;
