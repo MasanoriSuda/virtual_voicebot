@@ -1,0 +1,8 @@
+CREATE TABLE ivr_flows (
+    id UUID NOT NULL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
