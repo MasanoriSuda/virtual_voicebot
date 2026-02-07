@@ -32,6 +32,10 @@ uuid = { version = "1", features = ["v4", "v7"] }
 tempfile = "3"
 rcgen = "0.13"
 
+[[bin]]
+name = "serversync"
+path = "src/bin/serversync.rs"
+
 [[test]]
 name = "recording_http_e2e"
 path = "test/e2e/recording_http_e2e.rs"
