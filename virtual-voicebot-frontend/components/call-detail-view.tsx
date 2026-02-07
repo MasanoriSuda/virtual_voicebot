@@ -93,7 +93,7 @@ export function CallDetailView({ call }: CallDetailViewProps) {
     return <Badge variant={variants[status]}>{labels[status]}</Badge>
   }
 
-  const displaySummary = summary || call.summary
+  const displaySummary = summary || call.summary || "準備中"
   const hasRecording = !!call.recordingUrl
 
   return (
@@ -147,7 +147,7 @@ export function CallDetailView({ call }: CallDetailViewProps) {
             <Alert>
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>
-                {call.status === "in_call" ? "通話録音は終了後に利用可能になります" : "音声は準備中です"}
+                {call.status === "in_call" ? "通話録音は終了後に利用可能になります" : "録音準備中です"}
               </AlertDescription>
             </Alert>
           )}
