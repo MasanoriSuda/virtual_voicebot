@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod announcement_port;
 pub mod app;
+pub mod call_log_port;
 pub mod call_repository;
 pub mod folder_port;
 pub mod ingest;

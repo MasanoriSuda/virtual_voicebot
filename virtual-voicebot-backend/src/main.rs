@@ -23,6 +23,7 @@ use crate::service::ai;
 use crate::service::call_control as app;
 use crate::service::call_control::AppNotificationPort;
 use crate::service::recording;
+use crate::shared::ports::call_log_port::{CallLogPort, NoopCallLogPort};
 use crate::shared::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
 use crate::shared::ports::session_lookup::SessionLookup;
 use crate::shared::{config, logging};
@@ -132,30 +133,44 @@ async fn main() -> anyhow::Result<()> {
 
     // --- SIP処理ループ: packet層からのSIP入力をセッションへ結線 ---
     let ai_port = Arc::new(ai::DefaultAiPort::new());
-    let phone_lookup: Arc<dyn PhoneLookupPort> = if config::phone_lookup_enabled() {
-        if let Some(database_url) = config::database_url() {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                PostgresAdapter::new(database_url),
-            )
-            .await
-            {
-                Ok(Ok(adapter)) => Arc::new(adapter),
-                Ok(Err(err)) => {
-                    log::warn!("[main] postgres adapter init failed: {}", err);
-                    Arc::new(NoopPhoneLookup::new())
-                }
-                Err(_) => {
-                    log::warn!("[main] postgres adapter init timed out");
-                    Arc::new(NoopPhoneLookup::new())
-                }
+    let postgres_adapter = if let Some(database_url) = config::database_url() {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            PostgresAdapter::new(database_url),
+        )
+        .await
+        {
+            Ok(Ok(adapter)) => Some(Arc::new(adapter)),
+            Ok(Err(err)) => {
+                log::warn!("[main] postgres adapter init failed: {}", err);
+                None
             }
-        } else {
-            log::warn!("[main] phone lookup enabled but DATABASE_URL is missing");
-            Arc::new(NoopPhoneLookup::new())
+            Err(_) => {
+                log::warn!("[main] postgres adapter init timed out");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let phone_lookup: Arc<dyn PhoneLookupPort> = if config::phone_lookup_enabled() {
+        match postgres_adapter.clone() {
+            Some(adapter) => adapter,
+            None => {
+                log::warn!("[main] phone lookup enabled but DATABASE_URL is missing/unavailable");
+                Arc::new(NoopPhoneLookup::new())
+            }
         }
     } else {
         Arc::new(NoopPhoneLookup::new())
+    };
+    let call_log_port: Arc<dyn CallLogPort> = match postgres_adapter.clone() {
+        Some(adapter) => adapter,
+        None => {
+            log::warn!("[main] call_log/outbox persist disabled (DATABASE_URL unavailable)");
+            Arc::new(NoopCallLogPort::new())
+        }
     };
 
     let notification_port: Arc<dyn AppNotificationPort> = {
@@ -233,6 +248,7 @@ async fn main() -> anyhow::Result<()> {
                                 recording_base_url,
                                 ingest_port.clone(),
                                 storage_port.clone(),
+                                call_log_port.clone(),
                                 session_cfg.clone(),
                             )
                             .await;

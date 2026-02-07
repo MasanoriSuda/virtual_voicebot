@@ -178,6 +178,10 @@ impl RecordingManager {
         self.recorder.relative_path()
     }
 
+    pub fn mixed_file_path(&self) -> std::path::PathBuf {
+        self.recorder.file_path()
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.recorder.sample_rate()
     }

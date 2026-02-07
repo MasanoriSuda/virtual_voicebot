@@ -10,6 +10,7 @@ use crate::protocol::session::types::*;
 use crate::protocol::session::{Session, SessionHandle};
 use crate::shared::config::SessionRuntimeConfig;
 use crate::shared::ports::app::AppEventTx;
+use crate::shared::ports::call_log_port::CallLogPort;
 use crate::shared::ports::ingest::IngestPort;
 use crate::shared::ports::storage::StoragePort;
 
@@ -26,6 +27,7 @@ pub fn spawn_call(
     recording_base_url: Option<String>,
     ingest_port: Arc<dyn IngestPort>,
     storage_port: Arc<dyn StoragePort>,
+    call_log_port: Arc<dyn CallLogPort>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> SessionHandle {
     let handle = Session::spawn(
@@ -40,6 +42,7 @@ pub fn spawn_call(
         recording_base_url,
         ingest_port,
         storage_port,
+        call_log_port,
         runtime_cfg,
     );
 
@@ -59,6 +62,7 @@ pub async fn spawn_session(
     recording_base_url: Option<String>,
     ingest_port: Arc<dyn IngestPort>,
     storage_port: Arc<dyn StoragePort>,
+    call_log_port: Arc<dyn CallLogPort>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> SessionHandle {
     let handle = spawn_call(
@@ -73,6 +77,7 @@ pub async fn spawn_session(
         recording_base_url,
         ingest_port,
         storage_port,
+        call_log_port,
         runtime_cfg,
     );
     // Session manager の薄いラッパ経由で登録

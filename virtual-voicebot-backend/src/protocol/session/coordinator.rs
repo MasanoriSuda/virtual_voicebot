@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::{interval, Duration, Instant, MissedTickBehavior};
 
+use chrono::{DateTime, Utc};
 #[path = "handlers/mod.rs"]
 mod handlers;
 #[path = "services/mod.rs"]
@@ -18,11 +19,14 @@ use crate::protocol::rtp::tx::RtpTxHandle;
 use crate::protocol::session::b2bua;
 use crate::protocol::session::capture::AudioCapture;
 use crate::protocol::session::timers::SessionTimers;
-use crate::shared::config::{self, SessionRuntimeConfig};
-use crate::shared::ports::app::{AppEvent, AppEventTx};
-use crate::shared::ports::ingest::{IngestPayload, IngestPort, IngestRecording};
+use crate::protocol::sip::{parse_name_addr, parse_uri};
+use crate::shared::config::SessionRuntimeConfig;
+use crate::shared::ports::app::AppEventTx;
+use crate::shared::ports::call_log_port::{CallLogPort, EndedCallLog, EndedRecording};
+use crate::shared::ports::ingest::IngestPort;
 use crate::shared::ports::storage::StoragePort;
 use anyhow::Error;
+use uuid::Uuid;
 // log macros used in handler/service modules
 use services::playback_service::PlaybackState;
 
@@ -81,6 +85,7 @@ pub struct SessionCoordinator {
     app_tx: AppEventTx,
     runtime_cfg: Arc<SessionRuntimeConfig>,
     media_cfg: MediaConfig,
+    call_log_port: Arc<dyn CallLogPort>,
     rtp: crate::protocol::session::rtp_stream_manager::RtpStreamManager,
     recording: crate::protocol::session::recording_manager::RecordingManager,
     started_at: Option<Instant>,
@@ -123,6 +128,7 @@ impl SessionCoordinator {
         recording_base_url: Option<String>,
         ingest_port: Arc<dyn IngestPort>,
         storage_port: Arc<dyn StoragePort>,
+        call_log_port: Arc<dyn CallLogPort>,
         runtime_cfg: Arc<SessionRuntimeConfig>,
     ) -> SessionHandle {
         // Bounded channels: control is reliable, media is drop-on-full upstream.
@@ -148,6 +154,7 @@ impl SessionCoordinator {
             app_tx,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg,
+            call_log_port,
             rtp: crate::protocol::session::rtp_stream_manager::RtpStreamManager::new(rtp_tx),
             recording: crate::protocol::session::recording_manager::RecordingManager::new(
                 call_id_clone.to_string(),
@@ -272,46 +279,142 @@ impl SessionCoordinator {
     }
 
     async fn send_ingest(&mut self, status: &str) {
-        if !self.ingest.should_post() {
-            return;
-        }
-        let started_at = self.started_wall.unwrap_or_else(std::time::SystemTime::now);
-        let ended_at = std::time::SystemTime::now();
-        let duration_sec = self.started_at.map(|s| s.elapsed().as_secs()).unwrap_or(0);
-        let recording_dir = self.recording.relative_path();
-        let recording_url = self
-            .recording_base_url
-            .as_ref()
-            .map(|base| recording_url(base, &recording_dir));
-        let recording = recording_url.map(|url| IngestRecording {
-            recording_url: url,
-            duration_sec,
-            sample_rate: self.recording.sample_rate(),
-            channels: self.recording.channels(),
-        });
-        let payload = IngestPayload {
-            call_id: self.call_id.clone(),
-            from: self.from_uri.clone(),
-            to: self.to_uri.clone(),
+        let (call_status, end_reason) = match status {
+            "ended" => ("ended", "normal"),
+            "failed" | "error" => ("error", "error"),
+            _ => {
+                log::warn!(
+                    "[session {}] unsupported ingest status={}, skip call log persist",
+                    self.call_id,
+                    status
+                );
+                return;
+            }
+        };
+
+        let started_wall = self.started_wall.unwrap_or_else(std::time::SystemTime::now);
+        let started_at: DateTime<Utc> = started_wall.into();
+        let ended_at = Utc::now();
+        let duration_sec = self
+            .started_at
+            .map(|s| s.elapsed().as_secs().min(i32::MAX as u64) as i32);
+        let call_log_id = Uuid::now_v7();
+        let caller_number = extract_e164_caller_number(self.from_uri.as_str());
+
+        let recording_path = self.recording.mixed_file_path();
+        let recording = match tokio::fs::metadata(&recording_path).await {
+            Ok(meta) if meta.is_file() => Some(EndedRecording {
+                id: Uuid::now_v7(),
+                file_path: recording_path.to_string_lossy().to_string(),
+                duration_sec,
+                format: "wav".to_string(),
+                file_size_bytes: i64::try_from(meta.len()).ok(),
+                started_at,
+                ended_at: Some(ended_at),
+            }),
+            Ok(_) => None,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                log::warn!(
+                    "[session {}] failed to inspect recording file {}: {}",
+                    self.call_id,
+                    recording_path.display(),
+                    err
+                );
+                None
+            }
+        };
+
+        let ended_call = EndedCallLog {
+            id: call_log_id,
             started_at,
             ended_at,
-            status: status.to_string(),
-            summary: String::new(),
             duration_sec,
+            external_call_id: call_log_id.to_string(),
+            sip_call_id: self.call_id.to_string(),
+            caller_number,
+            caller_category: "unknown".to_string(),
+            action_code: "IV".to_string(),
+            ivr_flow_id: None,
+            answered_at: None,
+            end_reason: end_reason.to_string(),
+            status: call_status.to_string(),
             recording,
         };
-        self.ingest.post_once(payload).await;
+
+        if let Err(err) = self.call_log_port.persist_call_ended(ended_call).await {
+            log::warn!(
+                "[session {}] failed to persist call log/outbox: {}",
+                self.call_id,
+                err
+            );
+        }
     }
 }
 
-fn recording_url(base_url: &str, call_id: &str) -> String {
-    let base = base_url.trim_end_matches('/');
-    format!("{}/recordings/{}/mixed.wav", base, call_id)
+fn extract_e164_caller_number(value: &str) -> Option<String> {
+    let candidate = extract_user_from_to(value)?;
+    if is_e164(candidate.as_str()) {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn extract_user_from_to(value: &str) -> Option<String> {
+    if let Ok(name_addr) = parse_name_addr(value) {
+        if name_addr.uri.scheme.eq_ignore_ascii_case("tel") {
+            if !name_addr.uri.host.trim().is_empty() {
+                return Some(name_addr.uri.host);
+            }
+        }
+        if let Some(user) = name_addr.uri.user {
+            return Some(user);
+        }
+    }
+
+    let trimmed = value.trim();
+    let addr = if let Some(start) = trimmed.find('<') {
+        if let Some(end) = trimmed[start + 1..].find('>') {
+            &trimmed[start + 1..start + 1 + end]
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    };
+    let addr = addr.split(';').next().unwrap_or(addr).trim();
+    let uri = parse_uri(addr).ok()?;
+    if uri.scheme.eq_ignore_ascii_case("tel") {
+        if !uri.host.trim().is_empty() {
+            return Some(uri.host);
+        }
+    }
+    uri.user
+}
+
+fn is_e164(value: &str) -> bool {
+    if !value.starts_with('+') {
+        return false;
+    }
+    let digits = &value[1..];
+    if digits.len() < 2 || digits.len() > 15 {
+        return false;
+    }
+    let mut chars = digits.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !('1'..='9').contains(&first) {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_digit())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::ports::ingest::IngestPayload;
 
     struct DummyIngestPort;
 
@@ -338,12 +441,23 @@ mod tests {
         }
     }
 
+    struct DummyCallLogPort;
+
+    impl CallLogPort for DummyCallLogPort {
+        fn persist_call_ended(
+            &self,
+            _call_log: EndedCallLog,
+        ) -> crate::shared::ports::call_log_port::CallLogFuture<()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
     fn build_test_session(storage_port: Arc<dyn StoragePort>) -> SessionCoordinator {
         let (session_out_tx, _session_out_rx) = mpsc::channel(32);
         let (app_tx, _app_rx) = crate::shared::ports::app::app_event_channel(16);
         let (control_tx, _control_rx) = mpsc::channel(SESSION_CONTROL_CHANNEL_CAPACITY);
         let (media_tx, _media_rx) = mpsc::channel(SESSION_MEDIA_CHANNEL_CAPACITY);
-        let base_cfg = config::Config::from_env().expect("config loads");
+        let base_cfg = crate::shared::config::Config::from_env().expect("config loads");
         let runtime_cfg = Arc::new(SessionRuntimeConfig::from_env(&base_cfg));
         SessionCoordinator {
             state_machine: SessionStateMachine::new(),
@@ -364,8 +478,9 @@ mod tests {
             app_tx,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
+            call_log_port: Arc::new(DummyCallLogPort),
             rtp: crate::protocol::session::rtp_stream_manager::RtpStreamManager::new(
-                RtpTxHandle::new(config::rtp_config().clone()),
+                RtpTxHandle::new(crate::shared::config::rtp_config().clone()),
             ),
             recording: crate::protocol::session::recording_manager::RecordingManager::new(
                 "test-call",
