@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: Frontend テスト計画 -->
 # テスト計画書（Frontend）
 
 > Virtual Voicebot Frontend のテスト戦略・計画を定義する

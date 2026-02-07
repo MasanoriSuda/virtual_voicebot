@@ -9,18 +9,24 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use crate::protocol::session::types::CallId;
+use crate::protocol::session::SessionOut;
 use crate::service::call_control::router::{
     parse_intent_json, router_config, system_info_response, RouteAction, Router,
 };
 use crate::shared::config::AppRuntimeConfig;
-use crate::shared::ports::notification::{NotificationFuture, NotificationService as NotificationPort};
+use crate::shared::ports::ai::{
+    AiServices, AsrChunk, ChatMessage, Role, SerInputPcm, WeatherQuery,
+};
+use crate::shared::ports::notification::{
+    NotificationFuture, NotificationService as NotificationPort,
+};
 use crate::shared::ports::phone_lookup::PhoneLookupPort;
-use crate::shared::ports::ai::{AiServices, AsrChunk, ChatMessage, Role, SerInputPcm, WeatherQuery};
-use crate::protocol::session::SessionOut;
-use crate::protocol::session::types::CallId;
-use crate::shared::utils::{mask_pii, mask_phone};
+use crate::shared::utils::{mask_phone, mask_pii};
 
-pub use crate::shared::ports::app::{app_event_channel, AppEvent, AppEventRx, AppEventTx, EndReason};
+pub use crate::shared::ports::app::{
+    app_event_channel, AppEvent, AppEventRx, AppEventTx, EndReason,
+};
 pub use crate::shared::ports::notification::NotificationService as AppNotificationPort;
 
 const SORRY_WAV_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sorry.wav");
@@ -374,11 +380,11 @@ impl AppWorker {
             let _ = self
                 .session_out_tx
                 .send((
-                self.call_id.clone(),
-                SessionOut::AppSendBotAudioFile {
-                    path: SORRY_WAV_PATH.to_string(),
-                },
-            ))
+                    self.call_id.clone(),
+                    SessionOut::AppSendBotAudioFile {
+                        path: SORRY_WAV_PATH.to_string(),
+                    },
+                ))
                 .await;
             return Ok(());
         }
@@ -440,11 +446,11 @@ impl AppWorker {
                     let _ = self
                         .session_out_tx
                         .send((
-                        self.call_id.clone(),
-                        SessionOut::AppSendBotAudioFile {
-                            path: bot_wav.to_string_lossy().to_string(),
-                        },
-                    ))
+                            self.call_id.clone(),
+                            SessionOut::AppSendBotAudioFile {
+                                path: bot_wav.to_string_lossy().to_string(),
+                            },
+                        ))
                         .await;
                 }
                 Err(e) => {
@@ -517,11 +523,11 @@ impl AppWorker {
                             let _ = self
                                 .session_out_tx
                                 .send((
-                                self.call_id.clone(),
-                                SessionOut::AppSendBotAudioFile {
-                                    path: bot_wav.to_string_lossy().to_string(),
-                                },
-                            ))
+                                    self.call_id.clone(),
+                                    SessionOut::AppSendBotAudioFile {
+                                        path: bot_wav.to_string_lossy().to_string(),
+                                    },
+                                ))
                                 .await;
                         }
                         Err(e) => {
@@ -531,23 +537,23 @@ impl AppWorker {
                     let _ = self
                         .session_out_tx
                         .send((
-                        self.call_id.clone(),
-                        SessionOut::AppRequestTransfer { person: resolved },
-                    ))
+                            self.call_id.clone(),
+                            SessionOut::AppRequestTransfer { person: resolved },
+                        ))
                         .await;
                 } else {
                     let not_found = self.router.transfer_not_found_message();
                     match self.ai_port.synth_to_wav(not_found.clone(), None).await {
                         Ok(bot_wav) => {
-                    let _ = self
-                        .session_out_tx
-                        .send((
-                        self.call_id.clone(),
-                        SessionOut::AppSendBotAudioFile {
-                            path: bot_wav.to_string_lossy().to_string(),
-                        },
-                    ))
-                        .await;
+                            let _ = self
+                                .session_out_tx
+                                .send((
+                                    self.call_id.clone(),
+                                    SessionOut::AppSendBotAudioFile {
+                                        path: bot_wav.to_string_lossy().to_string(),
+                                    },
+                                ))
+                                .await;
                         }
                         Err(e) => {
                             log::warn!("[app {call_id}] transfer not-found TTS failed: {e:?}");
@@ -578,11 +584,11 @@ impl AppWorker {
                 let _ = self
                     .session_out_tx
                     .send((
-                    self.call_id.clone(),
-                    SessionOut::AppSendBotAudioFile {
-                        path: bot_wav.to_string_lossy().to_string(),
-                    },
-                ))
+                        self.call_id.clone(),
+                        SessionOut::AppSendBotAudioFile {
+                            path: bot_wav.to_string_lossy().to_string(),
+                        },
+                    ))
                     .await;
             }
             Err(e) => {
@@ -616,7 +622,9 @@ impl AppWorker {
             return;
         }
         self.notification_state.ringing_notified = true;
-        let fut = self.notification_port.notify_ringing(call_id, from, timestamp);
+        let fut = self
+            .notification_port
+            .notify_ringing(call_id, from, timestamp);
         self.spawn_notify("ringing", fut);
     }
 

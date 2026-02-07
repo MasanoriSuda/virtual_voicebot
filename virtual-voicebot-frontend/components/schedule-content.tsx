@@ -40,7 +40,11 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { cn } from "@/lib/utils"
-import type { ScheduleFolder, Schedule, ScheduleType } from "@/lib/types"
+import type {
+  LegacyScheduleFolder as ScheduleFolder,
+  LegacySchedule as Schedule,
+  ScheduleType,
+} from "@/lib/types"
 
 // Mock data
 const mockScheduleTree: ScheduleFolder[] = [

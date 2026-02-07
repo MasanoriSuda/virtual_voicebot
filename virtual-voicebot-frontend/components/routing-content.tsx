@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { cn } from "@/lib/utils"
-import type { RoutingFolder, RoutingRule } from "@/lib/types"
+import type { LegacyRoutingFolder as RoutingFolder, LegacyRoutingRule as RoutingRule } from "@/lib/types"
 import {
   Folder,
   FolderOpen,

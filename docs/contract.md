@@ -1,108 +1,379 @@
-# Virtual Voicebot Contract (MVP)
+<!-- SOURCE_OF_TRUTH: Frontend ↔ Backend API契約 -->
+# Virtual Voicebot Contract v2
 
-## Scope
-- Zoiper ↔ Rust自作 SIP/RTP voicebot backend が通話する
-- Frontend は「通話終了後の履歴一覧」と「録音再生＋要約」を表示する
-- ライブ中継や逐次発話表示は扱わず、終了後の履歴のみを対象とする
+> STEER-112 により v1（MVP）から全面改訂。全エンティティの SoT 定義・同期方向・Public DTO を統一。
 
-## Non-Goals (MVP)
-- フロントから通話制御（発信/終話/保留など）は行わない（閲覧のみ）
-- 録音の署名付き URL・認可の厳密化は Future
+| 項目 | 値 |
+|------|-----|
+| ステータス | Approved |
+| 作成日 | 2025-12-13（v1） |
+| 改訂日 | 2026-02-07（v2） |
+| 関連Issue | #7, #112 |
+| 関連ステアリング | STEER-112 |
 
-## MVP Constraints (HTTP)
-- MVPでは frontend→backend の入力/制御APIは提供しない
-- MVPのHTTPは `recordingUrl` の GET のみ
-- 参照REST/SSEは将来追加（契約更新が必要）
+---
 
-## DTO Classification (MVP)
-### Internal Event DTO（非公開・チャネル経由）
-- sip↔session, rtp↔session, session↔app, app↔ai, app↔session など内部通信に用いる
+## 1. 概要
 
-### Public Read Model DTO（frontend向け読み取りモデル）
-- Call, RecordingMeta（MVPで必須）
-- Utterance はMVPでは定義しない（必要性が出た時点で追加）
+### 1.1 スコープ
 
-### Transport DTO（HTTPレスポンス等の実体）
-- `recordingUrl` の GET レスポンス（`audio/wav` のバイト列）
-- **Range 対応: MVP 必須**（ブラウザのシーク再生を担保、2025-12-27 確定、Refs Issue #7 CX-2）
-  - `Accept-Ranges: bytes` ヘッダ対応
-  - `Range: bytes=X-Y` リクエストに対し `206 Partial Content` + `Content-Range` を返す
-  - 不正 Range（ファイルサイズ超）には `416 Range Not Satisfiable` を返す
+- Zoiper ↔ Rust SIP/RTP voicebot backend が通話する
+- Frontend は通話履歴・録音・設定管理を担当
+- Backend DB が全エンティティの SoT（Single Source of Truth）
 
-### Correlation ID Rules
-- 外部DTO（Call/RecordingMeta）は `callId` を唯一の相関キーとする
-- 内部イベントは `call_id` を必須とし、音声系は `stream_id` を併用する
-- `session_id` を導入する場合は設計で明文化する（MVPは `call_id == session_id`）
+### 1.2 DB 構成
 
-### MVP Minimal Read Models（Public）
-#### Call（Read Model）
-- `callId`: string（必須）
-- `startedAt`: string(ISO8601)（必須）
-- `endedAt`: string(ISO8601)（任意）
-- `recordingUrl`: string（任意）
-- `status`: `"ringing" | "in_call" | "ended" | "error"`（必須）
+| DB | 配置 | 用途 |
+|----|------|------|
+| Backend DB | ローカル PostgreSQL（Raspberry Pi） | SoT。通話処理・ルーティング・録音・設定 |
+| Frontend DB | 別 PostgreSQL | 表示用コピー + UI 固有データ |
 
-#### RecordingMeta（Read Model）
-- `callId`: string（必須）
-- `path`: string（内部用。外部に出す場合はファイル名のみ推奨）
-- `durationSec`: number（任意）
-- `format`: `"wav"`（MVP固定）
-- `mixedUrl`: string（必須。`recordingUrl` と同一でも可）
+同期: Backend → Frontend（Transactional Outbox + REST）
 
-## Data Model
+### 1.3 SoT 原則
 
-※この節は拡張例。MVPで必須な最小スキーマは「DTO Classification (MVP)」を正とし、追加項目は後方互換で追加可とする。
+1. 全エンティティの SoT は Backend DB
+2. Frontend DB は表示用コピー（独自スキーマ可）
+3. 矛盾時は Backend DB の値を信頼
+4. 設定変更: Frontend → Backend REST API → Backend DB → Outbox → Frontend DB
+5. 通話データ: Backend DB → Outbox → Frontend DB（一方向）
 
-### Call
-- `callId` は通話を一意に識別する
-- `status`: `"ringing" | "in_call" | "ended" | "error"`（必要なら追加可）
-- `summary` は通話中または通話後に更新されうる（最後に届いたものが正）
+---
+
+## 2. 正規 Enum 定義
+
+### CallStatus
+`"ringing" | "in_call" | "ended" | "error"`
+
+### CallerCategory
+`"spam" | "registered" | "unknown" | "anonymous"`
+
+### ActionCode（基本 9 種）
+`"VB" | "VR" | "NR" | "RJ" | "BZ" | "AN" | "AR" | "VM" | "IV"`
+
+### EndReason
+`"normal" | "cancelled" | "rejected" | "timeout" | "error"`
+
+### IvrNodeType
+`"ANNOUNCE" | "KEYPAD" | "FORWARD" | "TRANSFER" | "RECORD" | "EXIT"`
+
+### ScheduleType
+`"business" | "holiday" | "special" | "override"`
+
+### AnnouncementType
+`"greeting" | "hold" | "ivr" | "closed" | "recording_notice" | "custom"`
+
+### RecordingType
+`"full_call" | "ivr_segment" | "voicemail" | "transfer" | "one_way"`
+
+### UploadStatus
+`"local_only" | "uploading" | "uploaded" | "upload_failed"`
+
+---
+
+## 3. Public DTO（Read Model）
+
+### 3.1 Call
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | Backend DB call_logs.id |
+| externalCallId | string | Yes | アプリ層で生成する通話識別子 |
+| callerNumber | string \| null | Yes | E.164 形式。null = 非通知 |
+| callerCategory | CallerCategory | Yes | 発信者分類 |
+| actionCode | string | Yes | 2 文字アクションコード |
+| status | CallStatus | Yes | 通話ステータス |
+| startedAt | string (ISO8601) | Yes | 通話開始日時 |
+| answeredAt | string (ISO8601) \| null | No | 応答日時。null = 未応答 |
+| endedAt | string (ISO8601) \| null | No | 終了日時 |
+| durationSec | number \| null | No | 通話時間（秒） |
+| endReason | EndReason | Yes | 終了理由 |
 
 ```json
 {
-  "callId": "c_123",
-  "from": "sip:zoiper@example",
-  "to": "sip:bot@example",
-  "startedAt": "2025-12-13T00:00:00.000Z",
-  "endedAt": null,
-  "status": "in_call",
-  "summary": "配送状況の確認。住所変更あり。",
-  "durationSec": 123,
-  "recordingUrl": null
+  "id": "019503a0-1234-7000-8000-000000000001",
+  "externalCallId": "c_20260207_001",
+  "callerNumber": "+819012345678",
+  "callerCategory": "registered",
+  "actionCode": "VR",
+  "status": "ended",
+  "startedAt": "2026-02-07T10:00:00.000Z",
+  "answeredAt": "2026-02-07T10:00:05.000Z",
+  "endedAt": "2026-02-07T10:05:00.000Z",
+  "durationSec": 300,
+  "endReason": "normal"
 }
 ```
 
-## Delivery Model（バックエンド → フロントへのプッシュのみ）
-- フロントは「終了済み通話の履歴と録音」を表示するだけを担当する。
-- バックエンドは通話終了時に1回だけフロントの受信APIを叩いて、履歴と録音URL・要約を渡す。
+### 3.2 Recording
 
-## Callback API（バックエンド→フロント）
-- **Call Ingest**: `POST /api/ingest/call`
-  - バックエンドが通話終了後に送る。ペイロードに録音URLとメタ、要約を含める。
-  - Payload:
-  ```json
-  {
-    "callId": "c_123",
-    "from": "sip:zoiper@example",
-    "to": "sip:bot@example",
-    "startedAt": "2025-12-13T00:00:00.000Z",
-    "endedAt": "2025-12-13T00:05:00.000Z",
-    "status": "ended",
-    "summary": "配送状況の確認。住所変更あり。",
-    "durationSec": 300,
-    "recording": {
-      "recordingUrl": "https://frontend.example/recordings/c_123/mixed.wav",
-      "durationSec": 300,
-      "sampleRate": 8000,
-      "channels": 1
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | recordings.id |
+| callLogId | string (UUID) | Yes | 紐付く Call の id |
+| recordingType | RecordingType | Yes | 録音種別 |
+| sequenceNumber | number | Yes | 同一通話内の録音順序 |
+| recordingUrl | string | Yes | 録音ファイル URL |
+| durationSec | number \| null | No | 録音時間（秒） |
+| format | "wav" \| "mp3" | Yes | 音声フォーマット |
+| fileSizeBytes | number \| null | No | ファイルサイズ |
+| startedAt | string (ISO8601) | Yes | 録音開始日時 |
+| endedAt | string (ISO8601) \| null | No | 録音終了日時 |
+
+### 3.3 SpamNumber
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | spam_numbers.id |
+| phoneNumber | string | Yes | E.164 |
+| reason | string \| null | No | 登録理由 |
+| source | "manual" \| "import" \| "report" | Yes | 登録元 |
+| folderId | string (UUID) \| null | No | フォルダ |
+| createdAt | string (ISO8601) | Yes | 作成日時 |
+
+### 3.4 RegisteredNumber
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | registered_numbers.id |
+| phoneNumber | string | Yes | E.164 |
+| name | string \| null | No | 表示名 |
+| category | CallerCategory | Yes | カテゴリ |
+| actionCode | ActionCode | Yes | アクションコード |
+| ivrFlowId | string (UUID) \| null | No | IVR フロー参照 |
+| recordingEnabled | boolean | Yes | 録音有効 |
+| announceEnabled | boolean | Yes | 録音通知有効 |
+| notes | string \| null | No | メモ |
+| folderId | string (UUID) \| null | No | フォルダ |
+| version | number | Yes | 楽観ロック |
+| createdAt | string (ISO8601) | Yes | 作成日時 |
+| updatedAt | string (ISO8601) | Yes | 更新日時 |
+
+### 3.5 RoutingRule
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | routing_rules.id |
+| callerCategory | CallerCategory | Yes | 対象カテゴリ |
+| actionCode | ActionCode | Yes | アクションコード |
+| ivrFlowId | string (UUID) \| null | No | IVR フロー参照 |
+| priority | number | Yes | 優先度 |
+| isActive | boolean | Yes | 有効フラグ |
+| folderId | string (UUID) \| null | No | フォルダ |
+| version | number | Yes | 楽観ロック |
+| createdAt | string (ISO8601) | Yes | 作成日時 |
+| updatedAt | string (ISO8601) | Yes | 更新日時 |
+
+### 3.6 IvrFlow
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | ivr_flows.id |
+| name | string | Yes | フロー名 |
+| description | string \| null | No | 説明 |
+| isActive | boolean | Yes | 有効フラグ |
+| folderId | string (UUID) \| null | No | フォルダ |
+| nodes | IvrNode[] | Yes | ノード一覧（展開時のみ） |
+| createdAt | string (ISO8601) | Yes | 作成日時 |
+| updatedAt | string (ISO8601) | Yes | 更新日時 |
+
+### 3.7 IvrNode
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | ivr_nodes.id |
+| flowId | string (UUID) | Yes | 所属フロー |
+| parentId | string (UUID) \| null | Yes | 親ノード。null = ルート |
+| nodeType | IvrNodeType | Yes | ノード種別 |
+| actionCode | string \| null | No | アクションコード |
+| audioFileUrl | string \| null | No | 音声ファイル URL |
+| ttsText | string \| null | No | TTS テキスト |
+| timeoutSec | number | Yes | タイムアウト秒数 |
+| maxRetries | number | Yes | リトライ上限 |
+| depth | number | Yes | 階層深度（0〜3） |
+| exitAction | string | Yes | リトライ超過時アクション |
+| transitions | IvrTransition[] | No | 遷移定義（展開時のみ） |
+
+### 3.8 IvrTransition
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | ivr_transitions.id |
+| fromNodeId | string (UUID) | Yes | 遷移元ノード |
+| inputType | "DTMF" \| "TIMEOUT" \| "INVALID" \| "COMPLETE" | Yes | 入力種別 |
+| dtmfKey | string \| null | No | DTMF キー |
+| toNodeId | string (UUID) \| null | No | 遷移先ノード |
+
+### 3.9 Schedule
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | schedules.id |
+| name | string | Yes | スケジュール名 |
+| description | string \| null | No | 説明 |
+| scheduleType | ScheduleType | Yes | 種別 |
+| isActive | boolean | Yes | 有効フラグ |
+| folderId | string (UUID) \| null | No | フォルダ |
+| dateRangeStart | string (date) \| null | No | 開始日 |
+| dateRangeEnd | string (date) \| null | No | 終了日 |
+| actionType | "route" \| "voicemail" \| "announcement" \| "closed" | Yes | アクション種別 |
+| actionTarget | string (UUID) \| null | No | アクション先 |
+| actionCode | string \| null | No | 直接アクションコード |
+| timeSlots | ScheduleTimeSlot[] | Yes | 時間帯一覧 |
+| version | number | Yes | 楽観ロック |
+| createdAt | string (ISO8601) | Yes | 作成日時 |
+| updatedAt | string (ISO8601) | Yes | 更新日時 |
+
+### 3.10 ScheduleTimeSlot
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | schedule_time_slots.id |
+| dayOfWeek | number \| null | No | 0=Sun ... 6=Sat |
+| startTime | string (HH:mm) | Yes | 開始時刻 |
+| endTime | string (HH:mm) | Yes | 終了時刻 |
+
+### 3.11 Announcement
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | announcements.id |
+| name | string | Yes | アナウンス名 |
+| description | string \| null | No | 説明 |
+| announcementType | AnnouncementType | Yes | 種別 |
+| isActive | boolean | Yes | 有効フラグ |
+| folderId | string (UUID) \| null | No | フォルダ |
+| audioFileUrl | string \| null | No | 音声 URL |
+| ttsText | string \| null | No | TTS テキスト |
+| durationSec | number \| null | No | 再生時間 |
+| language | string | Yes | 言語 (default: "ja") |
+| version | number | Yes | 楽観ロック |
+| createdAt | string (ISO8601) | Yes | 作成日時 |
+| updatedAt | string (ISO8601) | Yes | 更新日時 |
+
+### 3.12 Folder
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| id | string (UUID) | Yes | folders.id |
+| parentId | string (UUID) \| null | Yes | 親フォルダ。null = ルート |
+| entityType | string | Yes | 所属エンティティ種別 |
+| name | string | Yes | フォルダ名 |
+| description | string \| null | No | 説明 |
+| sortOrder | number | Yes | 並び順 |
+
+### 3.13 SystemSettings
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| recordingRetentionDays | number | Yes | 録音保存日数 (default: 90) |
+| historyRetentionDays | number | Yes | 履歴保存日数 (default: 365) |
+| syncEndpointUrl | string \| null | No | Frontend API URL |
+| defaultActionCode | ActionCode | Yes | デフォルトアクション |
+| maxConcurrentCalls | number | Yes | 同時通話上限 |
+| extra | object | Yes | 拡張設定 (JSONB) |
+| version | number | Yes | 楽観ロック |
+
+---
+
+## 4. Correlation ID Rules
+
+| レイヤー | ID | 説明 |
+|---------|-----|------|
+| DB PK | `id` (UUID v7) | 全テーブル共通の内部 PK |
+| 通話相関 | `externalCallId` | アプリ層で生成する通話識別子 |
+| SIP 相関 | `sipCallId` | SIP Call-ID ヘッダ値 |
+| 同期相関 | `sync_outbox.id` | Outbox エントリの BIGSERIAL |
+
+- 外部 DTO は `id`（UUID v7）を唯一の識別子とする
+- `externalCallId` は表示・検索用の補助キー
+- `sipCallId` は内部デバッグ用（外部 DTO では省略可）
+
+---
+
+## 5. API エンドポイント
+
+### 5.1 Backend → Frontend（Sync / Ingest）
+
+| メソッド | パス | 説明 |
+|---------|------|------|
+| POST | /api/ingest/call | 通話終了時のデータ投入 |
+| POST | /api/ingest/sync | Outbox エントリの一括同期 |
+
+#### POST /api/ingest/call
+
+Backend が通話終了後に送信する。
+
+```json
+{
+  "call": { /* Call DTO */ },
+  "recordings": [ /* Recording DTO[] */ ]
+}
+```
+
+#### POST /api/ingest/sync
+
+Outbox Worker が未送信エントリを一括送信する。
+
+```json
+{
+  "entries": [
+    {
+      "entityType": "registered_number",
+      "entityId": "019503a0-...",
+      "payload": { /* 該当エンティティの DTO */ },
+      "createdAt": "2026-02-07T10:00:00Z"
     }
-  }
-  ```
-- フロントは受け取ったデータを内部DBに保存し、履歴一覧・詳細画面で表示する。ライブSSEや逐次発話の取り込みは行わない前提。
+  ]
+}
+```
 
-## Error Format (REST / SSE)
+### 5.2 Frontend → Backend（CRUD）
+
+| メソッド | パス | 説明 |
+|---------|------|------|
+| GET | /api/settings | システム設定取得 |
+| PUT | /api/settings | システム設定更新 |
+| GET | /api/spam-numbers | 迷惑番号一覧 |
+| POST | /api/spam-numbers | 迷惑番号登録 |
+| DELETE | /api/spam-numbers/:id | 迷惑番号削除（論理） |
+| GET | /api/registered-numbers | 登録番号一覧 |
+| POST | /api/registered-numbers | 登録番号追加 |
+| PUT | /api/registered-numbers/:id | 登録番号更新 |
+| DELETE | /api/registered-numbers/:id | 登録番号削除（論理） |
+| GET | /api/routing-rules | ルーティングルール一覧 |
+| POST | /api/routing-rules | ルーティングルール追加 |
+| PUT | /api/routing-rules/:id | ルーティングルール更新 |
+| DELETE | /api/routing-rules/:id | ルーティングルール削除 |
+| GET | /api/ivr-flows | IVR フロー一覧 |
+| POST | /api/ivr-flows | IVR フロー作成 |
+| PUT | /api/ivr-flows/:id | IVR フロー更新 |
+| DELETE | /api/ivr-flows/:id | IVR フロー削除 |
+| GET | /api/schedules | スケジュール一覧 |
+| POST | /api/schedules | スケジュール作成 |
+| PUT | /api/schedules/:id | スケジュール更新 |
+| DELETE | /api/schedules/:id | スケジュール削除 |
+| GET | /api/announcements | アナウンス一覧 |
+| POST | /api/announcements | アナウンス作成 |
+| PUT | /api/announcements/:id | アナウンス更新 |
+| DELETE | /api/announcements/:id | アナウンス削除 |
+| GET | /api/folders | フォルダ一覧 |
+| POST | /api/folders | フォルダ作成 |
+| PUT | /api/folders/:id | フォルダ更新 |
+| DELETE | /api/folders/:id | フォルダ削除 |
+| GET | /recordings/:callId/:recordingId | 録音ファイル取得（Range 対応） |
+
+### 5.3 録音ファイル配信
+
+- `GET /recordings/:callId/:recordingId` → `audio/wav` バイト列
+- **Range 対応必須**（`Accept-Ranges: bytes`, `206 Partial Content`）
+- 不正 Range → `416 Range Not Satisfiable`
+
+---
+
+## 6. Error Format
+
 ### REST Error
-4xx/5xx は以下の形を推奨（最低限 `code` と `message`）
 
 ```json
 {
@@ -114,31 +385,42 @@
 }
 ```
 
-### SSE Error Event
-- `type`: `"error"`
-- `data` は REST と同等形式を推奨
+### Optimistic Lock Error
 
 ```json
 {
-  "type": "error",
-  "callId": "c_123",
-  "data": {
-    "error": { "code": "INTERNAL", "message": "..." }
+  "error": {
+    "code": "CONFLICT",
+    "message": "version mismatch: expected 3, got 2",
+    "requestId": "req_xxx"
   }
 }
 ```
 
-## Auth (MVP)
-- MVP は認証なし（ローカル/閉域想定）
-- 将来 `Authorization: Bearer ...` 等を導入する可能性あり
+---
 
-## Audio Playback (Future)
-- `recordingUrl == null` の場合は「音声は準備中」表示
-- `recordingUrl` は将来、署名付き URL 等に置き換わる可能性がある
-- UI は URL を長期キャッシュしない前提（将来）
+## 7. Auth (MVP)
 
-## Docs Setup
-```bash
-mkdir -p docs
-nano docs/contract.md
-```
+- MVP は認証なし（ローカル / 閉域想定）
+- 将来 `Authorization: Bearer ...` 導入可能性あり
+
+---
+
+## 8. Non-Goals (MVP)
+
+- Utterance（発話テキスト）— Future
+- ライブ中継 / 逐次発話表示 — Future
+- AI 自動迷惑判定 — Future
+- 発信機能（UAC） — Future
+- 複数回線対応 — Future
+- 署名付き URL / 認可厳密化 — Future
+
+---
+
+## 変更履歴
+
+| 日付 | バージョン | 変更内容 | 作成者 |
+|------|-----------|---------|--------|
+| 2025-12-13 | v1.0 | 初版作成（MVP） | @MasanoriSuda |
+| 2025-12-27 | v1.1 | Range 対応必須化（Issue #7） | @MasanoriSuda + Claude Code |
+| 2026-02-07 | v2.0 | 全面改訂（STEER-112）：SoT 原則・全エンティティ DTO・Enum 統一・API エンドポイント一覧 | Claude Code (Opus 4.6) |

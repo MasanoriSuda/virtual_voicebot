@@ -4,11 +4,11 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 
-use crate::shared::config::RtpConfig;
 use crate::protocol::rtp::codec::{codec_from_pt, encode_from_mulaw};
 use crate::protocol::rtp::rtcp::{build_sr, ntp_timestamp_now, RtcpSenderReport};
 use crate::protocol::rtp::stream_manager::StreamManager;
 use crate::protocol::rtp::{build_rtp_packet, RtpPacket};
+use crate::shared::config::RtpConfig;
 
 #[derive(Debug)]
 pub enum RtpTxCommand {

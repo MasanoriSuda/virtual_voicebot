@@ -1,4 +1,6 @@
-pub use crate::shared::ports::sip::{SipCommand, SipEvent, Sdp, SessionRefresher, SessionTimerInfo};
+pub use crate::shared::ports::sip::{
+    Sdp, SessionRefresher, SessionTimerInfo, SipCommand, SipEvent,
+};
 
 #[derive(Clone)]
 pub struct SipConfig {

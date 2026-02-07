@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: SIPモジュール詳細設計 -->
 # SIP モジュール詳細設計 (`src/protocol/sip`)
 
 ## 1. 目的・スコープ

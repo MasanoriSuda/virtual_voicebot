@@ -20,7 +20,9 @@ pub use types::{
 };
 pub use weather::WeatherPort;
 
-pub use crate::shared::error::ai::{AsrError, IntentError, LlmError, SerError, TtsError, WeatherError};
+pub use crate::shared::error::ai::{
+    AsrError, IntentError, LlmError, SerError, TtsError, WeatherError,
+};
 
 pub type AiFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 

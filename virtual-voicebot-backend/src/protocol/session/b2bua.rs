@@ -12,7 +12,6 @@ use tokio::sync::mpsc;
 use tokio::sync::Notify;
 use tokio::time::sleep;
 
-use crate::shared::config::{RegistrarConfig, RegistrarTransport, SessionRuntimeConfig};
 use crate::protocol::rtp::codec::{codec_from_pt, decode_to_mulaw};
 use crate::protocol::rtp::parser::parse_rtp_packet;
 use crate::protocol::session::types::{CallId, Sdp, SessionControlIn, SessionMediaIn};
@@ -23,6 +22,7 @@ use crate::protocol::sip::builder::response_simple_from_request;
 use crate::protocol::sip::message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
 use crate::protocol::sip::{parse_cseq_header, parse_offer_sdp, parse_uri, SipRequestBuilder};
 use crate::protocol::transport::TransportPeer;
+use crate::shared::config::{RegistrarConfig, RegistrarTransport, SessionRuntimeConfig};
 use crate::shared::utils::mask_pii;
 
 const RTP_BUFFER_SIZE: usize = 2048;
@@ -1071,7 +1071,10 @@ fn header_value<'a>(headers: &'a [SipHeader], name: &str) -> Option<&'a str> {
         .map(|h| h.value.as_str())
 }
 
-fn response_matches_call_id(resp: &crate::protocol::sip::message::SipResponse, call_id: &str) -> bool {
+fn response_matches_call_id(
+    resp: &crate::protocol::sip::message::SipResponse,
+    call_id: &str,
+) -> bool {
     header_value(&resp.headers, "Call-ID")
         .map(|value| value == call_id)
         .unwrap_or(false)

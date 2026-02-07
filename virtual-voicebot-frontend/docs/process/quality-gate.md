@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: Frontend 品質ゲート -->
 # 品質ゲート定義（QG）— Frontend
 
 > Frontend の各フェーズ移行時のチェック項目を定義する

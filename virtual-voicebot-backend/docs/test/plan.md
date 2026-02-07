@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: Backend テスト計画 -->
 # テスト計画書
 
 > Virtual Voicebot Backend のテスト計画

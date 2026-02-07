@@ -4,8 +4,8 @@ use anyhow::Result;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::path::Path;
 
-use crate::shared::ports::ai::AsrChunk;
 use crate::protocol::rtp::codec::mulaw_to_linear16;
+use crate::shared::ports::ai::AsrChunk;
 use crate::shared::utils::mask_pii;
 
 /// ASR 呼び出しの薄いラッパ（挙動は ai::transcribe_and_log と同じ）。

@@ -14,14 +14,14 @@ use crate::protocol::session::state_machine::{SessionEvent, SessionStateMachine}
 use crate::protocol::session::types::Sdp;
 use crate::protocol::session::types::*;
 
-use crate::shared::config::{self, SessionRuntimeConfig};
-use crate::shared::ports::app::{AppEvent, AppEventTx};
-use crate::shared::ports::ingest::{IngestPayload, IngestPort, IngestRecording};
-use crate::shared::ports::storage::StoragePort;
 use crate::protocol::rtp::tx::RtpTxHandle;
 use crate::protocol::session::b2bua;
 use crate::protocol::session::capture::AudioCapture;
 use crate::protocol::session::timers::SessionTimers;
+use crate::shared::config::{self, SessionRuntimeConfig};
+use crate::shared::ports::app::{AppEvent, AppEventTx};
+use crate::shared::ports::ingest::{IngestPayload, IngestPort, IngestRecording};
+use crate::shared::ports::storage::StoragePort;
 use anyhow::Error;
 // log macros used in handler/service modules
 use services::playback_service::PlaybackState;
@@ -134,7 +134,10 @@ impl SessionCoordinator {
             call_id,
             from_uri,
             to_uri,
-            ingest: crate::protocol::session::ingest_manager::IngestManager::new(ingest_url, ingest_port),
+            ingest: crate::protocol::session::ingest_manager::IngestManager::new(
+                ingest_url,
+                ingest_port,
+            ),
             recording_base_url,
             storage_port,
             peer_sdp: None,
@@ -317,8 +320,9 @@ mod tests {
             &self,
             _url: String,
             _payload: IngestPayload,
-        ) -> crate::shared::ports::ingest::IngestFuture<Result<(), crate::shared::ports::ingest::IngestError>>
-        {
+        ) -> crate::shared::ports::ingest::IngestFuture<
+            Result<(), crate::shared::ports::ingest::IngestError>,
+        > {
             Box::pin(async { Ok(()) })
         }
     }
@@ -360,10 +364,12 @@ mod tests {
             app_tx,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
-            rtp: crate::protocol::session::rtp_stream_manager::RtpStreamManager::new(RtpTxHandle::new(
-                config::rtp_config().clone(),
-            )),
-            recording: crate::protocol::session::recording_manager::RecordingManager::new("test-call"),
+            rtp: crate::protocol::session::rtp_stream_manager::RtpStreamManager::new(
+                RtpTxHandle::new(config::rtp_config().clone()),
+            ),
+            recording: crate::protocol::session::recording_manager::RecordingManager::new(
+                "test-call",
+            ),
             started_at: None,
             started_wall: None,
             rtp_last_sent: None,

@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import type { CallRecord } from "@/lib/mock-data"
+import { mockCallPresentationById } from "@/lib/mock-data"
 
 interface CallHistoryContentProps {
   initialCalls: Call[]
@@ -173,30 +174,32 @@ export function CallHistoryContent({ initialCalls }: CallHistoryContentProps) {
 }
 
 function toRecord(call: Call): CallRecord {
+  const view = mockCallPresentationById[call.id]
   const status = toStatus(call.status)
-  const direction = toDirection(call)
+  const direction = view?.direction ?? toDirection(call)
 
   return {
     id: call.id,
-    callId: call.callId ?? `c_${call.id.toString().padStart(3, "0")}`,
-    from: call.from,
-    fromName: call.fromName ?? "不明",
-    to: call.to,
-    startedAt: call.startTime,
+    callId: call.externalCallId,
+    from: call.callerNumber ?? "非通知",
+    fromName: view?.fromName ?? categoryLabel(call.callerCategory),
+    to: view?.to ?? "未設定",
+    startedAt: call.startedAt,
     endedAt: call.endedAt ?? null,
     status,
-    durationSec: call.durationSec ?? call.duration,
-    summary: call.summary,
-    recordingUrl: call.recordingUrl ?? null,
+    durationSec: call.durationSec ?? 0,
+    summary: view?.summary ?? "",
+    recordingUrl: view?.recordingUrl ?? null,
     direction,
   }
 }
 
 function toStatus(status: Call["status"]): CallRecord["status"] {
   switch (status) {
-    case "active":
+    case "ringing":
+    case "in_call":
       return "in_call"
-    case "failed":
+    case "error":
       return "missed"
     default:
       return "ended"
@@ -204,11 +207,23 @@ function toStatus(status: Call["status"]): CallRecord["status"] {
 }
 
 function toDirection(call: Call): CallRecord["direction"] {
-  if (call.direction) return call.direction
-  if (call.status === "failed") return "missed"
+  if (call.status === "error") return "missed"
   const idNumber = Number.parseInt(call.id, 10)
   if (Number.isNaN(idNumber)) return "inbound"
   return idNumber % 2 === 0 ? "outbound" : "inbound"
+}
+
+function categoryLabel(category: Call["callerCategory"]): string {
+  switch (category) {
+    case "registered":
+      return "登録済み"
+    case "spam":
+      return "迷惑電話"
+    case "anonymous":
+      return "匿名"
+    default:
+      return "未登録"
+  }
 }
 
 function formatDuration(seconds: number) {

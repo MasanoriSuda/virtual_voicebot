@@ -43,12 +43,7 @@ pub fn parse_rtp_packet(buf: &[u8]) -> Result<RtpPacket, RtpParseError> {
     let mut csrcs = Vec::with_capacity(csrc_count as usize);
     for i in 0..csrc_count as usize {
         let start = 12 + i * 4;
-        let csrc = u32::from_be_bytes([
-            buf[start],
-            buf[start + 1],
-            buf[start + 2],
-            buf[start + 3],
-        ]);
+        let csrc = u32::from_be_bytes([buf[start], buf[start + 1], buf[start + 2], buf[start + 3]]);
         csrcs.push(csrc);
     }
 

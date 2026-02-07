@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: 管理画面MVP要件 -->
 # RD-005_frontend
 
 > Frontend 管理画面の要件定義（MVP）

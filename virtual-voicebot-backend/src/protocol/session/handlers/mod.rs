@@ -7,13 +7,13 @@ use tokio::time::Instant;
 
 use super::services::ivr_service::{ivr_action_for_digit, ivr_state_after_action, IvrAction};
 use super::SessionCoordinator;
-use crate::shared::ports::app::{AppEvent, EndReason};
 use crate::protocol::rtp::codec::mulaw_to_linear16;
 use crate::protocol::session::b2bua;
 use crate::protocol::session::types::{
     IvrState, SessState, SessionControlIn, SessionMediaIn, SessionOut, SessionRefresher,
     SessionTimerInfo,
 };
+use crate::shared::ports::app::{AppEvent, EndReason};
 
 impl SessionCoordinator {
     pub(crate) async fn handle_control_event(
@@ -112,10 +112,10 @@ impl SessionCoordinator {
                             .await;
                         let ring_duration = self.runtime_cfg.ring_duration;
                         if ring_duration.is_zero() {
-                            if let Err(err) = self.session_out_tx.try_send((
-                                self.call_id.clone(),
-                                SessionOut::SipSend200 { answer },
-                            )) {
+                            if let Err(err) = self
+                                .session_out_tx
+                                .try_send((self.call_id.clone(), SessionOut::SipSend200 { answer }))
+                            {
                                 warn!(
                                     "[session {}] dropped SipSend200 (channel full): {:?}",
                                     self.call_id, err
@@ -235,10 +235,9 @@ impl SessionCoordinator {
                 let _ = self.ensure_a_leg_rtp_started();
                 if self.outbound_mode && !self.outbound_answered {
                     if let Some(answer) = self.local_sdp.clone() {
-                        let _ = self.session_out_tx.try_send((
-                            self.call_id.clone(),
-                            SessionOut::SipSend200 { answer },
-                        ));
+                        let _ = self
+                            .session_out_tx
+                            .try_send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
                         self.outbound_answered = true;
                     }
                 }
@@ -472,10 +471,9 @@ impl SessionCoordinator {
                 if let (Some(expires), Some(SessionRefresher::Uas)) =
                     (self.session_expires, self.session_refresher)
                 {
-                    let _ = self.session_out_tx.try_send((
-                        self.call_id.clone(),
-                        SessionOut::SipSendUpdate { expires },
-                    ));
+                    let _ = self
+                        .session_out_tx
+                        .try_send((self.call_id.clone(), SessionOut::SipSendUpdate { expires }));
                     self.update_session_expires(SessionTimerInfo {
                         expires,
                         refresher: SessionRefresher::Uas,
@@ -619,9 +617,7 @@ impl SessionCoordinator {
                 match action {
                     IvrAction::EnterVoicebot => {
                         info!("[session {}] starting voicebot intro", self.call_id);
-                        if let Err(e) = self
-                            .start_playback(&[super::VOICEBOT_INTRO_WAV_PATH])
-                            .await
+                        if let Err(e) = self.start_playback(&[super::VOICEBOT_INTRO_WAV_PATH]).await
                         {
                             warn!("[session {}] voicebot intro failed: {:?}", self.call_id, e);
                             self.ivr_state = IvrState::VoicebotMode;

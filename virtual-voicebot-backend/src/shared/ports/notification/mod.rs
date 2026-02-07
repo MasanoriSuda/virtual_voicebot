@@ -9,8 +9,7 @@ pub enum NotificationError {
     Failed(String),
 }
 
-pub type NotificationFuture =
-    Pin<Box<dyn Future<Output = Result<(), NotificationError>> + Send>>;
+pub type NotificationFuture = Pin<Box<dyn Future<Output = Result<(), NotificationError>> + Send>>;
 
 pub mod ended;
 pub mod missed;

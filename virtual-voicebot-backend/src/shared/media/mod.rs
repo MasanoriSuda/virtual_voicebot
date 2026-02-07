@@ -8,8 +8,8 @@ use anyhow::Result;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
 
-use crate::service::recording;
 use crate::protocol::rtp::codec::mulaw_to_linear16;
+use crate::service::recording;
 
 pub mod merge;
 

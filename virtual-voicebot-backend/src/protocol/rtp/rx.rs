@@ -8,7 +8,6 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::interval;
 
-use crate::shared::config::RtpConfig;
 use crate::protocol::rtp::codec::{codec_from_pt, decode_to_mulaw};
 use crate::protocol::rtp::dtmf::DtmfDetector;
 use crate::protocol::rtp::parser::parse_rtp_packet;
@@ -16,6 +15,7 @@ use crate::protocol::rtp::rtcp::{
     build_rr, is_rtcp_packet, parse_rtcp_packets, RtcpEvent, RtcpEventTx, RtcpPacket,
     RtcpReceiverReport, RtcpReportBlock,
 };
+use crate::shared::config::RtpConfig;
 use crate::shared::entities::CallId;
 use crate::shared::ports::rtp_sink::RtpEvent;
 use crate::shared::ports::session_lookup::SessionLookup;
@@ -89,20 +89,22 @@ impl RtpReceiver {
             );
             let call_id_opt = {
                 let map = self.rtp_port_map.lock().await;
-                map.get(&raw.src)
-                    .cloned()
-                    .or_else(|| {
-                        raw.src
-                            .port()
-                            .checked_sub(1)
-                            .and_then(|p| map.get(&SocketAddr::new(raw.src.ip(), p)).cloned())
-                    })
+                map.get(&raw.src).cloned().or_else(|| {
+                    raw.src
+                        .port()
+                        .checked_sub(1)
+                        .and_then(|p| map.get(&SocketAddr::new(raw.src.ip(), p)).cloned())
+                })
             };
             for pkt in parse_rtcp_packets(&raw.data) {
                 info!("[rtcp recv] packet {:?}", pkt);
                 if let (Some(call_id), RtcpPacket::SenderReport(sr)) = (&call_id_opt, &pkt) {
-                    self.rtcp_reporter
-                        .update_sr(call_id.as_str(), sr.ssrc, sr.ntp_timestamp, raw.src);
+                    self.rtcp_reporter.update_sr(
+                        call_id.as_str(),
+                        sr.ssrc,
+                        sr.ntp_timestamp,
+                        raw.src,
+                    );
                 }
             }
             if let Some(tx) = &self.rtcp_tx {

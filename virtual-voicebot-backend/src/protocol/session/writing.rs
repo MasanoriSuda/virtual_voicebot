@@ -5,13 +5,13 @@
 // ここでは経路だけ定義し、実際の送信/受信はまだスタブのまま（挙動は従来どおり）。
 use std::sync::Arc;
 
-use crate::shared::ports::app::AppEventTx;
-use crate::shared::ports::ingest::IngestPort;
-use crate::shared::ports::storage::StoragePort;
 use crate::protocol::rtp::tx::RtpTxHandle;
 use crate::protocol::session::types::*;
 use crate::protocol::session::{Session, SessionHandle};
 use crate::shared::config::SessionRuntimeConfig;
+use crate::shared::ports::app::AppEventTx;
+use crate::shared::ports::ingest::IngestPort;
+use crate::shared::ports::storage::StoragePort;
 
 /// セッションを生成し、SessionOut を上位レイヤに配線する（挙動は従来と同じ）。
 pub fn spawn_call(

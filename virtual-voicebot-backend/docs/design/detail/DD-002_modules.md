@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: モジュール設計 -->
 # uas-voice-bot: Design Document
 
 > **I/F 正本の優先順位（2025-12-28 追加、Refs Issue #7）**

@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 use std::fmt::{self, Write};
 
-use crate::shared::ports::sip::Sdp;
 use crate::protocol::sip::message::{SipHeader, SipMethod, SipRequest, SipResponse};
+use crate::shared::ports::sip::Sdp;
 
 /// 追加で使いやすい Builder スタイル
 pub struct SipResponseBuilder {

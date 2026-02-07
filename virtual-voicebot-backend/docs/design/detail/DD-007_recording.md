@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: 録音詳細設計 -->
 # Recording Design (MVP)
 
 ## 目的

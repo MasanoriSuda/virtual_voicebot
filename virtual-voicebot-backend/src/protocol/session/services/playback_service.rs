@@ -32,8 +32,9 @@ impl SessionCoordinator {
             let path = (*path).to_string();
             let load = spawn_blocking(move || storage_port.load_wav_as_pcmu_frames(&path));
             let mut loaded = match timeout(io_timeout, load).await {
-                Ok(joined) => joined
-                    .map_err(|e| anyhow!("load_wav_as_pcmu_frames task failed: {}", e))??,
+                Ok(joined) => {
+                    joined.map_err(|e| anyhow!("load_wav_as_pcmu_frames task failed: {}", e))??
+                }
                 Err(_) => {
                     return Err(anyhow!("load_wav_as_pcmu_frames timed out"));
                 }
