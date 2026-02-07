@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: AI/Codex向け指示書 -->
 # AGENTS.md — Codex向け指示書（virtual-voicebot）
 
 このリポジトリは Rust で実装された SIP UAS ベースの音声対話ボットです。

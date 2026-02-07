@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: Frontend V字モデル -->
 # プロセス定義書（PD）— Frontend
 
 > Virtual Voicebot Frontend の開発プロセスを定義する

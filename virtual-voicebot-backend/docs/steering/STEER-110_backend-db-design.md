@@ -721,7 +721,7 @@ TTL 削除の実行順序:
 |------|------|
 | ツール | `sqlx-cli`（`sqlx migrate add / run / revert`） |
 | 命名規則 | `YYYYMMDDHHMMSS_description.sql`（SQLx デフォルト） |
-| ロールバック | 各マイグレーションに `DOWN` ファイルを用意 |
+| ロールバック | 各 UP マイグレーションに対応する DOWN ファイルを用意（下記参照） |
 | Tsurugi 移行 | `phone_entries` データを `registered_numbers` + `routing_rules` に変換するワンショットスクリプト |
 
 マイグレーションファイル構成：
@@ -729,19 +729,42 @@ TTL 削除の実行順序:
 ```
 migrations/
 ├── 20260206000001_create_ivr_flows.sql
+├── 20260206000001_create_ivr_flows.down.sql
 ├── 20260206000002_create_ivr_nodes.sql
+├── 20260206000002_create_ivr_nodes.down.sql
 ├── 20260206000003_create_ivr_transitions.sql
+├── 20260206000003_create_ivr_transitions.down.sql
 ├── 20260206000004_create_spam_numbers.sql
+├── 20260206000004_create_spam_numbers.down.sql
 ├── 20260206000005_create_registered_numbers.sql
+├── 20260206000005_create_registered_numbers.down.sql
 ├── 20260206000006_create_routing_rules.sql
+├── 20260206000006_create_routing_rules.down.sql
 ├── 20260206000007_create_call_log_index.sql
+├── 20260206000007_create_call_log_index.down.sql
 ├── 20260206000008_create_call_logs_partitioned.sql
+├── 20260206000008_create_call_logs_partitioned.down.sql
 ├── 20260206000009_create_call_logs_initial_partitions.sql
+├── 20260206000009_create_call_logs_initial_partitions.down.sql
 ├── 20260206000010_create_recordings.sql
+├── 20260206000010_create_recordings.down.sql
 ├── 20260206000011_create_sync_outbox.sql
+├── 20260206000011_create_sync_outbox.down.sql
 ├── 20260206000012_create_system_settings.sql
-└── 20260206000013_seed_defaults.sql
+├── 20260206000012_create_system_settings.down.sql
+├── 20260206000013_seed_defaults.sql
+└── 20260206000013_seed_defaults.down.sql
 ```
+
+#### DOWN ファイル方針
+
+| 方針 | 説明 |
+|------|------|
+| 形式 | SQLx の reversible migration 形式（`.down.sql` サフィックス） |
+| 内容 | 対応する UP の逆操作（`DROP TABLE`、`DROP INDEX` 等） |
+| FK 順序 | DOWN は UP と逆順に実行（依存先テーブルを先に DROP しない） |
+| シードデータ | `seed_defaults.down.sql` は `DELETE FROM routing_rules` + `DELETE FROM system_settings` |
+| パーティション | `call_logs_initial_partitions.down.sql` は各パーティションを `DROP TABLE IF EXISTS` |
 
 ---
 

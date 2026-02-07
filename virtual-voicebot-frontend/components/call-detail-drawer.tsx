@@ -149,16 +149,20 @@ export function CallDetailDrawer({ callId, open, onClose }: CallDetailDrawerProp
 
   const getStatusBadge = (status: CallDetail["status"]) => {
     const config = {
-      active: {
+      ringing: {
+        label: "呼出中",
+        className: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",
+      },
+      in_call: {
         label: "通話中",
         className: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
       },
-      completed: {
+      ended: {
         label: "完了",
         className: "bg-secondary text-secondary-foreground",
       },
-      failed: {
-        label: "不在",
+      error: {
+        label: "エラー",
         className: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300",
       },
     }
@@ -190,7 +194,7 @@ export function CallDetailDrawer({ callId, open, onClose }: CallDetailDrawerProp
                   <div>
                     <SheetTitle className="text-left">{callDetail.from}</SheetTitle>
                     <SheetDescription className="text-left">
-                      {formatDateTime(callDetail.startTime)} / {formatTime(callDetail.durationSec)}
+                      {formatDateTime(callDetail.startTime)} / {formatTime(callDetail.durationSec ?? 0)}
                     </SheetDescription>
                   </div>
                 </div>
@@ -232,7 +236,7 @@ export function CallDetailDrawer({ callId, open, onClose }: CallDetailDrawerProp
                     <div className="space-y-4">
                       <Slider
                         value={[currentTime]}
-                        max={duration || callDetail.durationSec}
+                        max={duration || callDetail.durationSec || 0}
                         step={0.1}
                         onValueChange={handleSeek}
                         className="cursor-pointer"
@@ -240,7 +244,7 @@ export function CallDetailDrawer({ callId, open, onClose }: CallDetailDrawerProp
 
                       <div className="flex items-center justify-between text-sm text-muted-foreground">
                         <span>{formatTime(currentTime)}</span>
-                        <span>{formatTime(duration || callDetail.durationSec)}</span>
+                        <span>{formatTime(duration || callDetail.durationSec || 0)}</span>
                       </div>
 
                       <div className="flex items-center justify-between">

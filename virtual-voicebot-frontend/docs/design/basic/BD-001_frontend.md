@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: 管理画面基本設計 -->
 # BD-001_frontend
 
 > Frontend 管理画面の基本設計（コンポーネント構成・データフロー）

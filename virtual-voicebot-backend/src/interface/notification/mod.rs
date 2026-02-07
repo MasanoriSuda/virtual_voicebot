@@ -39,7 +39,12 @@ impl MissedCallNotifier for NoopNotification {
 }
 
 impl CallEndedNotifier for NoopNotification {
-    fn notify_ended(&self, _call_id: &str, _from: String, _duration_sec: u64) -> NotificationFuture {
+    fn notify_ended(
+        &self,
+        _call_id: &str,
+        _from: String,
+        _duration_sec: u64,
+    ) -> NotificationFuture {
         Box::pin(async move { Ok(()) })
     }
 }

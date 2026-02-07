@@ -48,7 +48,8 @@ impl SessionCoordinator {
     pub(crate) fn align_rtp_clock(&mut self) {
         if let Some(last) = self.rtp_last_sent {
             let gap_samples = (last.elapsed().as_secs_f64() * 8000.0) as u32;
-            self.rtp.adjust_timestamp(self.call_id.as_str(), gap_samples);
+            self.rtp
+                .adjust_timestamp(self.call_id.as_str(), gap_samples);
         }
     }
 

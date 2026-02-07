@@ -17,8 +17,7 @@ impl StoragePort for FileStoragePort {
 }
 
 fn load_wav_as_pcmu_frames(path: &str) -> Result<Vec<Vec<u8>>, StorageError> {
-    let mut reader =
-        WavReader::open(path).map_err(|e| StorageError::Io(e.to_string()))?;
+    let mut reader = WavReader::open(path).map_err(|e| StorageError::Io(e.to_string()))?;
     let spec = reader.spec();
     if spec.channels != 1 || spec.bits_per_sample != 16 {
         return Err(StorageError::UnsupportedFormat(

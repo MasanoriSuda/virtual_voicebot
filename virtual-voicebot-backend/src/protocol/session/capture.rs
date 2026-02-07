@@ -1,5 +1,5 @@
-use crate::shared::config::VadConfig;
 use crate::protocol::rtp::codec::mulaw_to_linear16;
+use crate::shared::config::VadConfig;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

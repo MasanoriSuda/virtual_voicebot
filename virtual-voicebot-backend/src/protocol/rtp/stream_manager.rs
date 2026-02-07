@@ -27,15 +27,7 @@ impl StreamManager {
         Self::default()
     }
 
-    pub async fn upsert(
-        &self,
-        key: String,
-        dst: SocketAddr,
-        pt: u8,
-        ssrc: u32,
-        seq: u16,
-        ts: u32,
-    ) {
+    pub async fn upsert(&self, key: String, dst: SocketAddr, pt: u8, ssrc: u32, seq: u16, ts: u32) {
         let mut map = self.inner.lock().await;
         if let Some(entry) = map.get_mut(&key) {
             entry.dst = dst;

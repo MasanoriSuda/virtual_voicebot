@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: Backend V字モデル・プロセス定義 -->
 # プロセス定義書（PD）
 
 > Virtual Voicebot Backend の開発プロセスを定義する

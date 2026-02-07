@@ -21,9 +21,10 @@ export function CallsTable({ calls }: CallsTableProps) {
 
     const query = searchQuery.toLowerCase()
     return calls.filter((call) => {
-      const matchesNumber = call.from.toLowerCase().includes(query) || call.to.toLowerCase().includes(query)
-      const matchesDate = new Date(call.startTime).toLocaleDateString("ja-JP").includes(query)
-      return matchesNumber || matchesDate
+      const matchesNumber = (call.callerNumber ?? "").toLowerCase().includes(query)
+      const matchesCallId = call.externalCallId.toLowerCase().includes(query)
+      const matchesDate = new Date(call.startedAt).toLocaleDateString("ja-JP").includes(query)
+      return matchesNumber || matchesCallId || matchesDate
     })
   }, [calls, searchQuery])
 
@@ -46,15 +47,17 @@ export function CallsTable({ calls }: CallsTableProps) {
 
   const getStatusBadge = (status: Call["status"]) => {
     const variants = {
-      active: "default",
-      completed: "secondary",
-      failed: "destructive",
+      ringing: "default",
+      in_call: "default",
+      ended: "secondary",
+      error: "destructive",
     } as const
 
     const labels = {
-      active: "通話中",
-      completed: "完了",
-      failed: "失敗",
+      ringing: "呼出中",
+      in_call: "通話中",
+      ended: "完了",
+      error: "エラー",
     }
 
     return <Badge variant={variants[status]}>{labels[status]}</Badge>
@@ -77,11 +80,11 @@ export function CallsTable({ calls }: CallsTableProps) {
           <TableHeader>
             <TableRow>
               <TableHead>発信元</TableHead>
-              <TableHead>発信先</TableHead>
+              <TableHead>外部Call ID</TableHead>
               <TableHead>開始時刻</TableHead>
               <TableHead>通話時間</TableHead>
               <TableHead>ステータス</TableHead>
-              <TableHead>要約</TableHead>
+              <TableHead>終了理由</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -98,12 +101,12 @@ export function CallsTable({ calls }: CallsTableProps) {
                   className="cursor-pointer hover:bg-muted/50"
                   onClick={() => router.push(`/calls/${call.id}`)}
                 >
-                  <TableCell className="font-medium">{call.from}</TableCell>
-                  <TableCell className="text-muted-foreground">{call.to}</TableCell>
-                  <TableCell>{formatDateTime(call.startTime)}</TableCell>
-                  <TableCell>{formatDuration(call.duration)}</TableCell>
+                  <TableCell className="font-medium">{call.callerNumber ?? "非通知"}</TableCell>
+                  <TableCell className="text-muted-foreground">{call.externalCallId}</TableCell>
+                  <TableCell>{formatDateTime(call.startedAt)}</TableCell>
+                  <TableCell>{formatDuration(call.durationSec ?? 0)}</TableCell>
                   <TableCell>{getStatusBadge(call.status)}</TableCell>
-                  <TableCell className="max-w-md truncate">{call.summary}</TableCell>
+                  <TableCell className="max-w-md truncate">{call.endReason}</TableCell>
                 </TableRow>
               ))
             )}

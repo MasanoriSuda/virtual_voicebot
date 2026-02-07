@@ -1,12 +1,12 @@
 use rand::Rng;
 use std::time::{Duration, Instant};
 
-use crate::shared::config::{RegistrarConfig, RegistrarTransport};
 use crate::protocol::sip::auth::{build_authorization_header, parse_digest_challenge};
 use crate::protocol::sip::auth_cache::{self, DigestAuthChallenge, DigestAuthHeader};
 use crate::protocol::sip::builder::build_register_request;
 use crate::protocol::sip::{SipHeader, SipRequest, SipResponse};
 use crate::protocol::transport::TransportPeer;
+use crate::shared::config::{RegistrarConfig, RegistrarTransport};
 
 pub struct RegisterClient {
     cfg: RegistrarConfig,

@@ -4,4 +4,7 @@ pub mod rag;
 pub mod recording;
 
 pub use ai::DefaultAiPort;
-pub use call_control::{app_event_channel, AppEvent, AppEventRx, AppEventTx, AppNotificationPort, EndReason, spawn_app_worker};
+pub use call_control::{
+    app_event_channel, spawn_app_worker, AppEvent, AppEventRx, AppEventTx, AppNotificationPort,
+    EndReason,
+};

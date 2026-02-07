@@ -1,6 +1,3 @@
-use crate::shared::config;
-use crate::shared::entities::CallId;
-use crate::shared::ports::sip::{Sdp, SessionRefresher, SessionTimerInfo, SipCommand};
 use crate::protocol::sip::b2bua_bridge;
 use crate::protocol::sip::builder::{
     response_final_with_sdp, response_options_from_request, response_provisional_from_request,
@@ -18,6 +15,9 @@ use crate::protocol::sip::transaction::{
 use crate::protocol::sip::transport::{SipTransportRequest, SipTransportTx};
 use crate::protocol::sip::types::{SipConfig, SipEvent};
 use crate::protocol::transport::{SipInput, TransportPeer};
+use crate::shared::config;
+use crate::shared::entities::CallId;
+use crate::shared::ports::sip::{Sdp, SessionRefresher, SessionTimerInfo, SipCommand};
 use rand::Rng;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -478,7 +478,9 @@ struct CoreHeaderSnapshot {
 }
 
 impl CoreHeaderSnapshot {
-    fn from_request(req: &SipRequest) -> Result<Self, crate::shared::entities::identifiers::CallIdError> {
+    fn from_request(
+        req: &SipRequest,
+    ) -> Result<Self, crate::shared::entities::identifiers::CallIdError> {
         Ok(Self {
             via: req.header_value("Via").unwrap_or("").to_string(),
             from: req.header_value("From").unwrap_or("").to_string(),

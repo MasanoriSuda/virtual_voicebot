@@ -1,9 +1,9 @@
 use chrono::{DateTime, FixedOffset, Utc};
 
 use super::super::SessionCoordinator;
-use crate::shared::ports::app::{AppEvent, EndReason};
 use crate::protocol::session::types::{Sdp, SessionOut};
 use crate::protocol::sip::{parse_name_addr, parse_uri};
+use crate::shared::ports::app::{AppEvent, EndReason};
 
 /// Extracts a candidate user identifier or telephone number from a SIP `To`/`From`-style header string.
 ///

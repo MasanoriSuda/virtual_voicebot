@@ -108,10 +108,7 @@ impl AppEventTx {
         self.tx.send(event).await
     }
 
-    pub fn try_send(
-        &self,
-        event: AppEvent,
-    ) -> Result<(), mpsc::error::TrySendError<AppEvent>> {
+    pub fn try_send(&self, event: AppEvent) -> Result<(), mpsc::error::TrySendError<AppEvent>> {
         self.tx.try_send(event)
     }
 

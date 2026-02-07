@@ -43,7 +43,12 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
-import type { IvrFolder, IvrFlow, IvrNode, IvrNodeType } from "@/lib/types"
+import type {
+  LegacyIvrFolder as IvrFolder,
+  LegacyIvrFlow as IvrFlow,
+  LegacyIvrNode as IvrNode,
+  LegacyIvrNodeType as IvrNodeType,
+} from "@/lib/types"
 
 // Mock data
 const mockIvrData: IvrFolder[] = [

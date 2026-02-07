@@ -1,5 +1,8 @@
-export type CallStatus = "ended" | "missed" | "in_call"
+import type { Call, CallStatus, CallerCategory } from "./types"
+
 export type CallDirection = "inbound" | "outbound" | "missed"
+
+export type CallRecordStatus = "ended" | "missed" | "in_call"
 
 export type CallRecord = {
   id: string
@@ -9,155 +12,269 @@ export type CallRecord = {
   to: string
   startedAt: string
   endedAt: string | null
-  status: CallStatus
+  status: CallRecordStatus
   durationSec: number
   summary: string
   recordingUrl: string | null
   direction: CallDirection
 }
 
-export const mockCalls: CallRecord[] = [
+type CallPresentation = {
+  fromName: string
+  to: string
+  summary: string
+  recordingUrl: string | null
+  direction: CallDirection
+}
+
+export const mockCalls: Call[] = [
   {
     id: "1",
-    callId: "c_001",
-    from: "+81-90-1234-5678",
+    externalCallId: "c_001",
+    callerNumber: "+81-90-1234-5678",
+    callerCategory: "registered",
+    actionCode: "VR",
+    status: "ended",
+    startedAt: "2026-02-02T10:30:00Z",
+    answeredAt: "2026-02-02T10:30:05Z",
+    endedAt: "2026-02-02T10:35:00Z",
+    durationSec: 300,
+    endReason: "normal",
+  },
+  {
+    id: "2",
+    externalCallId: "c_002",
+    callerNumber: "+81-80-2222-1111",
+    callerCategory: "registered",
+    actionCode: "IV",
+    status: "ended",
+    startedAt: "2026-02-02T09:05:00Z",
+    answeredAt: "2026-02-02T09:05:03Z",
+    endedAt: "2026-02-02T09:07:45Z",
+    durationSec: 165,
+    endReason: "normal",
+  },
+  {
+    id: "3",
+    externalCallId: "c_003",
+    callerNumber: "+81-50-8888-1111",
+    callerCategory: "unknown",
+    actionCode: "IV",
+    status: "in_call",
+    startedAt: "2026-02-02T08:12:00Z",
+    answeredAt: "2026-02-02T08:12:04Z",
+    endedAt: null,
+    durationSec: 72,
+    endReason: "normal",
+  },
+  {
+    id: "4",
+    externalCallId: "c_004",
+    callerNumber: "+81-70-3333-2222",
+    callerCategory: "registered",
+    actionCode: "VR",
+    status: "ended",
+    startedAt: "2026-02-01T17:48:00Z",
+    answeredAt: "2026-02-01T17:48:02Z",
+    endedAt: "2026-02-01T17:50:10Z",
+    durationSec: 130,
+    endReason: "normal",
+  },
+  {
+    id: "5",
+    externalCallId: "c_005",
+    callerNumber: "+81-90-9999-0001",
+    callerCategory: "spam",
+    actionCode: "RJ",
+    status: "error",
+    startedAt: "2026-02-01T16:20:00Z",
+    answeredAt: null,
+    endedAt: "2026-02-01T16:20:20Z",
+    durationSec: 0,
+    endReason: "rejected",
+  },
+  {
+    id: "6",
+    externalCallId: "c_006",
+    callerNumber: "+81-3-4444-5555",
+    callerCategory: "registered",
+    actionCode: "VR",
+    status: "ended",
+    startedAt: "2026-02-01T14:12:00Z",
+    answeredAt: "2026-02-01T14:12:03Z",
+    endedAt: "2026-02-01T14:18:20Z",
+    durationSec: 380,
+    endReason: "normal",
+  },
+  {
+    id: "7",
+    externalCallId: "c_007",
+    callerNumber: "+81-90-5555-1212",
+    callerCategory: "registered",
+    actionCode: "VR",
+    status: "ended",
+    startedAt: "2026-01-31T11:05:00Z",
+    answeredAt: "2026-01-31T11:05:04Z",
+    endedAt: "2026-01-31T11:08:00Z",
+    durationSec: 180,
+    endReason: "normal",
+  },
+  {
+    id: "8",
+    externalCallId: "c_008",
+    callerNumber: "+81-90-7777-8888",
+    callerCategory: "registered",
+    actionCode: "VR",
+    status: "ended",
+    startedAt: "2026-01-31T09:32:00Z",
+    answeredAt: "2026-01-31T09:32:02Z",
+    endedAt: "2026-01-31T09:36:30Z",
+    durationSec: 270,
+    endReason: "normal",
+  },
+  {
+    id: "9",
+    externalCallId: "c_009",
+    callerNumber: "+81-80-2323-4545",
+    callerCategory: "registered",
+    actionCode: "IV",
+    status: "ended",
+    startedAt: "2026-01-30T18:40:00Z",
+    answeredAt: "2026-01-30T18:40:06Z",
+    endedAt: "2026-01-30T18:42:50Z",
+    durationSec: 170,
+    endReason: "normal",
+  },
+  {
+    id: "10",
+    externalCallId: "c_010",
+    callerNumber: "+81-90-1111-2222",
+    callerCategory: "registered",
+    actionCode: "VR",
+    status: "ringing",
+    startedAt: "2026-01-30T15:22:00Z",
+    answeredAt: null,
+    endedAt: null,
+    durationSec: null,
+    endReason: "timeout",
+  },
+]
+
+export const mockCallPresentationById: Record<string, CallPresentation> = {
+  "1": {
     fromName: "田中太郎",
     to: "+81-3-1234-5678",
-    startedAt: "2026-02-02T10:30:00Z",
-    endedAt: "2026-02-02T10:35:00Z",
-    status: "ended",
-    durationSec: 300,
     summary: "配送状況の確認。住所変更あり。",
     recordingUrl: "/mock/recording.wav",
     direction: "inbound",
   },
-  {
-    id: "2",
-    callId: "c_002",
-    from: "+81-80-2222-1111",
+  "2": {
     fromName: "佐藤花子",
     to: "+81-3-1234-5678",
-    startedAt: "2026-02-02T09:05:00Z",
-    endedAt: "2026-02-02T09:07:45Z",
-    status: "ended",
-    durationSec: 165,
     summary: "IVRで担当部署へ転送。",
     recordingUrl: "/mock/recording.wav",
     direction: "inbound",
   },
-  {
-    id: "3",
-    callId: "c_003",
-    from: "+81-50-8888-1111",
+  "3": {
     fromName: "株式会社アーク",
     to: "+81-3-1234-5678",
-    startedAt: "2026-02-02T08:12:00Z",
-    endedAt: null,
-    status: "in_call",
-    durationSec: 72,
     summary: "契約更新の問い合わせ。",
     recordingUrl: null,
     direction: "inbound",
   },
-  {
-    id: "4",
-    callId: "c_004",
-    from: "+81-70-3333-2222",
+  "4": {
     fromName: "山本一郎",
     to: "+81-3-1234-5678",
-    startedAt: "2026-02-01T17:48:00Z",
-    endedAt: "2026-02-01T17:50:10Z",
-    status: "ended",
-    durationSec: 130,
     summary: "不在着信の折り返し。",
     recordingUrl: "/mock/recording.wav",
     direction: "outbound",
   },
-  {
-    id: "5",
-    callId: "c_005",
-    from: "+81-90-9999-0001",
+  "5": {
     fromName: "匿名",
     to: "+81-3-1234-5678",
-    startedAt: "2026-02-01T16:20:00Z",
-    endedAt: "2026-02-01T16:20:20Z",
-    status: "missed",
-    durationSec: 0,
     summary: "迷惑電話。",
     recordingUrl: null,
     direction: "missed",
   },
-  {
-    id: "6",
-    callId: "c_006",
-    from: "+81-3-4444-5555",
+  "6": {
     fromName: "株式会社ミドリ",
     to: "+81-3-1234-5678",
-    startedAt: "2026-02-01T14:12:00Z",
-    endedAt: "2026-02-01T14:18:20Z",
-    status: "ended",
-    durationSec: 380,
     summary: "請求書の送付依頼。",
     recordingUrl: "/mock/recording.wav",
     direction: "inbound",
   },
-  {
-    id: "7",
-    callId: "c_007",
-    from: "+81-90-5555-1212",
+  "7": {
     fromName: "川村莉子",
     to: "+81-3-1234-5678",
-    startedAt: "2026-01-31T11:05:00Z",
-    endedAt: "2026-01-31T11:08:00Z",
-    status: "ended",
-    durationSec: 180,
     summary: "納期確認。",
     recordingUrl: "/mock/recording.wav",
     direction: "inbound",
   },
-  {
-    id: "8",
-    callId: "c_008",
-    from: "+81-90-7777-8888",
+  "8": {
     fromName: "高橋光",
     to: "+81-3-1234-5678",
-    startedAt: "2026-01-31T09:32:00Z",
-    endedAt: "2026-01-31T09:36:30Z",
-    status: "ended",
-    durationSec: 270,
     summary: "録音確認の依頼。",
     recordingUrl: null,
     direction: "outbound",
   },
-  {
-    id: "9",
-    callId: "c_009",
-    from: "+81-80-2323-4545",
+  "9": {
     fromName: "森田梢",
     to: "+81-3-1234-5678",
-    startedAt: "2026-01-30T18:40:00Z",
-    endedAt: "2026-01-30T18:42:50Z",
-    status: "ended",
-    durationSec: 170,
     summary: "IVRの操作で担当者へ接続。",
     recordingUrl: "/mock/recording.wav",
     direction: "inbound",
   },
-  {
-    id: "10",
-    callId: "c_010",
-    from: "+81-90-1111-2222",
+  "10": {
     fromName: "営業担当",
     to: "+81-3-1234-5678",
-    startedAt: "2026-01-30T15:22:00Z",
-    endedAt: "2026-01-30T15:28:20Z",
-    status: "ended",
-    durationSec: 380,
     summary: "新規案件の相談。",
-    recordingUrl: "/mock/recording.wav",
-    direction: "outbound",
+    recordingUrl: null,
+    direction: "inbound",
   },
-]
+}
+
+export const mockCallRecords: CallRecord[] = mockCalls.map((call) => {
+  const view = mockCallPresentationById[call.id]
+  return {
+    id: call.id,
+    callId: call.externalCallId,
+    from: call.callerNumber ?? "非通知",
+    fromName: view?.fromName ?? categoryLabel(call.callerCategory),
+    to: view?.to ?? "未設定",
+    startedAt: call.startedAt,
+    endedAt: call.endedAt,
+    status: toCallRecordStatus(call.status),
+    durationSec: call.durationSec ?? 0,
+    summary: view?.summary ?? "",
+    recordingUrl: view?.recordingUrl ?? null,
+    direction: view?.direction ?? "inbound",
+  }
+})
+
+function toCallRecordStatus(status: CallStatus): CallRecordStatus {
+  switch (status) {
+    case "in_call":
+    case "ringing":
+      return "in_call"
+    case "error":
+      return "missed"
+    default:
+      return "ended"
+  }
+}
+
+function categoryLabel(category: CallerCategory): string {
+  switch (category) {
+    case "spam":
+      return "迷惑電話"
+    case "anonymous":
+      return "匿名"
+    case "registered":
+      return "登録済み"
+    default:
+      return "未登録"
+  }
+}
 
 export const mockKPI = {
   totalCalls: 142,

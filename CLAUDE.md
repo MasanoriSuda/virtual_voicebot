@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: Claude Code共通指示 -->
 # CLAUDE.md
 
 ## 役割（Claude Code）

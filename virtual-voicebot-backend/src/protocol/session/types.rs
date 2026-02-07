@@ -2,9 +2,9 @@
 // types.rs
 use std::time::Duration;
 
+use crate::protocol::session::b2bua::BLeg;
 use crate::shared::ports::rtp_sink::{RtpEvent, RtpEventSendError, RtpEventSink};
 use crate::shared::ports::session_lookup::{SessionLookup, SessionLookupFuture};
-use crate::protocol::session::b2bua::BLeg;
 use thiserror::Error;
 
 /// Call-ID を表す（設計ドキュメント上はセッション識別子と一致させる）

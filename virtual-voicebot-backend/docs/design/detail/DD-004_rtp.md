@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: RTPモジュール詳細設計 -->
 # RTP モジュール詳細設計 (`src/protocol/rtp`)
 
 ## 1. 目的・スコープ

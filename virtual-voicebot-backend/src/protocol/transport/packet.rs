@@ -9,12 +9,12 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::{Duration, Instant};
 use tokio_rustls::TlsAcceptor;
 
-use crate::shared::config::{self, RtpConfig};
 use crate::protocol::rtp::rtcp::RtcpEventTx;
 use crate::protocol::rtp::rx::{RawRtp, RtpReceiver};
+use crate::protocol::transport::{tls, ConnId, TransportPeer, TransportSendRequest};
+use crate::shared::config::{self, RtpConfig};
 use crate::shared::entities::CallId;
 use crate::shared::ports::session_lookup::SessionLookup;
-use crate::protocol::transport::{tls, ConnId, TransportPeer, TransportSendRequest};
 
 /// packet層 → SIP層 に渡す入力
 #[derive(Debug, Clone)]
@@ -101,7 +101,12 @@ pub async fn run_packet_loop(
 
     let tcp_conns: TcpConnMap = Arc::new(Mutex::new(HashMap::new()));
     let conn_seq = Arc::new(AtomicU64::new(1));
-    let rtp_rx = RtpReceiver::new(session_lookup.clone(), rtp_port_map.clone(), rtcp_tx, rtp_cfg);
+    let rtp_rx = RtpReceiver::new(
+        session_lookup.clone(),
+        rtp_port_map.clone(),
+        rtcp_tx,
+        rtp_cfg,
+    );
 
     if let Some(listener) = sip_tcp_listener {
         let sip_tx = sip_tx.clone();

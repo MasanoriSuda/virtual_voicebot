@@ -44,7 +44,11 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { cn } from "@/lib/utils"
-import type { AnnouncementFolder, Announcement, AnnouncementType } from "@/lib/types"
+import type {
+  LegacyAnnouncementFolder as AnnouncementFolder,
+  LegacyAnnouncement as Announcement,
+  AnnouncementType,
+} from "@/lib/types"
 
 // Mock data
 const mockAnnouncementTree: AnnouncementFolder[] = [
@@ -267,6 +271,11 @@ const announcementTypeConfig: Record<
     label: "時間外",
     icon: PhoneOff,
     color: "bg-red-500/10 text-red-600",
+  },
+  recording_notice: {
+    label: "録音通知",
+    icon: Mic,
+    color: "bg-teal-500/10 text-teal-600",
   },
   custom: {
     label: "カスタム",

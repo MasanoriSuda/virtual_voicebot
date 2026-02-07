@@ -112,8 +112,7 @@ impl RecordingManager {
         let a_path = self.recorder.file_path();
         let dir_path = self.recorder.dir_path().to_path_buf();
         if let Err(e) = self.recorder.stop() {
-            self.error_sink
-                .push(RecordingError::Stop(e.to_string()));
+            self.error_sink.push(RecordingError::Stop(e.to_string()));
             log::warn!(
                 "[session {}] failed to finalize recording: {:?}",
                 self.call_id,
@@ -126,8 +125,7 @@ impl RecordingManager {
         };
         let b_path = b_recorder.file_path();
         if let Err(e) = b_recorder.stop() {
-            self.error_sink
-                .push(RecordingError::Stop(e.to_string()));
+            self.error_sink.push(RecordingError::Stop(e.to_string()));
             log::warn!(
                 "[session {}] failed to finalize b-leg recording: {:?}",
                 self.call_id,

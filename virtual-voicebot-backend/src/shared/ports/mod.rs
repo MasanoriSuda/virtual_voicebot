@@ -1,11 +1,16 @@
 pub mod ai;
+pub mod announcement_port;
 pub mod app;
 pub mod call_repository;
+pub mod folder_port;
 pub mod ingest;
 pub mod notification;
 pub mod phone_lookup;
 pub mod recording_repository;
+pub mod registered_number_port;
+pub mod routing_rule_port;
 pub mod rtp_sink;
+pub mod schedule_port;
 pub mod session_lookup;
 pub mod settings_port;
 pub mod sip;
