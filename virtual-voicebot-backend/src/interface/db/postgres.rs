@@ -2,13 +2,16 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::shared::ports::announcement_port::{
     Announcement, AnnouncementError, AnnouncementFuture, AnnouncementPort, UpsertAnnouncement,
+};
+use crate::shared::ports::call_log_port::{
+    CallLogFuture, CallLogPort, CallLogPortError, EndedCallLog,
 };
 use crate::shared::ports::folder_port::{
     Folder, FolderError, FolderFuture, FolderPort, UpsertFolder,
@@ -727,6 +730,134 @@ impl PhoneLookupPort for PostgresAdapter {
     }
 }
 
+impl CallLogPort for PostgresAdapter {
+    fn persist_call_ended(&self, call_log: EndedCallLog) -> CallLogFuture<()> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let mut tx = pool.begin().await.map_err(map_call_log_write_err)?;
+
+            sqlx::query("INSERT INTO call_log_index (id, started_at) VALUES ($1, $2)")
+                .bind(call_log.id)
+                .bind(call_log.started_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_call_log_write_err)?;
+
+            sqlx::query(
+                "INSERT INTO call_logs (
+                    id, started_at, external_call_id, sip_call_id, caller_number, caller_category,
+                    action_code, ivr_flow_id, answered_at, ended_at, duration_sec, end_reason, status
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+            )
+            .bind(call_log.id)
+            .bind(call_log.started_at)
+            .bind(call_log.external_call_id.clone())
+            .bind(Some(call_log.sip_call_id.clone()))
+            .bind(call_log.caller_number.clone())
+            .bind(call_log.caller_category.clone())
+            .bind(call_log.action_code.clone())
+            .bind(call_log.ivr_flow_id)
+            .bind(call_log.answered_at)
+            .bind(call_log.ended_at)
+            .bind(call_log.duration_sec)
+            .bind(call_log.end_reason.clone())
+            .bind(call_log.status.clone())
+            .execute(&mut *tx)
+            .await
+            .map_err(map_call_log_write_err)?;
+
+            sqlx::query(
+                "INSERT INTO sync_outbox (entity_type, entity_id, payload)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind("call_log")
+            .bind(call_log.id)
+            .bind(json!({
+                "id": call_log.id.to_string(),
+                "externalCallId": call_log.external_call_id.clone(),
+                "sipCallId": call_log.sip_call_id.clone(),
+                "callerNumber": call_log.caller_number.clone(),
+                "callerCategory": call_log.caller_category.clone(),
+                "actionCode": call_log.action_code.clone(),
+                "startedAt": call_log.started_at.to_rfc3339(),
+                "answeredAt": call_log.answered_at.as_ref().map(DateTime::to_rfc3339),
+                "endedAt": call_log.ended_at.to_rfc3339(),
+                "durationSec": call_log.duration_sec,
+                "endReason": call_log.end_reason.clone(),
+                "status": call_log.status.clone(),
+            }))
+            .execute(&mut *tx)
+            .await
+            .map_err(map_call_log_write_err)?;
+
+            if let Some(recording) = call_log.recording {
+                sqlx::query(
+                    "INSERT INTO recordings (
+                        id, call_log_id, recording_type, sequence_number, file_path, s3_url,
+                        upload_status, duration_sec, format, file_size_bytes, started_at, ended_at
+                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                )
+                .bind(recording.id)
+                .bind(call_log.id)
+                .bind("full_call")
+                .bind(1_i16)
+                .bind(recording.file_path.clone())
+                .bind(Option::<String>::None)
+                .bind("local_only")
+                .bind(recording.duration_sec)
+                .bind(recording.format.clone())
+                .bind(recording.file_size_bytes)
+                .bind(recording.started_at)
+                .bind(recording.ended_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_call_log_write_err)?;
+
+                sqlx::query(
+                    "INSERT INTO sync_outbox (entity_type, entity_id, payload)
+                     VALUES ($1, $2, $3)",
+                )
+                .bind("recording")
+                .bind(recording.id)
+                .bind(json!({
+                    "id": recording.id.to_string(),
+                    "callLogId": call_log.id.to_string(),
+                    "recordingType": "full_call",
+                    "sequenceNumber": 1,
+                    "filePath": recording.file_path.clone(),
+                    "uploadStatus": "local_only",
+                    "durationSec": recording.duration_sec,
+                    "format": recording.format.clone(),
+                    "fileSizeBytes": recording.file_size_bytes,
+                    "startedAt": recording.started_at.to_rfc3339(),
+                    "endedAt": recording.ended_at.as_ref().map(DateTime::to_rfc3339),
+                }))
+                .execute(&mut *tx)
+                .await
+                .map_err(map_call_log_write_err)?;
+
+                sqlx::query(
+                    "INSERT INTO sync_outbox (entity_type, entity_id, payload)
+                     VALUES ($1, $2, $3)",
+                )
+                .bind("recording_file")
+                .bind(recording.id)
+                .bind(json!({
+                    "callLogId": call_log.id.to_string(),
+                    "recordingId": recording.id.to_string(),
+                    "filePath": recording.file_path.clone(),
+                }))
+                .execute(&mut *tx)
+                .await
+                .map_err(map_call_log_write_err)?;
+            }
+
+            tx.commit().await.map_err(map_call_log_write_err)?;
+            Ok(())
+        })
+    }
+}
+
 impl FolderPort for PostgresAdapter {
     fn list_by_entity_type(&self, entity_type: String) -> FolderFuture<Vec<Folder>> {
         let pool = self.pool.clone();
@@ -999,6 +1130,10 @@ fn map_routing_rule_read_err(err: sqlx::Error) -> RoutingRuleError {
 
 fn map_routing_rule_write_err(err: sqlx::Error) -> RoutingRuleError {
     RoutingRuleError::WriteFailed(err.to_string())
+}
+
+fn map_call_log_write_err(err: sqlx::Error) -> CallLogPortError {
+    CallLogPortError::WriteFailed(err.to_string())
 }
 
 fn map_sync_outbox_read_err(

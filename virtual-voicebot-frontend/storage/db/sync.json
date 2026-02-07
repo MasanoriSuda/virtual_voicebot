@@ -16,6 +16,40 @@
       "endReason": "normal",
       "createdAt": "2026-02-07T05:02:48.806Z",
       "updatedAt": "2026-02-07T05:02:48.806Z"
+    },
+    "019c3837-829e-72b3-80b2-3e2ed8aa37f3": {
+      "id": "019c3837-829e-72b3-80b2-3e2ed8aa37f3",
+      "externalCallId": "019c3837-829e-72b3-80b2-3e2ed8aa37f3",
+      "sipCallId": "0FXL2SC8TbKpGiC20fr_2A..",
+      "callerNumber": null,
+      "callerCategory": "unknown",
+      "actionCode": "IV",
+      "ivrFlowId": null,
+      "status": "ended",
+      "startedAt": "2026-02-07T13:08:03.059Z",
+      "answeredAt": null,
+      "endedAt": "2026-02-07T13:08:07.966008782+00:00",
+      "durationSec": 4,
+      "endReason": "normal",
+      "createdAt": "2026-02-07T13:09:39.404Z",
+      "updatedAt": "2026-02-07T13:09:39.404Z"
+    },
+    "019c3859-7abc-7270-8b43-23b11e4663e2": {
+      "id": "019c3859-7abc-7270-8b43-23b11e4663e2",
+      "externalCallId": "019c3859-7abc-7270-8b43-23b11e4663e2",
+      "sipCallId": "Ja5Xx9INRHYDzJHvOwmMUA..",
+      "callerNumber": null,
+      "callerCategory": "unknown",
+      "actionCode": "IV",
+      "ivrFlowId": null,
+      "status": "ended",
+      "startedAt": "2026-02-07T13:44:45.483Z",
+      "answeredAt": null,
+      "endedAt": "2026-02-07T13:45:14.172953374+00:00",
+      "durationSec": 28,
+      "endReason": "normal",
+      "createdAt": "2026-02-07T13:45:14.579Z",
+      "updatedAt": "2026-02-07T13:45:14.579Z"
     }
   },
   "recordings": {
@@ -34,7 +68,43 @@
       "endedAt": null,
       "createdAt": "2026-02-07T05:02:48.806Z",
       "updatedAt": "2026-02-07T05:04:06.940Z"
+    },
+    "019c3837-829e-72b3-80b2-3e3f5e950a18": {
+      "id": "019c3837-829e-72b3-80b2-3e3f5e950a18",
+      "callLogId": "019c3837-829e-72b3-80b2-3e2ed8aa37f3",
+      "recordingType": "full_call",
+      "sequenceNumber": 1,
+      "filePath": "storage/recordings/019c3837-829e-72b3-80b2-3e2ed8aa37f3/mixed.wav",
+      "s3Url": "http://localhost:3000/storage/recordings/019c3837-829e-72b3-80b2-3e2ed8aa37f3/mixed.wav",
+      "uploadStatus": "uploaded",
+      "durationSec": 4,
+      "format": "wav",
+      "fileSizeBytes": 156844,
+      "startedAt": "2026-02-07T13:08:03.059Z",
+      "endedAt": "2026-02-07T13:08:07.966008782+00:00",
+      "createdAt": "2026-02-07T13:09:39.416Z",
+      "updatedAt": "2026-02-07T13:09:49.406Z",
+      "summaryText": null,
+      "transcriptJson": null
+    },
+    "019c3859-7abd-7730-a2bf-6e43ac6a2296": {
+      "id": "019c3859-7abd-7730-a2bf-6e43ac6a2296",
+      "callLogId": "019c3859-7abc-7270-8b43-23b11e4663e2",
+      "recordingType": "full_call",
+      "sequenceNumber": 1,
+      "filePath": "storage/recordings/019c3859-7abc-7270-8b43-23b11e4663e2/mixed.wav",
+      "s3Url": "http://localhost:3000/storage/recordings/019c3859-7abc-7270-8b43-23b11e4663e2/mixed.wav",
+      "uploadStatus": "uploaded",
+      "durationSec": 28,
+      "format": "wav",
+      "fileSizeBytes": 915244,
+      "startedAt": "2026-02-07T13:44:45.483Z",
+      "endedAt": "2026-02-07T13:45:14.172953374+00:00",
+      "createdAt": "2026-02-07T13:45:14.596Z",
+      "updatedAt": "2026-02-07T13:45:14.691Z",
+      "summaryText": null,
+      "transcriptJson": null
     }
   },
-  "updatedAt": "2026-02-07T05:04:06.940Z"
+  "updatedAt": "2026-02-07T13:45:14.691Z"
 }
