@@ -35,6 +35,7 @@ STEER-{イシュー番号}_{slug}.md
 | ID | タイトル | ステータス | 関連Issue | 優先度 | 概要 |
 |----|---------|----------|----------|--------|------|
 | [STEER-107](STEER-107_frontend-docs-structure.md) | フロントエンド SoT ドキュメント体系の構築 | Approved | #107 | P1 | ディレクトリ構造・テンプレート・インデックス・プロセス定義の整備 |
+| [STEER-116](STEER-116_frontend-ingest-api.md) | Frontend Ingest API 実装（Backend 同期受信側） | Approved | #116 | P0 | POST /api/ingest/sync, POST /api/ingest/recording-file の受信実装、Frontend DB への upsert、録音ファイル保存 |
 
 ---
 
@@ -74,3 +75,5 @@ STEER-{イシュー番号}_{slug}.md
 | 日付 | バージョン | 変更内容 | 作成者 |
 |------|-----------|---------|--------|
 | 2026-02-05 | 1.0 | 初版作成 | Claude Code |
+| 2026-02-07 | 1.1 | STEER-116 追加（Frontend Ingest API 実装） | Claude Code |
+| 2026-02-07 | 1.2 | STEER-116 承認（Approved） | Claude Code |

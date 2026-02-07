@@ -1,0 +1,40 @@
+{
+  "callLogs": {
+    "11111111-1111-4111-8111-111111111111": {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "externalCallId": "c_test_001",
+      "sipCallId": null,
+      "callerNumber": "+819012345678",
+      "callerCategory": "registered",
+      "actionCode": "VR",
+      "ivrFlowId": null,
+      "status": "ended",
+      "startedAt": "2026-02-07T11:55:00.000Z",
+      "answeredAt": null,
+      "endedAt": "2026-02-07T12:00:00Z",
+      "durationSec": 300,
+      "endReason": "normal",
+      "createdAt": "2026-02-07T05:02:48.806Z",
+      "updatedAt": "2026-02-07T05:02:48.806Z"
+    }
+  },
+  "recordings": {
+    "22222222-2222-4222-8222-222222222222": {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "callLogId": "11111111-1111-4111-8111-111111111111",
+      "recordingType": "full_call",
+      "sequenceNumber": 1,
+      "filePath": "storage/recordings/11111111-1111-4111-8111-111111111111/mixed.wav",
+      "s3Url": "http://localhost:3000/storage/recordings/11111111-1111-4111-8111-111111111111/mixed.wav",
+      "uploadStatus": "uploaded",
+      "durationSec": null,
+      "format": "wav",
+      "fileSizeBytes": null,
+      "startedAt": "2026-02-07T11:55:00.000Z",
+      "endedAt": null,
+      "createdAt": "2026-02-07T05:02:48.806Z",
+      "updatedAt": "2026-02-07T05:04:06.940Z"
+    }
+  },
+  "updatedAt": "2026-02-07T05:04:06.940Z"
+}

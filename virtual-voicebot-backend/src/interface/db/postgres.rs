@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
+use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
@@ -26,6 +28,9 @@ use crate::shared::ports::schedule_port::{
 };
 use crate::shared::ports::settings_port::{
     SettingsError, SettingsFuture, SettingsPort, SystemSettings,
+};
+use crate::shared::ports::sync_outbox_port::{
+    NewOutboxEntry, PendingOutboxEntry, SyncOutboxFuture, SyncOutboxPort,
 };
 
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -803,6 +808,108 @@ impl RoutingRulePort for PostgresAdapter {
     }
 }
 
+impl SyncOutboxPort for PostgresAdapter {
+    fn enqueue(&self, entry: NewOutboxEntry) -> SyncOutboxFuture<i64> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let row = sqlx::query(
+                "INSERT INTO sync_outbox (entity_type, entity_id, payload)
+                 VALUES ($1, $2, $3)
+                 RETURNING id",
+            )
+            .bind(entry.entity_type)
+            .bind(entry.entity_id)
+            .bind(entry.payload)
+            .fetch_one(&pool)
+            .await
+            .map_err(map_sync_outbox_write_err)?;
+
+            let id: i64 = row.try_get("id").map_err(map_sync_outbox_read_err)?;
+            Ok(id)
+        })
+    }
+
+    fn fetch_pending(&self, limit: i64) -> SyncOutboxFuture<Vec<PendingOutboxEntry>> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let rows = sqlx::query(
+                "SELECT id, entity_type, entity_id, payload, created_at
+                 FROM sync_outbox
+                 WHERE processed_at IS NULL
+                 ORDER BY created_at ASC
+                 LIMIT $1",
+            )
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+            .map_err(map_sync_outbox_read_err)?;
+
+            let mut entries = Vec::with_capacity(rows.len());
+            for row in rows {
+                entries.push(PendingOutboxEntry {
+                    id: row.try_get("id").map_err(map_sync_outbox_read_err)?,
+                    entity_type: row
+                        .try_get("entity_type")
+                        .map_err(map_sync_outbox_read_err)?,
+                    entity_id: row.try_get("entity_id").map_err(map_sync_outbox_read_err)?,
+                    payload: row
+                        .try_get::<Value, _>("payload")
+                        .map_err(map_sync_outbox_read_err)?,
+                    created_at: row
+                        .try_get::<DateTime<Utc>, _>("created_at")
+                        .map_err(map_sync_outbox_read_err)?,
+                });
+            }
+
+            Ok(entries)
+        })
+    }
+
+    fn mark_processed(&self, id: i64, processed_at: DateTime<Utc>) -> SyncOutboxFuture<()> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            sqlx::query(
+                "UPDATE sync_outbox
+                 SET processed_at = $1
+                 WHERE id = $2",
+            )
+            .bind(processed_at)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(map_sync_outbox_write_err)?;
+            Ok(())
+        })
+    }
+
+    fn mark_recording_uploaded(
+        &self,
+        recording_id: Uuid,
+        file_url: String,
+    ) -> SyncOutboxFuture<()> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let result = sqlx::query(
+                "UPDATE recordings
+                 SET upload_status = 'uploaded',
+                     s3_url = $2
+                 WHERE id = $1",
+            )
+            .bind(recording_id)
+            .bind(file_url)
+            .execute(&pool)
+            .await
+            .map_err(map_sync_outbox_write_err)?;
+
+            if result.rows_affected() == 0 {
+                return Err(map_sync_outbox_write_err(sqlx::Error::RowNotFound));
+            }
+
+            Ok(())
+        })
+    }
+}
+
 async fn is_spam_number(pool: &PgPool, phone_number: &str) -> Result<bool, PhoneLookupError> {
     let exists = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(
@@ -892,4 +999,16 @@ fn map_routing_rule_read_err(err: sqlx::Error) -> RoutingRuleError {
 
 fn map_routing_rule_write_err(err: sqlx::Error) -> RoutingRuleError {
     RoutingRuleError::WriteFailed(err.to_string())
+}
+
+fn map_sync_outbox_read_err(
+    err: sqlx::Error,
+) -> crate::shared::ports::sync_outbox_port::SyncOutboxError {
+    crate::shared::ports::sync_outbox_port::SyncOutboxError::ReadFailed(err.to_string())
+}
+
+fn map_sync_outbox_write_err(
+    err: sqlx::Error,
+) -> crate::shared::ports::sync_outbox_port::SyncOutboxError {
+    crate::shared::ports::sync_outbox_port::SyncOutboxError::WriteFailed(err.to_string())
 }

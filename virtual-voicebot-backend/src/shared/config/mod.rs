@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::OnceLock;
@@ -100,7 +100,12 @@ impl Config {
             .unwrap_or(rtp_port);
         let recording_http_addr =
             std::env::var("RECORDING_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:18080".to_string());
-        let ingest_call_url = std::env::var("INGEST_CALL_URL").ok();
+        let ingest_call_url = if std::env::var("INGEST_CALL_URL").is_ok() {
+            log::warn!("[config] INGEST_CALL_URL is deprecated and ignored (serversync only mode)");
+            None
+        } else {
+            None
+        };
         let recording_base_url = std::env::var("RECORDING_BASE_URL").ok().or_else(|| {
             if let Some(port) = recording_http_addr.strip_prefix("0.0.0.0:") {
                 Some(format!("http://{}:{}", advertised_ip, port))
@@ -484,6 +489,33 @@ pub fn database_url() -> Option<String> {
 }
 
 #[derive(Clone, Debug)]
+pub struct SyncConfig {
+    pub poll_interval_sec: u64,
+    pub batch_size: i64,
+    pub frontend_base_url: String,
+    pub timeout_sec: u64,
+}
+
+impl SyncConfig {
+    pub fn from_env() -> Result<Self> {
+        let frontend_base_url = env_non_empty("FRONTEND_BASE_URL")
+            .ok_or_else(|| anyhow!("FRONTEND_BASE_URL must be set"))?;
+        let poll_interval_sec = env_u64("SYNC_POLL_INTERVAL_SEC", 300);
+        let batch_size = env_i64("SYNC_BATCH_SIZE", 100);
+        if batch_size <= 0 {
+            return Err(anyhow!("SYNC_BATCH_SIZE must be greater than 0"));
+        }
+        let timeout_sec = env_u64("SYNC_TIMEOUT_SEC", 30);
+        Ok(Self {
+            poll_interval_sec,
+            batch_size,
+            frontend_base_url,
+            timeout_sec,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct LineNotifyConfig {
     pub enabled: bool,
     pub channel_access_token: Option<String>,
@@ -674,6 +706,13 @@ fn env_u64(key: &str, default_value: u64) -> u64 {
     std::env::var(key)
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default_value)
+}
+
+fn env_i64(key: &str, default_value: i64) -> i64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(default_value)
 }
 

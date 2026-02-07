@@ -36,4 +36,6 @@ pub trait SyncOutboxPort: Send + Sync {
     fn enqueue(&self, entry: NewOutboxEntry) -> SyncOutboxFuture<i64>;
     fn fetch_pending(&self, limit: i64) -> SyncOutboxFuture<Vec<PendingOutboxEntry>>;
     fn mark_processed(&self, id: i64, processed_at: DateTime<Utc>) -> SyncOutboxFuture<()>;
+    fn mark_recording_uploaded(&self, recording_id: Uuid, file_url: String)
+        -> SyncOutboxFuture<()>;
 }

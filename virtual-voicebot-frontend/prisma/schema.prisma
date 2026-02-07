@@ -1,0 +1,49 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model CallLog {
+  id             String      @id @db.Uuid
+  externalCallId String      @map("external_call_id") @db.VarChar(64)
+  sipCallId      String?     @map("sip_call_id") @db.VarChar(255)
+  callerNumber   String?     @map("caller_number") @db.VarChar(20)
+  callerCategory String      @map("caller_category") @db.VarChar(20)
+  actionCode     String      @map("action_code") @db.VarChar(2)
+  ivrFlowId      String?     @map("ivr_flow_id") @db.Uuid
+  status         String      @db.VarChar(20)
+  startedAt      DateTime    @map("started_at")
+  answeredAt     DateTime?   @map("answered_at")
+  endedAt        DateTime?   @map("ended_at")
+  durationSec    Int?        @map("duration_sec")
+  endReason      String      @map("end_reason") @db.VarChar(20)
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+  recordings     Recording[]
+
+  @@map("call_logs")
+}
+
+model Recording {
+  id             String    @id @db.Uuid
+  callLogId      String    @map("call_log_id") @db.Uuid
+  recordingType  String    @map("recording_type") @db.VarChar(20)
+  sequenceNumber Int       @map("sequence_number")
+  filePath       String?   @map("file_path") @db.VarChar(500)
+  s3Url          String?   @map("s3_url") @db.VarChar(1000)
+  uploadStatus   String    @map("upload_status") @db.VarChar(20)
+  durationSec    Int?      @map("duration_sec")
+  format         String    @db.VarChar(10)
+  fileSizeBytes  BigInt?   @map("file_size_bytes")
+  startedAt      DateTime  @map("started_at")
+  endedAt        DateTime? @map("ended_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  callLog        CallLog   @relation(fields: [callLogId], references: [id], onDelete: Cascade)
+
+  @@map("recordings")
+}
