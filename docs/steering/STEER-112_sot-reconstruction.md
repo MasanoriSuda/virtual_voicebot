@@ -225,15 +225,21 @@ So that 型の矛盾・変換ミス・仕様の曖昧さを排除できる
       ▼
   Backend DB (call_logs + recordings)
       │ + sync_outbox INSERT (同一 TX)
+      │   - entity_type='call_log'
+      │   - entity_type='recording'
+      │   - entity_type='recording_file'
       │
-      ▼
-  Outbox Worker
+      ▼ (即時送信なし、Outbox Worker が 5分間隔でポーリング)
+  Outbox Worker (Serversync)
       │
-      ▼ POST /api/ingest/call
-  Frontend Ingest API
+      ├─ POST /api/ingest/sync (メタデータ)
+      │   → Frontend DB に call_logs/recordings upsert
       │
-      ▼
-  Frontend DB (calls + recordings)
+      └─ POST /api/ingest/recording-file (mixed.wav + meta.json)
+          → Frontend ストレージに保存
+          → fileUrl 返却
+          → Backend: recordings.s3_url 更新
+          → Backend: storage/recordings/{callId}/ 削除
 ```
 
 ---
