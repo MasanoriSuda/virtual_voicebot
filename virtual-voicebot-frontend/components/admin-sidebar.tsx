@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils"
 import {
   LayoutDashboard,
   Phone,
+  PhoneIncoming,
   Users,
   GitBranch,
   Workflow,
@@ -27,6 +28,7 @@ interface AdminSidebarProps {
 const primaryNavItems = [
   { href: "/", icon: LayoutDashboard, label: "Dashboard", labelJa: "ダッシュボード" },
   { href: "/calls", icon: Phone, label: "Call History", labelJa: "発着信履歴" },
+  { href: "/call-actions", icon: PhoneIncoming, label: "Call Actions", labelJa: "着信アクション" },
   { href: "/groups", icon: Users, label: "Number Groups", labelJa: "番号グループ" },
   { href: "/routing", icon: GitBranch, label: "Routing", labelJa: "ルーティング" },
   { href: "/ivr", icon: Workflow, label: "IVR Flow", labelJa: "IVRフロー" },

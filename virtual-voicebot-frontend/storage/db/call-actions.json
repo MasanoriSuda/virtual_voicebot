@@ -1,0 +1,34 @@
+{
+  "rules": [
+    {
+      "id": "386b1480-8c84-4bb4-9bb3-3f5fa1b52db8",
+      "name": "ルール 1",
+      "callerGroupId": "4fe4a030-aedd-41d4-9e55-1e85973b1b78",
+      "actionType": "allow",
+      "actionConfig": {
+        "actionCode": "VR",
+        "recordingEnabled": false,
+        "announceEnabled": false,
+        "announcementId": null
+      },
+      "isActive": true,
+      "createdAt": "2026-02-07T20:23:02.354Z",
+      "updatedAt": "2026-02-07T20:23:13.110Z"
+    }
+  ],
+  "anonymousAction": {
+    "actionType": "deny",
+    "actionConfig": {
+      "actionCode": "BZ"
+    }
+  },
+  "defaultAction": {
+    "actionType": "allow",
+    "actionConfig": {
+      "actionCode": "VR",
+      "recordingEnabled": false,
+      "announceEnabled": false,
+      "announcementId": null
+    }
+  }
+}
