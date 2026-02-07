@@ -36,6 +36,7 @@ STEER-{イシュー番号}_{slug}.md
 |----|---------|----------|----------|--------|------|
 | [STEER-107](STEER-107_frontend-docs-structure.md) | フロントエンド SoT ドキュメント体系の構築 | Approved | #107 | P1 | ディレクトリ構造・テンプレート・インデックス・プロセス定義の整備 |
 | [STEER-116](STEER-116_frontend-ingest-api.md) | Frontend Ingest API 実装（Backend 同期受信側） | Approved | #116 | P0 | POST /api/ingest/sync, POST /api/ingest/recording-file の受信実装、Frontend DB への upsert、録音ファイル保存 |
+| [STEER-119](STEER-119_ui-backend-integration.md) | Frontend UI と Backend の連携実装 | Approved | #119 | P0 | モックデータから実データへ切り替え、lib/api.ts の Prisma 実装、KPI 集計、録音ファイル配信、AC-1〜AC-14 検証 |
 
 ---
 
@@ -77,3 +78,5 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-05 | 1.0 | 初版作成 | Claude Code |
 | 2026-02-07 | 1.1 | STEER-116 追加（Frontend Ingest API 実装） | Claude Code |
 | 2026-02-07 | 1.2 | STEER-116 承認（Approved） | Claude Code |
+| 2026-02-07 | 1.3 | STEER-119 追加（Frontend UI と Backend の連携実装） | Claude Code |
+| 2026-02-07 | 1.4 | STEER-119 承認（Approved） | Claude Code |

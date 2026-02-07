@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import {
   Bar,
   BarChart,
@@ -11,7 +12,12 @@ import {
 } from "recharts"
 
 import { Card } from "@/components/ui/card"
-import { mockHourlyVolume } from "@/lib/mock-data"
+
+interface HourlyData {
+  hour: number
+  inbound: number
+  outbound: number
+}
 
 const tooltipStyle = {
   backgroundColor: "var(--card)",
@@ -21,6 +27,34 @@ const tooltipStyle = {
 }
 
 export function HourlyChart() {
+  const [data, setData] = useState<HourlyData[]>(
+    Array.from({ length: 24 }, (_, hour) => ({ hour, inbound: 0, outbound: 0 })),
+  )
+
+  useEffect(() => {
+    let active = true
+    fetch("/api/kpi")
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error("failed to fetch hourly stats")
+        }
+        return res.json() as Promise<{ hourlyStats?: HourlyData[] }>
+      })
+      .then((payload) => {
+        if (!active || !Array.isArray(payload.hourlyStats)) {
+          return
+        }
+        setData(payload.hourlyStats)
+      })
+      .catch((error) => {
+        console.error("[hourly-chart] failed to fetch hourly stats", error)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [])
+
   return (
     <Card className="border-none bg-card/80 p-4 shadow-[0_24px_60px_-40px_rgba(15,23,42,0.45)] dark:shadow-[0_24px_60px_-40px_rgba(8,14,25,0.6)]">
       <div className="flex items-center justify-between">
@@ -37,7 +71,7 @@ export function HourlyChart() {
       </div>
       <div className="mt-4 h-64">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={mockHourlyVolume} barGap={6} barSize={10}>
+          <BarChart data={data} barGap={6} barSize={10}>
             <CartesianGrid stroke="var(--border)" strokeDasharray="4 4" />
             <XAxis
               dataKey="hour"

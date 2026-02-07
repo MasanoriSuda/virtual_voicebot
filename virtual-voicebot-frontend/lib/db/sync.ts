@@ -15,7 +15,7 @@ export interface SyncIngestEntry {
   createdAt: string
 }
 
-interface StoredCallLog {
+export interface StoredCallLog {
   id: string
   externalCallId: string
   sipCallId: string | null
@@ -33,7 +33,7 @@ interface StoredCallLog {
   updatedAt: string
 }
 
-interface StoredRecording {
+export interface StoredRecording {
   id: string
   callLogId: string
   recordingType: string
@@ -48,6 +48,8 @@ interface StoredRecording {
   endedAt: string | null
   createdAt: string
   updatedAt: string
+  summaryText: string | null
+  transcriptJson: unknown | null
 }
 
 interface SyncDatabase {
@@ -96,6 +98,12 @@ async function readDb(): Promise<SyncDatabase> {
     }
     throw error
   }
+}
+
+export interface SyncSnapshot {
+  callLogs: StoredCallLog[]
+  recordings: StoredRecording[]
+  updatedAt: string
 }
 
 async function writeDb(db: SyncDatabase): Promise<void> {
@@ -199,6 +207,8 @@ function normalizeRecording(entityId: string, payload: unknown, nowIso: string):
     endedAt: asString(input, ["endedAt", "ended_at"], null),
     createdAt: asIsoDate(input, ["createdAt", "created_at"], nowIso),
     updatedAt: nowIso,
+    summaryText: asString(input, ["summaryText", "summary_text", "summary"], null),
+    transcriptJson: input["transcriptJson"] ?? input["transcript_json"] ?? input["transcript"] ?? null,
   }
 }
 
@@ -275,9 +285,20 @@ export async function markRecordingUploaded(params: {
       endedAt: current?.endedAt ?? null,
       createdAt: current?.createdAt ?? nowIso,
       updatedAt: nowIso,
+      summaryText: current?.summaryText ?? null,
+      transcriptJson: current?.transcriptJson ?? null,
     }
     db.updatedAt = nowIso
 
     await writeDb(db)
   })
+}
+
+export async function readSyncSnapshot(): Promise<SyncSnapshot> {
+  const db = await readDb()
+  return {
+    callLogs: Object.values(db.callLogs),
+    recordings: Object.values(db.recordings),
+    updatedAt: db.updatedAt,
+  }
 }
