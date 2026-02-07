@@ -1,0 +1,77 @@
+{
+  "announcements": {
+    "b07b7c10-69d6-4514-a010-e61fa7fe03ff": {
+      "id": "b07b7c10-69d6-4514-a010-e61fa7fe03ff",
+      "name": "ずんだもん録音アナウンス告知",
+      "description": null,
+      "announcementType": "greeting",
+      "isActive": true,
+      "folderId": "folder-greetings",
+      "audioFileUrl": "/audio/announcements/b07b7c10-69d6-4514-a010-e61fa7fe03ff.wav",
+      "ttsText": "こんにちは、ずんだもんなのだ、このつうわはさーびすこうじょうのためにろくおんしてるのでごりょうしょうねがうのだ",
+      "speakerId": 3,
+      "speakerName": "ずんだもん - ノーマル",
+      "durationSec": 7.819,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-07T17:54:47.383Z",
+      "updatedAt": "2026-02-07T17:54:47.383Z"
+    },
+    "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a": {
+      "id": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
+      "name": "四国めたん録音アナウンス告知",
+      "description": null,
+      "announcementType": "greeting",
+      "isActive": true,
+      "folderId": "folder-greetings",
+      "audioFileUrl": "/audio/announcements/bc8e32af-8b58-4d61-b39f-a9e2d5f2894a.wav",
+      "ttsText": "おでんわありがとうございます、このつうわはさーびすこうじょうのためろくおんしております。",
+      "speakerId": 2,
+      "speakerName": "四国めたん - ノーマル",
+      "durationSec": 5.365,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-07T17:56:15.404Z",
+      "updatedAt": "2026-02-07T17:56:15.404Z"
+    }
+  },
+  "folders": {
+    "folder-greetings": {
+      "id": "folder-greetings",
+      "name": "挨拶メッセージ",
+      "description": "着信時の挨拶音声",
+      "parentId": null,
+      "sortOrder": 1,
+      "createdAt": "2026-02-07T17:48:30.883Z",
+      "updatedAt": "2026-02-07T17:48:30.883Z"
+    },
+    "folder-hold": {
+      "id": "folder-hold",
+      "name": "保留音",
+      "description": "保留中の音声",
+      "parentId": null,
+      "sortOrder": 2,
+      "createdAt": "2026-02-07T17:48:30.883Z",
+      "updatedAt": "2026-02-07T17:48:30.883Z"
+    },
+    "folder-ivr": {
+      "id": "folder-ivr",
+      "name": "IVRメニュー",
+      "description": "自動音声応答メニュー",
+      "parentId": null,
+      "sortOrder": 3,
+      "createdAt": "2026-02-07T17:48:30.883Z",
+      "updatedAt": "2026-02-07T17:48:30.883Z"
+    },
+    "folder-closed": {
+      "id": "folder-closed",
+      "name": "時間外案内",
+      "description": "営業時間外のアナウンス",
+      "parentId": null,
+      "sortOrder": 4,
+      "createdAt": "2026-02-07T17:48:30.883Z",
+      "updatedAt": "2026-02-07T17:48:30.883Z"
+    }
+  },
+  "updatedAt": "2026-02-07T17:56:15.404Z"
+}
