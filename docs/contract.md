@@ -297,29 +297,19 @@
 
 | メソッド | パス | 説明 |
 |---------|------|------|
-| POST | /api/ingest/call | 通話終了時のデータ投入 |
-| POST | /api/ingest/sync | Outbox エントリの一括同期 |
-
-#### POST /api/ingest/call
-
-Backend が通話終了後に送信する。
-
-```json
-{
-  "call": { /* Call DTO */ },
-  "recordings": [ /* Recording DTO[] */ ]
-}
-```
+| POST | /api/ingest/sync | Outbox エントリの一括同期（メタデータ） |
+| POST | /api/ingest/recording-file | 録音ファイルのアップロード |
 
 #### POST /api/ingest/sync
 
-Outbox Worker が未送信エントリを一括送信する。
+Serversync Worker が未送信エントリを一括送信する。
 
+**リクエスト**:
 ```json
 {
   "entries": [
     {
-      "entityType": "registered_number",
+      "entityType": "call_log" | "recording" | "registered_number" | "routing_rule" | "ivr_flow" | "schedule" | "announcement",
       "entityId": "019503a0-...",
       "payload": { /* 該当エンティティの DTO */ },
       "createdAt": "2026-02-07T10:00:00Z"
@@ -327,6 +317,41 @@ Outbox Worker が未送信エントリを一括送信する。
   ]
 }
 ```
+
+**レスポンス**:
+```json
+{ "ok": true }
+```
+
+**処理内容**:
+- Frontend DB に各エンティティを upsert
+- `entityType` に応じたテーブルに保存
+- 既存エンティティは `id` で判定して上書き
+
+#### POST /api/ingest/recording-file
+
+Serversync Worker が録音ファイル（実体）を転送する。
+
+**リクエスト**: `multipart/form-data`
+
+| Part 名 | 型 | 説明 |
+|---------|-----|------|
+| callLogId | text/plain | call_logs.id (UUID) |
+| recordingId | text/plain | recordings.id (UUID) |
+| audio | application/octet-stream | mixed.wav バイナリ |
+| meta | application/json | meta.json 内容 |
+
+**レスポンス**:
+```json
+{
+  "fileUrl": "https://frontend.example.com/storage/recordings/{callLogId}/mixed.wav"
+}
+```
+
+**処理内容**:
+- `mixed.wav` + `meta.json` を Frontend ストレージに保存
+- 保存先 URL を返却
+- Backend はこの URL を `recordings.s3_url` に記録
 
 ### 5.2 Frontend → Backend（CRUD）
 

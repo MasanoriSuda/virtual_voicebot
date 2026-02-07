@@ -139,6 +139,7 @@
 | [index.md](../virtual-voicebot-backend/docs/steering/index.md) | Active | - |
 | [STEER-085](../virtual-voicebot-backend/docs/steering/STEER-085_clean-architecture.md) | Draft | #52, #65, #85 |
 | [STEER-095](../virtual-voicebot-backend/docs/steering/STEER-095_backend-refactoring.md) | Draft | #95 |
+| [STEER-096](../virtual-voicebot-backend/docs/steering/STEER-096_serversync.md) | Approved | #96 |
 | [STEER-108](../virtual-voicebot-backend/docs/steering/STEER-108_sip-core-engine-refactor.md) | Draft | #108 |
 | [STEER-110](../virtual-voicebot-backend/docs/steering/STEER-110_backend-db-design.md) | Approved | #110 |
 
