@@ -69,6 +69,15 @@ Frontend PoC（STEER-132/134）で実装された着信アクション設定・I
   - system_settings.extra の defaultAction を適用
 ```
 
+**未設定時のフォールバック**:
+- defaultAction が system_settings.extra に存在しない場合、以下のデフォルト値を使用：
+  ```json
+  {
+    "actionType": "allow",
+    "actionConfig": { "actionCode": "VR" }
+  }
+  ```
+
 **評価結果のログ出力**（NFR-1 参照）:
 - 各段階で評価したルール ID、マッチ結果、適用したアクション
 - 最終的にどの段階でどのルールが適用されたか（トレーサビリティ）
@@ -85,6 +94,15 @@ Frontend PoC（STEER-132/134）で実装された着信アクション設定・I
 - Caller ID が空、"anonymous"、"withheld" の場合、**anonymousAction** を適用
 - anonymousAction は system_settings.extra (JSONB) に保存
 - 番号グループ・カテゴリ評価はスキップ
+
+**未設定時のフォールバック**:
+- anonymousAction が system_settings.extra に存在しない場合、以下のデフォルト値を使用：
+  ```json
+  {
+    "actionType": "deny",
+    "actionConfig": { "actionCode": "BZ" }
+  }
+  ```
 
 #### FR-1.4: registered_numbers の group_id 参照
 
@@ -427,10 +445,10 @@ Frontend の `CallerGroup` を Backend の `registered_numbers` テーブルに�
       - phone_number: E.164 正規化後の番号
       - group_id: CallerGroup.id（UUID、不変ID）
       - group_name: CallerGroup.name（VARCHAR、表示名）
-      - category: "registered"（固定）
-      - action_code: NULL（番号グループルールが優先されるため）
-      - recording_enabled: false（デフォルト）
-      - announce_enabled: false（デフォルト）
+      - category: "general"（DB デフォルト値、CHECK 制約で 'registered' は許可されていない）
+      - action_code: "VR"（DB デフォルト値、NOT NULL 制約あり）
+      - recording_enabled: true（DB デフォルト値）
+      - announce_enabled: true（DB デフォルト値）
    b. 既に存在する番号の場合、group_id / group_name を UPDATE
    c. Frontend から削除された番号の場合、group_id / group_name を NULL に UPDATE
 
@@ -438,6 +456,10 @@ Frontend の `CallerGroup` を Backend の `registered_numbers` テーブルに�
    - Frontend の callerGroups[] に存在しない group_id を持つ registered_numbers のレコードは、
      group_id / group_name を NULL に UPDATE
 ```
+
+> **注**: DB スキーマ（20260206000005_create_registered_numbers.sql）の制約に従う。
+> category の CHECK 制約は ('vip', 'customer', 'partner', 'general') のみ許可。
+> action_code は NOT NULL 制約があり、NULL は許可されていない。
 
 ##### IncomingRule → call_action_rules 変換
 
@@ -676,3 +698,5 @@ Serversync の設定 Pull 時に以下の情報をログ出力する：
 | 2026-02-08 | 1.0 | 初版作成（Draft） | Claude Code (claude-sonnet-4-5) |
 | 2026-02-08 | 1.1 | Codex レビュー反映：VB を MVP 対象に追加、GET /api/number-groups 追加、IVR timeout/maxRetries 保存先明記、group_id/group_name 前提条件明記、SoT の移行期間モード明記 | Claude Code (claude-sonnet-4-5) |
 | 2026-02-08 | 1.2 | Codex 再レビュー反映：Serversync ログ例を API 分離に修正（GET /api/number-groups 行を追加） | Claude Code (claude-sonnet-4-5) |
+| 2026-02-08 | 1.3 | Issue #139 決定反映：anonymousAction / defaultAction の未設定時フォールバック動作を明記 | Claude Code (claude-sonnet-4-5) |
+| 2026-02-08 | 1.4 | STEER-139 整合性修正：CallerGroup 変換の category/action_code/recording_enabled/announce_enabled を DB 制約に適合させる（category='general', action_code='VR', recording_enabled=true, announce_enabled=true） | Claude Code (claude-sonnet-4-5) |
