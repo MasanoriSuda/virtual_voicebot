@@ -176,10 +176,12 @@ type IvrTerminalAction =
   | { actionCode: "VM"; announcementId: string | null }     // 留守電
   | { actionCode: "AN"; announcementId: string | null }     // アナウンス再生→切断
   | { actionCode: "IV"; ivrFlowId: string }                 // サブIVRへ遷移（depth≤3）
+  | { actionCode: "VB"; scenarioId: string; welcomeAnnouncementId: string | null; recordingEnabled: boolean; includeAnnouncement: boolean }  // ボイスボット（STEER-136 で追加）
 ```
 
 > **設計根拠**: BZ / NR は「着信応答前」のアクション。IVR は通話応答後に動作するため、
-> BUSY 応答やリング継続はセマンティクス的に無意味。IVR 終端は上記4種に限定する。
+> BUSY 応答やリング継続はセマンティクス的に無意味。IVR 終端は上記4種 + VB に限定する。
+> VB は STEER-136 で追加。詳細は [STEER-136](STEER-136_voicebot-action.md) §5.3 を参照。
 
 #### 5.2.3 IvrFallbackAction（リトライ超過時アクション）
 
@@ -190,6 +192,7 @@ type IvrFallbackAction =
   | { actionCode: "VR" }                                    // 転送
   | { actionCode: "VM"; announcementId: string | null }     // 留守電
   | { actionCode: "AN"; announcementId: string | null }     // アナウンス再生→切断
+  | { actionCode: "VB"; scenarioId: string; welcomeAnnouncementId: string | null; recordingEnabled: boolean; includeAnnouncement: boolean }  // ボイスボット（STEER-136 で追加）
 ```
 
 #### 5.2.4 IvrRoute（DTMF ルート）
@@ -615,3 +618,4 @@ export function terminalActionLabel(action: IvrTerminalAction, flows: IvrFlowDef
 | 2026-02-08 | 初版作成 | Claude Code (claude-opus-4-6) |
 | 2026-02-08 | Codex レビュー反映: バリデーション責務明確化（フロント側 SoT）、LegacyIvr* 同時削除明記、削除済み IVR 保存ポリシー統一（警告+許可） | Claude Code (claude-opus-4-6) |
 | 2026-02-08 | 承認（Approved） | Claude Code (claude-opus-4-6) |
+| 2026-02-08 | STEER-136 差分: IvrTerminalAction / IvrFallbackAction に VB 追加 | Claude Code (claude-opus-4-6) |

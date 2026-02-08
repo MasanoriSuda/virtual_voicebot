@@ -40,6 +40,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-129](STEER-129_announce-audio-add.md) | アナウンスタブ音声追加機能 | Approved | #129 | P1 | WAV アップロード + VoiceVox TTS 生成、アナウンス管理操作（削除/切替/名称変更）、JSON ストア永続化 |
 | [STEER-132](STEER-132_call-action-ui.md) | 着信時アクション決定 UI | Approved | #132 | P1 | 番号グループ × ルール評価による着信アクション設定、Allow(VR/IV/VM) / Deny(BZ/NR/AN)、JSON ストア永続化 |
 | [STEER-134](STEER-134_ivr-flow-ui.md) | IVR フロー管理 UI | Approved | #134 | P1 | DTMF メニュー定義（アナウンス→入力待ち→ルーティング）、3層ネスト、例外系（無効入力/タイムアウト/fallback）、JSON ストア永続化 |
+| [STEER-136](STEER-136_voicebot-action.md) | ボイスボットアクション追加 | Approved | #136 | P1 | AllowVB + IVR 終端/fallback VB 追加、シナリオ JSON ストア（読み取り専用）、call-actions UI 拡張 |
 
 ---
 
@@ -89,3 +90,5 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-08 | 1.8 | STEER-132 承認（Approved） | Claude Code |
 | 2026-02-08 | 1.9 | STEER-134 追加（IVR フロー管理 UI） | Claude Code |
 | 2026-02-08 | 2.0 | STEER-134 承認（Approved） | Claude Code |
+| 2026-02-08 | 2.1 | STEER-136 追加（ボイスボットアクション追加） | Claude Code |
+| 2026-02-08 | 2.2 | STEER-136 承認（Approved） | Claude Code |
