@@ -16,6 +16,9 @@ pub struct ActionConfig {
     pub recording_enabled: bool,
     pub announce_enabled: bool,
     pub announcement_id: Option<Uuid>,
+    pub announcement_audio_file_url: Option<String>,
+    pub scenario_id: Option<String>,
+    pub include_announcement: Option<bool>,
 }
 
 impl ActionConfig {
@@ -26,6 +29,9 @@ impl ActionConfig {
             recording_enabled: true,
             announce_enabled: false,
             announcement_id: None,
+            announcement_audio_file_url: None,
+            scenario_id: None,
+            include_announcement: None,
         }
     }
 
@@ -36,6 +42,9 @@ impl ActionConfig {
             recording_enabled: false,
             announce_enabled: false,
             announcement_id: None,
+            announcement_audio_file_url: None,
+            scenario_id: None,
+            include_announcement: None,
         }
     }
 }
@@ -52,6 +61,10 @@ struct ActionConfigDto {
     announce_enabled: bool,
     #[serde(default)]
     announcement_id: Option<Uuid>,
+    #[serde(default)]
+    scenario_id: Option<String>,
+    #[serde(default)]
+    include_announcement: Option<bool>,
 }
 
 impl From<ActionConfigDto> for ActionConfig {
@@ -62,6 +75,9 @@ impl From<ActionConfigDto> for ActionConfig {
             recording_enabled: dto.recording_enabled,
             announce_enabled: dto.announce_enabled,
             announcement_id: dto.announcement_id,
+            announcement_audio_file_url: None,
+            scenario_id: dto.scenario_id,
+            include_announcement: dto.include_announcement,
         }
     }
 }
@@ -376,6 +392,9 @@ fn to_action_config_from_registered(row: RegisteredNumberRow) -> ActionConfig {
         recording_enabled: row.recording_enabled,
         announce_enabled: row.announce_enabled,
         announcement_id: row.announcement_id,
+        announcement_audio_file_url: None,
+        scenario_id: None,
+        include_announcement: None,
     }
 }
 
@@ -386,6 +405,9 @@ fn to_action_config_from_routing_rule(row: RoutingRuleRow) -> ActionConfig {
         recording_enabled: true,
         announce_enabled: true,
         announcement_id: row.announcement_id,
+        announcement_audio_file_url: None,
+        scenario_id: None,
+        include_announcement: None,
     }
 }
 

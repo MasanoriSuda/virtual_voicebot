@@ -3,7 +3,9 @@ pub(super) mod sip_handler;
 pub(super) mod timer_handler;
 
 use log::{debug, error, info, warn};
-use tokio::time::Instant;
+use serde::Deserialize;
+use tokio::time::{Duration, Instant};
+use uuid::Uuid;
 
 use super::services::ivr_service::{ivr_action_for_digit, ivr_state_after_action, IvrAction};
 use super::SessionCoordinator;
@@ -13,8 +15,21 @@ use crate::protocol::session::types::{
     IvrState, SessState, SessionControlIn, SessionMediaIn, SessionOut, SessionRefresher,
     SessionTimerInfo,
 };
-use crate::service::routing::{ActionExecutor, RuleEvaluator};
+use crate::service::routing::{ActionConfig, ActionExecutor, RuleEvaluator};
 use crate::shared::ports::app::{AppEvent, EndReason};
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IvrDestinationMetadata {
+    #[serde(default)]
+    ivr_flow_id: Option<Uuid>,
+    #[serde(default)]
+    scenario_id: Option<String>,
+    #[serde(default)]
+    recording_enabled: Option<bool>,
+    #[serde(default)]
+    include_announcement: Option<bool>,
+}
 
 impl SessionCoordinator {
     pub(crate) async fn handle_control_event(
@@ -275,19 +290,16 @@ impl SessionCoordinator {
                             }
                         }
                     } else {
-                        self.ivr_state = IvrState::IvrMenuWaiting;
-                        if let Err(e) = self.start_playback(&[super::IVR_INTRO_WAV_PATH]).await {
-                            warn!(
-                                "[session {}] failed to send IVR intro wav: {:?}",
-                                self.call_id, e
-                            );
-                            self.reset_ivr_timeout();
+                        if let Some(ivr_flow_id) = self.ivr_flow_id {
+                            if !self.enter_db_ivr_flow(ivr_flow_id).await {
+                                warn!(
+                                    "[session {}] failed to start DB IVR flow id={}, fallback to legacy IVR menu",
+                                    self.call_id, ivr_flow_id
+                                );
+                                self.start_legacy_ivr_menu().await;
+                            }
                         } else {
-                            info!(
-                                "[session {}] sent IVR intro wav {}",
-                                self.call_id,
-                                super::IVR_INTRO_WAV_PATH
-                            );
+                            self.start_legacy_ivr_menu().await;
                         }
                     }
                 }
@@ -548,17 +560,21 @@ impl SessionCoordinator {
             }
             (_, SessionControlIn::IvrTimeout) => {
                 if self.ivr_state == IvrState::IvrMenuWaiting {
-                    info!("[session {}] IVR timeout, replaying menu", self.call_id);
-                    self.stop_ivr_timeout();
-                    if let Err(e) = self
-                        .start_playback(&[super::IVR_INTRO_AGAIN_WAV_PATH])
-                        .await
-                    {
-                        warn!(
-                            "[session {}] failed to replay IVR menu: {:?}",
-                            self.call_id, e
-                        );
-                        self.reset_ivr_timeout();
+                    if self.ivr_keypad_node_id.is_some() {
+                        self.handle_db_ivr_timeout().await;
+                    } else {
+                        info!("[session {}] IVR timeout, replaying menu", self.call_id);
+                        self.stop_ivr_timeout();
+                        if let Err(e) = self
+                            .start_playback(&[super::IVR_INTRO_AGAIN_WAV_PATH])
+                            .await
+                        {
+                            warn!(
+                                "[session {}] failed to replay IVR menu: {:?}",
+                                self.call_id, e
+                            );
+                            self.reset_ivr_timeout();
+                        }
                     }
                 }
             }
@@ -708,6 +724,10 @@ impl SessionCoordinator {
                 }
                 self.cancel_playback();
                 self.stop_ivr_timeout();
+                if self.ivr_keypad_node_id.is_some() {
+                    self.handle_db_ivr_dtmf(digit).await;
+                    return;
+                }
                 let action = ivr_action_for_digit(digit);
                 match action {
                     IvrAction::EnterVoicebot => {
@@ -812,5 +832,457 @@ impl SessionCoordinator {
                 }
             }
         }
+    }
+
+    async fn start_legacy_ivr_menu(&mut self) {
+        self.ivr_state = IvrState::IvrMenuWaiting;
+        self.ivr_keypad_node_id = None;
+        self.ivr_menu_audio_file_url = Some(super::IVR_INTRO_WAV_PATH.to_string());
+        self.ivr_retry_count = 0;
+        self.ivr_max_retries = 0;
+        self.ivr_timeout_override = None;
+
+        if let Err(err) = self.start_playback(&[super::IVR_INTRO_WAV_PATH]).await {
+            warn!(
+                "[session {}] failed to send IVR intro wav: {:?}",
+                self.call_id, err
+            );
+            self.reset_ivr_timeout();
+        } else {
+            info!(
+                "[session {}] sent IVR intro wav {}",
+                self.call_id,
+                super::IVR_INTRO_WAV_PATH
+            );
+        }
+    }
+
+    async fn enter_db_ivr_flow(&mut self, ivr_flow_id: Uuid) -> bool {
+        let menu = match self.routing_port.find_ivr_menu(ivr_flow_id).await {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                warn!(
+                    "[session {}] IVR flow not found or inactive id={}",
+                    self.call_id, ivr_flow_id
+                );
+                return false;
+            }
+            Err(err) => {
+                warn!(
+                    "[session {}] failed to read IVR flow id={} error={}",
+                    self.call_id, ivr_flow_id, err
+                );
+                return false;
+            }
+        };
+
+        self.ivr_state = IvrState::IvrMenuWaiting;
+        self.ivr_flow_id = Some(ivr_flow_id);
+        self.ivr_keypad_node_id = Some(menu.keypad_node_id);
+        self.ivr_retry_count = 0;
+        self.ivr_max_retries = normalize_max_retries(menu.max_retries);
+        self.ivr_timeout_override =
+            Some(Duration::from_secs(normalize_timeout_sec(menu.timeout_sec)));
+        self.ivr_menu_audio_file_url = Some(
+            menu.audio_file_url
+                .map(super::map_audio_file_url_to_local_path)
+                .unwrap_or_else(|| super::IVR_INTRO_WAV_PATH.to_string()),
+        );
+        let menu_path = self
+            .ivr_menu_audio_file_url
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| super::IVR_INTRO_WAV_PATH.to_string());
+
+        info!(
+            "[session {}] starting DB IVR flow id={} root_node_id={} keypad_node_id={} timeout_sec={} max_retries={}",
+            self.call_id,
+            ivr_flow_id,
+            menu.root_node_id,
+            menu.keypad_node_id,
+            normalize_timeout_sec(menu.timeout_sec),
+            self.ivr_max_retries
+        );
+
+        if let Err(err) = self.start_playback(&[menu_path.as_str()]).await {
+            warn!(
+                "[session {}] failed to start IVR menu playback path={} error={:?}",
+                self.call_id, menu_path, err
+            );
+            self.reset_ivr_timeout();
+            return false;
+        }
+
+        true
+    }
+
+    async fn replay_current_ivr_menu(&mut self) {
+        let replay_path = self
+            .ivr_menu_audio_file_url
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| super::IVR_INTRO_AGAIN_WAV_PATH.to_string());
+        if let Err(err) = self.start_playback(&[replay_path.as_str()]).await {
+            warn!(
+                "[session {}] failed to replay IVR menu path={} error={:?}",
+                self.call_id, replay_path, err
+            );
+            self.reset_ivr_timeout();
+        }
+    }
+
+    async fn handle_db_ivr_timeout(&mut self) {
+        info!("[session {}] IVR timeout detected", self.call_id);
+        self.handle_db_ivr_retry("TIMEOUT").await;
+    }
+
+    async fn handle_db_ivr_dtmf(&mut self, digit: char) {
+        let Some(keypad_node_id) = self.ivr_keypad_node_id else {
+            warn!(
+                "[session {}] DB IVR keypad node missing while handling DTMF '{}'",
+                self.call_id, digit
+            );
+            self.reset_ivr_timeout();
+            return;
+        };
+
+        let dtmf_key = digit.to_string();
+        match self
+            .routing_port
+            .find_ivr_dtmf_destination(keypad_node_id, dtmf_key.as_str())
+            .await
+        {
+            Ok(Some(destination)) => {
+                info!(
+                    "[session {}] IVR DTMF matched key={} destination_node_id={}",
+                    self.call_id, dtmf_key, destination.node_id
+                );
+                self.ivr_retry_count = 0;
+                self.execute_db_ivr_destination(destination).await;
+            }
+            Ok(None) => {
+                info!(
+                    "[session {}] IVR invalid DTMF key={} (no transition)",
+                    self.call_id, dtmf_key
+                );
+                self.handle_db_ivr_retry("INVALID").await;
+            }
+            Err(err) => {
+                warn!(
+                    "[session {}] failed to read IVR DTMF transition key={} error={}",
+                    self.call_id, dtmf_key, err
+                );
+                self.reset_ivr_timeout();
+            }
+        }
+    }
+
+    async fn handle_db_ivr_retry(&mut self, input_type: &'static str) {
+        self.ivr_retry_count = self.ivr_retry_count.saturating_add(1);
+        if self.ivr_retry_count <= self.ivr_max_retries {
+            info!(
+                "[session {}] IVR retry input_type={} retry={}/{}",
+                self.call_id, input_type, self.ivr_retry_count, self.ivr_max_retries
+            );
+            self.replay_current_ivr_menu().await;
+            return;
+        }
+
+        let Some(keypad_node_id) = self.ivr_keypad_node_id else {
+            warn!(
+                "[session {}] IVR fallback cannot resolve because keypad node is missing",
+                self.call_id
+            );
+            self.replay_current_ivr_menu().await;
+            return;
+        };
+
+        info!(
+            "[session {}] IVR retries exhausted input_type={} retry={} max_retries={}",
+            self.call_id, input_type, self.ivr_retry_count, self.ivr_max_retries
+        );
+        let fallback_result = match input_type {
+            "TIMEOUT" => {
+                self.routing_port
+                    .find_ivr_timeout_destination(keypad_node_id)
+                    .await
+            }
+            _ => {
+                self.routing_port
+                    .find_ivr_invalid_destination(keypad_node_id)
+                    .await
+            }
+        };
+
+        match fallback_result {
+            Ok(Some(destination)) => self.execute_db_ivr_destination(destination).await,
+            Ok(None) => {
+                warn!(
+                    "[session {}] IVR fallback transition missing input_type={}",
+                    self.call_id, input_type
+                );
+                self.replay_current_ivr_menu().await;
+            }
+            Err(err) => {
+                warn!(
+                    "[session {}] failed to read IVR fallback transition input_type={} error={}",
+                    self.call_id, input_type, err
+                );
+                self.replay_current_ivr_menu().await;
+            }
+        }
+    }
+
+    async fn execute_db_ivr_destination(
+        &mut self,
+        destination: crate::shared::ports::routing_port::IvrDestinationRow,
+    ) {
+        let action_code = destination.action_code.trim().to_ascii_uppercase();
+        let metadata = parse_ivr_destination_metadata(
+            self.call_id.as_str(),
+            destination.node_id,
+            destination.metadata_json.as_deref(),
+        );
+        let mut action = ActionConfig::default_vr();
+        action.action_code = action_code.clone();
+        action.ivr_flow_id = metadata.ivr_flow_id;
+        action.recording_enabled = metadata.recording_enabled.unwrap_or(true);
+        action.announcement_audio_file_url = destination.audio_file_url.clone();
+        action.scenario_id = metadata.scenario_id;
+        action.include_announcement = metadata.include_announcement;
+        let previous_ivr_flow_id = self.ivr_flow_id;
+        let previous_ivr_menu_audio_file_url = self.ivr_menu_audio_file_url.clone();
+        let previous_ivr_keypad_node_id = self.ivr_keypad_node_id;
+        let previous_ivr_retry_count = self.ivr_retry_count;
+        let previous_ivr_max_retries = self.ivr_max_retries;
+        let previous_ivr_timeout_override = self.ivr_timeout_override;
+        let call_id = self.call_id.to_string();
+
+        info!(
+            "[session {}] executing IVR destination node_id={} action_code={}",
+            self.call_id, destination.node_id, action_code
+        );
+        if let Err(err) = ActionExecutor::new()
+            .execute(&action, call_id.as_str(), self)
+            .await
+        {
+            warn!(
+                "[session {}] failed to execute IVR destination action_code={} error={}",
+                self.call_id, action_code, err
+            );
+            self.ivr_flow_id = previous_ivr_flow_id;
+            self.ivr_menu_audio_file_url = previous_ivr_menu_audio_file_url;
+            self.ivr_keypad_node_id = previous_ivr_keypad_node_id;
+            self.ivr_retry_count = previous_ivr_retry_count;
+            self.ivr_max_retries = previous_ivr_max_retries;
+            self.ivr_timeout_override = previous_ivr_timeout_override;
+            self.replay_current_ivr_menu().await;
+            return;
+        }
+
+        if action_code != "IV" && self.ivr_flow_id.is_none() {
+            self.ivr_flow_id = previous_ivr_flow_id;
+        }
+
+        match action_code.as_str() {
+            "IV" => {
+                if let Some(next_flow_id) = self.ivr_flow_id {
+                    if !self.enter_db_ivr_flow(next_flow_id).await {
+                        warn!(
+                            "[session {}] failed to start nested IVR flow id={}, replaying current menu",
+                            self.call_id, next_flow_id
+                        );
+                        self.ivr_flow_id = previous_ivr_flow_id;
+                        self.ivr_menu_audio_file_url = previous_ivr_menu_audio_file_url;
+                        self.ivr_keypad_node_id = previous_ivr_keypad_node_id;
+                        self.ivr_retry_count = previous_ivr_retry_count;
+                        self.ivr_max_retries = previous_ivr_max_retries;
+                        self.ivr_timeout_override = previous_ivr_timeout_override;
+                        self.replay_current_ivr_menu().await;
+                    }
+                } else {
+                    warn!(
+                        "[session {}] IVR destination missing ivrFlowId metadata, fallback to voicebot",
+                        self.call_id
+                    );
+                    self.transition_to_voicebot_mode(Some(
+                        super::VOICEBOT_INTRO_WAV_PATH.to_string(),
+                    ))
+                    .await;
+                }
+            }
+            "VR" => {
+                self.transition_to_voicebot_mode(Some(super::VOICEBOT_INTRO_WAV_PATH.to_string()))
+                    .await;
+            }
+            "VB" => {
+                let intro_path = if action.include_announcement.unwrap_or(false) {
+                    action
+                        .announcement_audio_file_url
+                        .as_ref()
+                        .cloned()
+                        .map(super::map_audio_file_url_to_local_path)
+                        .or_else(|| Some(super::VOICEBOT_INTRO_WAV_PATH.to_string()))
+                } else {
+                    None
+                };
+                self.transition_to_voicebot_mode(intro_path).await;
+            }
+            "AN" | "VM" => {
+                self.play_announcement_for_current_mode(action_code.as_str())
+                    .await;
+            }
+            _ => {
+                warn!(
+                    "[session {}] unsupported IVR destination action_code={}, replaying menu",
+                    self.call_id, action_code
+                );
+                self.ivr_flow_id = previous_ivr_flow_id;
+                self.ivr_menu_audio_file_url = previous_ivr_menu_audio_file_url;
+                self.ivr_keypad_node_id = previous_ivr_keypad_node_id;
+                self.ivr_retry_count = previous_ivr_retry_count;
+                self.ivr_max_retries = previous_ivr_max_retries;
+                self.ivr_timeout_override = previous_ivr_timeout_override;
+                self.replay_current_ivr_menu().await;
+            }
+        }
+    }
+
+    async fn transition_to_voicebot_mode(&mut self, intro_path: Option<String>) {
+        self.stop_ivr_timeout();
+        self.ivr_state = IvrState::VoicebotMode;
+        self.ivr_keypad_node_id = None;
+        self.ivr_menu_audio_file_url = None;
+        self.ivr_timeout_override = None;
+        self.ivr_retry_count = 0;
+        self.ivr_max_retries = 0;
+
+        if let Some(path) = intro_path {
+            info!(
+                "[session {}] transitioning to voicebot intro path={}",
+                self.call_id, path
+            );
+            if let Err(err) = self.start_playback(&[path.as_str()]).await {
+                warn!(
+                    "[session {}] voicebot intro playback failed path={} error={:?}",
+                    self.call_id, path, err
+                );
+                self.capture.reset();
+                self.capture.start();
+            } else {
+                self.ivr_state = IvrState::VoicebotIntroPlaying;
+            }
+            return;
+        }
+
+        info!(
+            "[session {}] transitioning to voicebot mode without intro announcement",
+            self.call_id
+        );
+        self.capture.reset();
+        self.capture.start();
+    }
+
+    async fn play_announcement_for_current_mode(&mut self, action_code: &str) {
+        self.stop_ivr_timeout();
+        self.ivr_state = IvrState::Transferring;
+        let announcement_path = self
+            .resolve_announcement_playback_path()
+            .await
+            .unwrap_or_else(|| super::ANNOUNCEMENT_FALLBACK_WAV_PATH.to_string());
+        info!(
+            "[session {}] playing IVR destination announcement action_code={} path={}",
+            self.call_id, action_code, announcement_path
+        );
+        if let Err(err) = self.start_playback(&[announcement_path.as_str()]).await {
+            warn!(
+                "[session {}] failed to play IVR destination announcement action_code={} error={:?}",
+                self.call_id, action_code, err
+            );
+            if action_code == "AN" {
+                let _ = self.control_tx.try_send(SessionControlIn::AppHangup);
+            }
+        }
+    }
+}
+
+fn parse_ivr_destination_metadata(
+    call_id: &str,
+    node_id: Uuid,
+    metadata_json: Option<&str>,
+) -> IvrDestinationMetadata {
+    let Some(raw) = metadata_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return IvrDestinationMetadata::default();
+    };
+
+    match serde_json::from_str::<IvrDestinationMetadata>(raw) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            warn!(
+                "[session {}] invalid IVR destination metadata node_id={} error={} raw={}",
+                call_id, node_id, err, raw
+            );
+            IvrDestinationMetadata::default()
+        }
+    }
+}
+
+fn normalize_timeout_sec(timeout_sec: i32) -> u64 {
+    if timeout_sec <= 0 {
+        10
+    } else {
+        timeout_sec as u64
+    }
+}
+
+fn normalize_max_retries(max_retries: i32) -> u32 {
+    if max_retries < 0 {
+        2
+    } else {
+        max_retries as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_ivr_destination_metadata_reads_known_fields() {
+        let metadata = parse_ivr_destination_metadata(
+            "test-call",
+            Uuid::nil(),
+            Some(
+                r#"{"ivrFlowId":"00000000-0000-0000-0000-000000000010","recordingEnabled":false,"includeAnnouncement":true}"#,
+            ),
+        );
+        assert_eq!(metadata.ivr_flow_id, Some(Uuid::from_u128(0x10)));
+        assert_eq!(metadata.recording_enabled, Some(false));
+        assert_eq!(metadata.include_announcement, Some(true));
+    }
+
+    #[test]
+    fn parse_ivr_destination_metadata_returns_default_on_invalid_json() {
+        let metadata = parse_ivr_destination_metadata("test-call", Uuid::nil(), Some("{invalid"));
+        assert_eq!(metadata.ivr_flow_id, None);
+        assert_eq!(metadata.recording_enabled, None);
+        assert_eq!(metadata.include_announcement, None);
+    }
+
+    #[test]
+    fn normalize_timeout_sec_uses_default_for_non_positive_values() {
+        assert_eq!(normalize_timeout_sec(-1), 10);
+        assert_eq!(normalize_timeout_sec(0), 10);
+        assert_eq!(normalize_timeout_sec(15), 15);
+    }
+
+    #[test]
+    fn normalize_max_retries_uses_default_for_negative_values() {
+        assert_eq!(normalize_max_retries(-1), 2);
+        assert_eq!(normalize_max_retries(0), 0);
+        assert_eq!(normalize_max_retries(3), 3);
     }
 }

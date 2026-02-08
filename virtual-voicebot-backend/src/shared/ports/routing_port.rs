@@ -28,6 +28,23 @@ pub struct RoutingRuleRow {
     pub announcement_id: Option<Uuid>,
 }
 
+#[derive(Clone, Debug)]
+pub struct IvrMenuRow {
+    pub root_node_id: Uuid,
+    pub keypad_node_id: Uuid,
+    pub audio_file_url: Option<String>,
+    pub timeout_sec: i32,
+    pub max_retries: i32,
+}
+
+#[derive(Clone, Debug)]
+pub struct IvrDestinationRow {
+    pub node_id: Uuid,
+    pub action_code: String,
+    pub audio_file_url: Option<String>,
+    pub metadata_json: Option<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum RoutingPortError {
     #[error("read failed: {0}")]
@@ -51,6 +68,20 @@ pub trait RoutingPort: Send + Sync {
         &self,
         announcement_id: Uuid,
     ) -> RoutingFuture<Option<String>>;
+    fn find_ivr_menu(&self, flow_id: Uuid) -> RoutingFuture<Option<IvrMenuRow>>;
+    fn find_ivr_dtmf_destination(
+        &self,
+        keypad_node_id: Uuid,
+        dtmf_key: &str,
+    ) -> RoutingFuture<Option<IvrDestinationRow>>;
+    fn find_ivr_timeout_destination(
+        &self,
+        keypad_node_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>>;
+    fn find_ivr_invalid_destination(
+        &self,
+        keypad_node_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>>;
 }
 
 #[derive(Default)]
@@ -98,6 +129,32 @@ impl RoutingPort for NoopRoutingPort {
         &self,
         _announcement_id: Uuid,
     ) -> RoutingFuture<Option<String>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn find_ivr_menu(&self, _flow_id: Uuid) -> RoutingFuture<Option<IvrMenuRow>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn find_ivr_dtmf_destination(
+        &self,
+        _keypad_node_id: Uuid,
+        _dtmf_key: &str,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn find_ivr_timeout_destination(
+        &self,
+        _keypad_node_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn find_ivr_invalid_destination(
+        &self,
+        _keypad_node_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
         Box::pin(async { Ok(None) })
     }
 }

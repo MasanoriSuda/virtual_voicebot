@@ -45,7 +45,9 @@ pub(crate) fn get_intro_wav_path() -> &'static str {
 
 impl SessionCoordinator {
     pub(crate) fn start_ivr_timeout(&mut self) {
-        let timeout = self.runtime_cfg.ivr_timeout;
+        let timeout = self
+            .ivr_timeout_override
+            .unwrap_or(self.runtime_cfg.ivr_timeout);
         let (stop_tx, mut stop_rx) = oneshot::channel();
         let tx = self.control_tx.clone();
         self.ivr_timeout_stop = Some(stop_tx);

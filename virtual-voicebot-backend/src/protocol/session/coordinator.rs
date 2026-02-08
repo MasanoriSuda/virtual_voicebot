@@ -119,7 +119,13 @@ pub struct SessionCoordinator {
     announce_mode: bool,
     voicemail_mode: bool,
     announcement_id: Option<Uuid>,
+    announcement_audio_file_url: Option<String>,
     ivr_flow_id: Option<Uuid>,
+    ivr_menu_audio_file_url: Option<String>,
+    ivr_keypad_node_id: Option<Uuid>,
+    ivr_retry_count: u32,
+    ivr_max_retries: u32,
+    ivr_timeout_override: Option<Duration>,
     session_expires: Option<Duration>,
     session_refresher: Option<SessionRefresher>,
 }
@@ -196,7 +202,13 @@ impl SessionCoordinator {
             announce_mode: false,
             voicemail_mode: false,
             announcement_id: None,
+            announcement_audio_file_url: None,
             ivr_flow_id: None,
+            ivr_menu_audio_file_url: None,
+            ivr_keypad_node_id: None,
+            ivr_retry_count: 0,
+            ivr_max_retries: 0,
+            ivr_timeout_override: None,
             session_expires: None,
             session_refresher: None,
         };
@@ -303,6 +315,10 @@ impl SessionCoordinator {
         self.announcement_id = Some(announcement_id);
     }
 
+    pub(crate) fn set_announcement_audio_file_url(&mut self, audio_file_url: String) {
+        self.announcement_audio_file_url = Some(audio_file_url);
+    }
+
     pub(crate) fn set_ivr_flow_id(&mut self, ivr_flow_id: Uuid) {
         self.ivr_flow_id = Some(ivr_flow_id);
     }
@@ -327,10 +343,20 @@ impl SessionCoordinator {
         self.announce_mode = false;
         self.voicemail_mode = false;
         self.announcement_id = None;
+        self.announcement_audio_file_url = None;
         self.ivr_flow_id = None;
+        self.ivr_menu_audio_file_url = None;
+        self.ivr_keypad_node_id = None;
+        self.ivr_retry_count = 0;
+        self.ivr_max_retries = 0;
+        self.ivr_timeout_override = None;
     }
 
     pub(crate) async fn resolve_announcement_playback_path(&self) -> Option<String> {
+        if let Some(audio_file_url) = self.announcement_audio_file_url.clone() {
+            return Some(map_audio_file_url_to_local_path(audio_file_url));
+        }
+
         let announcement_id = self.announcement_id?;
         match self
             .routing_port
@@ -646,7 +672,13 @@ mod tests {
             announce_mode: false,
             voicemail_mode: false,
             announcement_id: None,
+            announcement_audio_file_url: None,
             ivr_flow_id: None,
+            ivr_menu_audio_file_url: None,
+            ivr_keypad_node_id: None,
+            ivr_retry_count: 0,
+            ivr_max_retries: 0,
+            ivr_timeout_override: None,
             session_expires: None,
             session_refresher: None,
         }

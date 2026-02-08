@@ -3,8 +3,8 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::shared::ports::routing_port::{
-    CallActionRuleRow, RegisteredNumberRow, RoutingFuture, RoutingPort, RoutingPortError,
-    RoutingRuleRow,
+    CallActionRuleRow, IvrDestinationRow, IvrMenuRow, RegisteredNumberRow, RoutingFuture,
+    RoutingPort, RoutingPortError, RoutingRuleRow,
 };
 
 pub struct RoutingRepoImpl {
@@ -211,6 +211,149 @@ impl RoutingPort for RoutingRepoImpl {
             row.try_get("audio_file_url").map_err(map_read_err)
         })
     }
+
+    fn find_ivr_menu(&self, flow_id: Uuid) -> RoutingFuture<Option<IvrMenuRow>> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let row = sqlx::query(
+                "SELECT root.id AS root_node_id,
+                        root.audio_file_url AS root_audio_file_url,
+                        keypad.id AS keypad_node_id,
+                        keypad.timeout_sec AS keypad_timeout_sec,
+                        keypad.max_retries AS keypad_max_retries
+                 FROM ivr_flows flow
+                 JOIN ivr_nodes root
+                   ON root.flow_id = flow.id
+                  AND root.parent_id IS NULL
+                  AND root.node_type = 'ANNOUNCE'
+                 JOIN ivr_nodes keypad
+                   ON keypad.parent_id = root.id
+                  AND keypad.node_type = 'KEYPAD'
+                 WHERE flow.id = $1
+                   AND flow.is_active = TRUE
+                 ORDER BY root.created_at ASC, keypad.created_at ASC
+                 LIMIT 1",
+            )
+            .bind(flow_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(map_read_err)?;
+
+            let Some(row) = row else {
+                return Ok(None);
+            };
+
+            Ok(Some(IvrMenuRow {
+                root_node_id: row.try_get("root_node_id").map_err(map_read_err)?,
+                keypad_node_id: row.try_get("keypad_node_id").map_err(map_read_err)?,
+                audio_file_url: row.try_get("root_audio_file_url").map_err(map_read_err)?,
+                timeout_sec: row.try_get("keypad_timeout_sec").map_err(map_read_err)?,
+                max_retries: row.try_get("keypad_max_retries").map_err(map_read_err)?,
+            }))
+        })
+    }
+
+    fn find_ivr_dtmf_destination(
+        &self,
+        keypad_node_id: Uuid,
+        dtmf_key: &str,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
+        let pool = self.pool.clone();
+        let dtmf_key = dtmf_key.to_string();
+        Box::pin(async move {
+            let row = sqlx::query(
+                "SELECT dest.id AS destination_node_id,
+                        dest.action_code,
+                        dest.audio_file_url,
+                        dest.tts_text
+                 FROM ivr_transitions transition
+                 JOIN ivr_nodes dest
+                   ON dest.id = transition.to_node_id
+                 WHERE transition.from_node_id = $1
+                   AND transition.input_type = 'DTMF'
+                   AND transition.dtmf_key = $2
+                 ORDER BY transition.created_at ASC
+                 LIMIT 1",
+            )
+            .bind(keypad_node_id)
+            .bind(dtmf_key)
+            .fetch_optional(&pool)
+            .await
+            .map_err(map_read_err)?;
+
+            map_destination_row(row)
+        })
+    }
+
+    fn find_ivr_timeout_destination(
+        &self,
+        keypad_node_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let row = sqlx::query(
+                "SELECT dest.id AS destination_node_id,
+                        dest.action_code,
+                        dest.audio_file_url,
+                        dest.tts_text
+                 FROM ivr_transitions transition
+                 JOIN ivr_nodes dest
+                   ON dest.id = transition.to_node_id
+                 WHERE transition.from_node_id = $1
+                   AND transition.input_type = 'TIMEOUT'
+                 ORDER BY transition.created_at ASC
+                 LIMIT 1",
+            )
+            .bind(keypad_node_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(map_read_err)?;
+
+            map_destination_row(row)
+        })
+    }
+
+    fn find_ivr_invalid_destination(
+        &self,
+        keypad_node_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let row = sqlx::query(
+                "SELECT dest.id AS destination_node_id,
+                        dest.action_code,
+                        dest.audio_file_url,
+                        dest.tts_text
+                 FROM ivr_transitions transition
+                 JOIN ivr_nodes dest
+                   ON dest.id = transition.to_node_id
+                 WHERE transition.from_node_id = $1
+                   AND transition.input_type = 'INVALID'
+                 ORDER BY transition.created_at ASC
+                 LIMIT 1",
+            )
+            .bind(keypad_node_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(map_read_err)?;
+
+            map_destination_row(row)
+        })
+    }
+}
+
+fn map_destination_row(
+    row: Option<sqlx::postgres::PgRow>,
+) -> Result<Option<IvrDestinationRow>, RoutingPortError> {
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    Ok(Some(IvrDestinationRow {
+        node_id: row.try_get("destination_node_id").map_err(map_read_err)?,
+        action_code: row.try_get("action_code").map_err(map_read_err)?,
+        audio_file_url: row.try_get("audio_file_url").map_err(map_read_err)?,
+        metadata_json: row.try_get("tts_text").map_err(map_read_err)?,
+    }))
 }
 
 fn map_read_err(err: sqlx::Error) -> RoutingPortError {
