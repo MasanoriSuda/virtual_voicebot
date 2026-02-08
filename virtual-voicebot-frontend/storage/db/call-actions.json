@@ -1,7 +1,7 @@
 {
   "rules": [
     {
-      "id": "386b1480-8c84-4bb4-9bb3-3f5fa1b52db8",
+      "id": "7f8ebdab-56ac-4870-aa27-3a11d34cfafc",
       "name": "ルール 1",
       "callerGroupId": "4fe4a030-aedd-41d4-9e55-1e85973b1b78",
       "actionType": "allow",
@@ -12,8 +12,8 @@
         "announcementId": null
       },
       "isActive": true,
-      "createdAt": "2026-02-07T20:23:02.354Z",
-      "updatedAt": "2026-02-07T20:23:13.110Z"
+      "createdAt": "2026-02-07T20:37:30.714Z",
+      "updatedAt": "2026-02-07T20:37:30.714Z"
     }
   ],
   "anonymousAction": {

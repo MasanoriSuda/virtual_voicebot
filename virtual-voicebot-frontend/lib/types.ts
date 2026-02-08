@@ -304,54 +304,6 @@ export interface LegacyRoutingFolder {
   updatedAt: string
 }
 
-export type LegacyIvrNodeType =
-  | "start"
-  | "menu"
-  | "input"
-  | "playback"
-  | "transfer"
-  | "voicemail"
-  | "hangup"
-  | "condition"
-
-export interface LegacyIvrNode {
-  id: string
-  type: LegacyIvrNodeType
-  name: string
-  description?: string
-  config?: {
-    audioFile?: string
-    prompt?: string
-    timeout?: number
-    maxRetries?: number
-    options?: { key: string; label: string; nextNodeId: string }[]
-    transferTarget?: string
-    condition?: string
-  }
-}
-
-export interface LegacyIvrFlow {
-  id: string
-  name: string
-  description?: string
-  enabled: boolean
-  nodes: LegacyIvrNode[]
-  createdAt: string
-  updatedAt: string
-}
-
-export interface LegacyIvrFolder {
-  id: string
-  name: string
-  description?: string
-  parentId: string | null
-  type: "folder" | "ivr"
-  children?: LegacyIvrFolder[]
-  flows?: LegacyIvrFlow[]
-  createdAt: string
-  updatedAt: string
-}
-
 export interface LegacyTimeSlot {
   start: string
   end: string
