@@ -177,6 +177,11 @@
 | createdAt | string (ISO8601) | Yes | 作成日時 |
 | updatedAt | string (ISO8601) | Yes | 更新日時 |
 
+**Phase 4-A (Issue #142) 注記**:
+- Phase 4-A では上記フィールドのみを使用（フロー全体設定なし）
+- タイムアウト・リトライ上限・フォールバックアクションは各ノードレベルで管理
+- Phase 5+ でフロー全体設定フィールド（initialAnnouncementId, fallbackActionConfig 等）を追加予定
+
 ### 3.7 IvrNode
 
 | フィールド | 型 | 必須 | 説明 |
@@ -194,6 +199,25 @@
 | exitAction | string | Yes | リトライ超過時アクション |
 | transitions | IvrTransition[] | No | 遷移定義（展開時のみ） |
 
+**Phase 4-A (Issue #142) シンプル IVR パターン**:
+1. **Root node** (親ノード):
+   - `parentId = null`
+   - `nodeType = "ANNOUNCE"`
+   - `audioFileUrl` または `ttsText` で初回アナウンスを指定
+   - `depth = 0`
+
+2. **Keypad node** (子ノード):
+   - `parentId = {root node id}`
+   - `nodeType = "KEYPAD"`
+   - DTMF 入力を受け付ける
+   - `depth = 1`
+
+3. **Transitions** (遷移定義):
+   - Keypad node から各 DTMF キーに対応する遷移を定義
+   - `inputType = "DTMF"`, `inputType = "TIMEOUT"`, `inputType = "INVALID"` をサポート
+
+Phase 5+ では複数階層のノードツリー、複数アナウンスノード、ネストされた IVR フローをサポート予定
+
 ### 3.8 IvrTransition
 
 | フィールド | 型 | 必須 | 説明 |
@@ -203,6 +227,12 @@
 | inputType | "DTMF" \| "TIMEOUT" \| "INVALID" \| "COMPLETE" | Yes | 入力種別 |
 | dtmfKey | string \| null | No | DTMF キー |
 | toNodeId | string (UUID) \| null | No | 遷移先ノード |
+
+**Phase 4-A (Issue #142) 注記**:
+- Phase 4-A では `inputType` の `"DTMF"`, `"TIMEOUT"`, `"INVALID"` のみを使用
+- `"COMPLETE"` は Phase 5+ で RECORD ノード終了時に使用予定
+- **Phase 4-A では `toNodeId` は常に EXIT ノードを指す（非NULL）**: 遷移先 EXIT ノードの `actionCode` を実行
+- `toNodeId = null` は Phase 5+ で使用予定（IVR 終了または exitAction に従う）
 
 ### 3.9 Schedule
 
