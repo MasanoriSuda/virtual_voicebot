@@ -9,6 +9,7 @@ pub mod notification;
 pub mod phone_lookup;
 pub mod recording_repository;
 pub mod registered_number_port;
+pub mod routing_port;
 pub mod routing_rule_port;
 pub mod rtp_sink;
 pub mod schedule_port;

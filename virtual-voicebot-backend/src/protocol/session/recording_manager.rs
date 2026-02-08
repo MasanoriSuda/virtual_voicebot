@@ -39,6 +39,7 @@ pub struct RecordingManager {
     recorder: Recorder,
     b_leg_recorder: Option<Recorder>,
     error_sink: RecordingErrorSink,
+    enabled: bool,
 }
 
 impl RecordingManager {
@@ -49,16 +50,27 @@ impl RecordingManager {
             b_leg_recorder: None,
             call_id,
             error_sink: RecordingErrorSink::default(),
+            enabled: true,
         }
     }
 
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
     pub fn start_main(&mut self) -> Result<(), RecordingError> {
+        if !self.enabled {
+            return Ok(());
+        }
         self.recorder
             .start()
             .map_err(|e| RecordingError::Start(e.to_string()))
     }
 
     pub fn start_b_leg(&mut self) -> Result<(), RecordingError> {
+        if !self.enabled {
+            return Ok(());
+        }
         if let Some(recorder) = self.b_leg_recorder.as_mut() {
             recorder
                 .start()
@@ -68,6 +80,9 @@ impl RecordingManager {
     }
 
     pub fn ensure_b_leg(&mut self) {
+        if !self.enabled {
+            return;
+        }
         if self.b_leg_recorder.is_none() {
             self.b_leg_recorder = Some(Recorder::with_file(
                 self.call_id.clone(),
@@ -78,30 +93,48 @@ impl RecordingManager {
     }
 
     pub fn is_started(&self) -> bool {
+        if !self.enabled {
+            return false;
+        }
         self.recorder.is_started()
     }
 
     pub fn push_rx(&mut self, payload: &[u8]) {
+        if !self.enabled {
+            return;
+        }
         self.recorder.push_rx_mulaw(payload);
     }
 
     pub fn push_tx(&mut self, payload: &[u8]) {
+        if !self.enabled {
+            return;
+        }
         self.recorder.push_tx_mulaw(payload);
     }
 
     pub fn push_b_leg_rx(&mut self, payload: &[u8]) {
+        if !self.enabled {
+            return;
+        }
         if let Some(recorder) = self.b_leg_recorder.as_mut() {
             recorder.push_rx_mulaw(payload);
         }
     }
 
     pub fn push_b_leg_tx(&mut self, payload: &[u8]) {
+        if !self.enabled {
+            return;
+        }
         if let Some(recorder) = self.b_leg_recorder.as_mut() {
             recorder.push_tx_mulaw(payload);
         }
     }
 
     pub fn flush_tick(&mut self) {
+        if !self.enabled {
+            return;
+        }
         self.recorder.flush_tick();
         if let Some(recorder) = self.b_leg_recorder.as_mut() {
             recorder.flush_tick();
@@ -109,6 +142,10 @@ impl RecordingManager {
     }
 
     pub fn stop_and_merge(&mut self) {
+        if !self.enabled {
+            self.b_leg_recorder = None;
+            return;
+        }
         let a_path = self.recorder.file_path();
         let dir_path = self.recorder.dir_path().to_path_buf();
         if let Err(e) = self.recorder.stop() {
