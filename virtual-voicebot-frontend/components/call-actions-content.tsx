@@ -43,6 +43,7 @@ import {
   type IncomingRule,
   type StoredAction,
 } from "@/lib/call-actions"
+import type { IvrFlowDefinition } from "@/lib/ivr-flows"
 import { cn } from "@/lib/utils"
 
 interface CallActionsApiResponse {
@@ -72,7 +73,14 @@ interface AnnouncementsApiResponse {
   error?: string
 }
 
+interface IvrFlowsApiResponse {
+  ok: boolean
+  flows?: IvrFlowDefinition[]
+  error?: string
+}
+
 const NONE_ANNOUNCEMENT_VALUE = "__none__"
+const NONE_IVR_VALUE = "__none_ivr__"
 const ALLOW_ACTION_CODES: CallActionCode[] = ["VR", "IV", "VM"]
 const DENY_ACTION_CODES: CallActionCode[] = ["BZ", "NR", "AN"]
 
@@ -215,6 +223,23 @@ function applyActionCode(
   )
 }
 
+function collectReferencedIvrFlowIds(flows: IvrFlowDefinition[]): Set<string> {
+  const referenced = new Set<string>()
+  for (const flow of flows) {
+    for (const route of flow.routes) {
+      if (route.destination.actionCode === "IV" && route.destination.ivrFlowId.trim().length > 0) {
+        referenced.add(route.destination.ivrFlowId)
+      }
+    }
+  }
+  return referenced
+}
+
+function collectRootIvrFlows(flows: IvrFlowDefinition[]): IvrFlowDefinition[] {
+  const referenced = collectReferencedIvrFlowIds(flows)
+  return flows.filter((flow) => !referenced.has(flow.id))
+}
+
 export function CallActionsContent() {
   const defaults = useMemo(() => createDefaultCallActionsDatabase(), [])
 
@@ -227,6 +252,7 @@ export function CallActionsContent() {
     cloneStoredAction(defaults.defaultAction),
   )
   const [announcements, setAnnouncements] = useState<StoredAnnouncement[]>([])
+  const [ivrFlows, setIvrFlows] = useState<IvrFlowDefinition[]>([])
 
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null)
   const [editorMode, setEditorMode] = useState<"rule" | "anonymous" | "default">("default")
@@ -270,6 +296,18 @@ export function CallActionsContent() {
     [announcements],
   )
 
+  const ivrFlowById = useMemo(
+    () => new Map(ivrFlows.map((flow) => [flow.id, flow])),
+    [ivrFlows],
+  )
+
+  const rootIvrFlows = useMemo(() => collectRootIvrFlows(ivrFlows), [ivrFlows])
+
+  const rootIvrFlowById = useMemo(
+    () => new Map(rootIvrFlows.map((flow) => [flow.id, flow])),
+    [rootIvrFlows],
+  )
+
   useEffect(() => {
     let cancelled = false
 
@@ -279,10 +317,11 @@ export function CallActionsContent() {
       setInfoMessage(null)
 
       try {
-        const [groupsRes, callActionsRes, announcementsRes] = await Promise.all([
+        const [groupsRes, callActionsRes, announcementsRes, ivrFlowsRes] = await Promise.all([
           fetch("/api/number-groups", { cache: "no-store" }),
           fetch("/api/call-actions", { cache: "no-store" }),
           fetch("/api/announcements", { cache: "no-store" }).catch(() => null),
+          fetch("/api/ivr-flows", { cache: "no-store" }).catch(() => null),
         ])
 
         const groupsBody = (await groupsRes.json()) as NumberGroupsApiResponse
@@ -311,6 +350,14 @@ export function CallActionsContent() {
           }
         }
 
+        let loadedIvrFlows: IvrFlowDefinition[] = []
+        if (ivrFlowsRes && ivrFlowsRes.ok) {
+          const ivrFlowsBody = (await ivrFlowsRes.json()) as IvrFlowsApiResponse
+          if (ivrFlowsBody.ok && Array.isArray(ivrFlowsBody.flows)) {
+            loadedIvrFlows = ivrFlowsBody.flows
+          }
+        }
+
         if (cancelled) {
           return
         }
@@ -320,6 +367,7 @@ export function CallActionsContent() {
         setAnonymousAction(cloneStoredAction(loadedAnonymousAction))
         setDefaultAction(cloneStoredAction(loadedDefaultAction))
         setAnnouncements(loadedAnnouncements)
+        setIvrFlows(loadedIvrFlows)
 
         setSelectedRuleId(loadedRules[0]?.id ?? null)
         setEditorMode(loadedRules.length > 0 ? "rule" : "anonymous")
@@ -373,6 +421,37 @@ export function CallActionsContent() {
       nextEditorMode?: "rule" | "anonymous" | "default"
     },
   ): Promise<boolean> => {
+    const invalidIvrReferences: string[] = []
+    for (const rule of next.rules) {
+      if (rule.actionConfig.actionCode === "IV" && rule.actionConfig.ivrFlowId) {
+        if (!rootIvrFlowById.has(rule.actionConfig.ivrFlowId)) {
+          invalidIvrReferences.push(`ルール「${rule.name || rule.id}」`)
+        }
+      }
+    }
+    if (
+      next.anonymousAction.actionConfig.actionCode === "IV" &&
+      next.anonymousAction.actionConfig.ivrFlowId &&
+      !rootIvrFlowById.has(next.anonymousAction.actionConfig.ivrFlowId)
+    ) {
+      invalidIvrReferences.push("非通知時アクション")
+    }
+    if (
+      next.defaultAction.actionConfig.actionCode === "IV" &&
+      next.defaultAction.actionConfig.ivrFlowId &&
+      !rootIvrFlowById.has(next.defaultAction.actionConfig.ivrFlowId)
+    ) {
+      invalidIvrReferences.push("デフォルトアクション")
+    }
+    if (invalidIvrReferences.length > 0) {
+      setErrorMessage(
+        `2層目以降のIVRフローは着信アクションに設定できません:\n${invalidIvrReferences
+          .map((item) => `- ${item}`)
+          .join("\n")}`,
+      )
+      return false
+    }
+
     setBusy(true)
     setErrorMessage(null)
     setInfoMessage(null)
@@ -633,6 +712,49 @@ export function CallActionsContent() {
     )
   }
 
+  const renderIvrFlowSelect = (
+    selectedFlowId: string | null,
+    onValueChange: (value: string) => void,
+    disabled: boolean,
+  ) => {
+    const hasSelectedFlow = selectedFlowId ? ivrFlowById.has(selectedFlowId) : true
+    const selectedIsRoot = selectedFlowId ? rootIvrFlowById.has(selectedFlowId) : true
+    const selectDisabled = disabled || (rootIvrFlows.length === 0 && !selectedFlowId)
+
+    return (
+      <Select
+        value={selectedFlowId ?? NONE_IVR_VALUE}
+        onValueChange={onValueChange}
+        disabled={selectDisabled}
+      >
+        <SelectTrigger>
+          <SelectValue placeholder="IVRフローを選択" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NONE_IVR_VALUE}>なし</SelectItem>
+          {!hasSelectedFlow && selectedFlowId && (
+            <SelectItem value={selectedFlowId}>（削除済み IVR）</SelectItem>
+          )}
+          {hasSelectedFlow && !selectedIsRoot && selectedFlowId && (
+            <SelectItem value={selectedFlowId}>（下層IVR: 選択対象外）</SelectItem>
+          )}
+          {rootIvrFlows.length === 0 ? (
+            <SelectItem value="__empty_ivr__" disabled>
+              （トップIVRフロー未登録）
+            </SelectItem>
+          ) : (
+            rootIvrFlows.map((flow) => (
+              <SelectItem key={flow.id} value={flow.id}>
+                {flow.name || flow.id}
+                {!flow.isActive ? " [無効]" : ""}
+              </SelectItem>
+            ))
+          )}
+        </SelectContent>
+      </Select>
+    )
+  }
+
   const renderActionEditor = (
     actionType: CallActionType,
     actionConfig: ActionConfig,
@@ -739,24 +861,30 @@ export function CallActionsContent() {
           <div className="space-y-3 rounded-md border p-3">
             <p className="text-sm font-medium">IVR設定</p>
             <div className="space-y-2">
-              <Label htmlFor="ivr-flow-id">IVRフローID</Label>
-              <Input
-                id="ivr-flow-id"
-                value={actionConfig.ivrFlowId ?? ""}
-                onChange={(event) =>
+              <Label>IVRフロー</Label>
+              {renderIvrFlowSelect(
+                actionConfig.ivrFlowId,
+                (value) =>
                   callbacks.onActionConfigChange((config) =>
                     config.actionCode === "IV"
                       ? {
                           ...config,
-                          ivrFlowId:
-                            event.target.value.trim().length > 0 ? event.target.value : null,
+                          ivrFlowId: value === NONE_IVR_VALUE ? null : value,
                         }
                       : config,
-                  )
-                }
-                placeholder="例: flow-main"
-                disabled={busy}
-              />
+                ),
+                busy,
+              )}
+              {actionConfig.ivrFlowId && !ivrFlowById.has(actionConfig.ivrFlowId) && (
+                <p className="text-xs text-amber-600">（削除済み IVR）参照を保持しています</p>
+              )}
+              {actionConfig.ivrFlowId &&
+                ivrFlowById.has(actionConfig.ivrFlowId) &&
+                !rootIvrFlowById.has(actionConfig.ivrFlowId) && (
+                  <p className="text-xs text-amber-600">
+                    このIVRは下層フローです。着信アクションでは1層目フローのみ設定できます。
+                  </p>
+                )}
             </div>
             <div className="h-10 rounded-md border px-3 flex items-center justify-between">
               <span className="text-sm">includeAnnouncement</span>
