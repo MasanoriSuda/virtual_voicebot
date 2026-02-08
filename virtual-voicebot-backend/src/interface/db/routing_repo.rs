@@ -45,6 +45,7 @@ impl RoutingPort for RoutingRepoImpl {
                 ivr_flow_id: row.try_get("ivr_flow_id").map_err(map_read_err)?,
                 recording_enabled: row.try_get("recording_enabled").map_err(map_read_err)?,
                 announce_enabled: row.try_get("announce_enabled").map_err(map_read_err)?,
+                announcement_id: None,
             }))
         })
     }
@@ -160,6 +161,7 @@ impl RoutingPort for RoutingRepoImpl {
                 id: row.try_get("id").map_err(map_read_err)?,
                 action_code: row.try_get("action_code").map_err(map_read_err)?,
                 ivr_flow_id: row.try_get("ivr_flow_id").map_err(map_read_err)?,
+                announcement_id: None,
             }))
         })
     }
@@ -182,6 +184,31 @@ impl RoutingPort for RoutingRepoImpl {
             };
 
             row.try_get("extra").map_err(map_read_err).map(Some)
+        })
+    }
+
+    fn find_announcement_audio_file_url(
+        &self,
+        announcement_id: Uuid,
+    ) -> RoutingFuture<Option<String>> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let row = sqlx::query(
+                "SELECT audio_file_url
+                 FROM announcements
+                 WHERE id = $1 AND is_active = TRUE
+                 LIMIT 1",
+            )
+            .bind(announcement_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(map_read_err)?;
+
+            let Some(row) = row else {
+                return Ok(None);
+            };
+
+            row.try_get("audio_file_url").map_err(map_read_err)
         })
     }
 }

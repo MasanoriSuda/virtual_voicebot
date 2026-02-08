@@ -43,6 +43,7 @@ impl SessionCoordinator {
                 self.outbound_sent_180 = false;
                 self.outbound_sent_183 = false;
                 self.invite_rejected = false;
+                self.reset_action_modes();
                 self.stop_ring_delay();
 
                 let caller_id =
@@ -71,6 +72,24 @@ impl SessionCoordinator {
                         );
                         self.set_outbound_mode(false);
                     }
+                }
+
+                if self.invite_rejected {
+                    info!(
+                        "[SessionCoordinator] call_id={} invite_rejected=true, skipping SIP responses",
+                        self.call_id
+                    );
+                    self.pending_answer = None;
+                    return false;
+                }
+
+                if self.no_response_mode {
+                    info!(
+                        "[SessionCoordinator] call_id={} NR mode active, skipping SIP responses",
+                        self.call_id
+                    );
+                    self.pending_answer = None;
+                    return false;
                 }
 
                 if self.runtime_cfg.outbound.enabled {
@@ -112,13 +131,20 @@ impl SessionCoordinator {
                     }
                 }
                 if advance_state {
-                    if let Err(err) = self
-                        .session_out_tx
-                        .try_send((self.call_id.clone(), SessionOut::SipSend100))
-                    {
-                        warn!(
-                            "[session {}] dropped SipSend100 (channel full): {:?}",
-                            self.call_id, err
+                    if !self.no_response_mode {
+                        if let Err(err) = self
+                            .session_out_tx
+                            .try_send((self.call_id.clone(), SessionOut::SipSend100))
+                        {
+                            warn!(
+                                "[session {}] dropped SipSend100 (channel full): {:?}",
+                                self.call_id, err
+                            );
+                        }
+                    } else {
+                        info!(
+                            "[SessionCoordinator] call_id={} NR mode: skipping 100 Trying",
+                            self.call_id
                         );
                     }
                     if !self.outbound_mode {
@@ -162,6 +188,14 @@ impl SessionCoordinator {
                 if self.outbound_mode || self.invite_rejected {
                     return false;
                 }
+                if self.no_response_mode {
+                    info!(
+                        "[SessionCoordinator] call_id={} NR mode: skipping 200 OK (RingDurationElapsed)",
+                        self.call_id
+                    );
+                    self.pending_answer = None;
+                    return false;
+                }
                 if let Some(answer) = self.pending_answer.take() {
                     let _ = self
                         .session_out_tx
@@ -174,6 +208,9 @@ impl SessionCoordinator {
                     advance_state = false;
                 }
                 if self.invite_rejected {
+                    advance_state = false;
+                }
+                if self.no_response_mode {
                     advance_state = false;
                 }
                 if !advance_state {
@@ -211,19 +248,47 @@ impl SessionCoordinator {
                     .await;
 
                 if !self.outbound_mode {
-                    self.ivr_state = IvrState::IvrMenuWaiting;
-                    if let Err(e) = self.start_playback(&[super::IVR_INTRO_WAV_PATH]).await {
-                        warn!(
-                            "[session {}] failed to send IVR intro wav: {:?}",
-                            self.call_id, e
-                        );
-                        self.reset_ivr_timeout();
+                    if self.announce_mode {
+                        self.ivr_state = IvrState::Transferring;
+                        let announcement_path = self
+                            .resolve_announcement_playback_path()
+                            .await
+                            .unwrap_or_else(|| super::ANNOUNCEMENT_FALLBACK_WAV_PATH.to_string());
+                        if self.voicemail_mode {
+                            info!(
+                                "[session {}] playing voicemail announcement path={}",
+                                self.call_id, announcement_path
+                            );
+                        } else {
+                            info!(
+                                "[session {}] playing announcement path={}",
+                                self.call_id, announcement_path
+                            );
+                        }
+                        if let Err(e) = self.start_playback(&[announcement_path.as_str()]).await {
+                            warn!(
+                                "[session {}] failed to play announcement: {:?}",
+                                self.call_id, e
+                            );
+                            if !self.voicemail_mode {
+                                let _ = self.control_tx.try_send(SessionControlIn::AppHangup);
+                            }
+                        }
                     } else {
-                        info!(
-                            "[session {}] sent IVR intro wav {}",
-                            self.call_id,
-                            super::IVR_INTRO_WAV_PATH
-                        );
+                        self.ivr_state = IvrState::IvrMenuWaiting;
+                        if let Err(e) = self.start_playback(&[super::IVR_INTRO_WAV_PATH]).await {
+                            warn!(
+                                "[session {}] failed to send IVR intro wav: {:?}",
+                                self.call_id, e
+                            );
+                            self.reset_ivr_timeout();
+                        } else {
+                            info!(
+                                "[session {}] sent IVR intro wav {}",
+                                self.call_id,
+                                super::IVR_INTRO_WAV_PATH
+                            );
+                        }
                     }
                 }
 
@@ -453,7 +518,7 @@ impl SessionCoordinator {
                     .try_send((self.call_id.clone(), SessionOut::RtpStopTx));
                 let _ = self
                     .session_out_tx
-                    .try_send((self.call_id.clone(), SessionOut::SipSendBye200));
+                    .try_send((self.call_id.clone(), SessionOut::SipSendBye));
                 self.send_call_ended(EndReason::AppHangup);
             }
             (_, SessionControlIn::AppTransferRequest { person }) => {

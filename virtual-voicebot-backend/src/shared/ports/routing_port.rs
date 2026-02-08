@@ -11,6 +11,7 @@ pub struct RegisteredNumberRow {
     pub ivr_flow_id: Option<Uuid>,
     pub recording_enabled: bool,
     pub announce_enabled: bool,
+    pub announcement_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug)]
@@ -24,6 +25,7 @@ pub struct RoutingRuleRow {
     pub id: Uuid,
     pub action_code: String,
     pub ivr_flow_id: Option<Uuid>,
+    pub announcement_id: Option<Uuid>,
 }
 
 #[derive(Debug, Error)]
@@ -45,6 +47,10 @@ pub trait RoutingPort: Send + Sync {
     fn is_registered(&self, phone_number: &str) -> RoutingFuture<bool>;
     fn find_routing_rule(&self, category: &str) -> RoutingFuture<Option<RoutingRuleRow>>;
     fn get_system_settings_extra(&self) -> RoutingFuture<Option<Value>>;
+    fn find_announcement_audio_file_url(
+        &self,
+        announcement_id: Uuid,
+    ) -> RoutingFuture<Option<String>>;
 }
 
 #[derive(Default)]
@@ -85,6 +91,13 @@ impl RoutingPort for NoopRoutingPort {
     }
 
     fn get_system_settings_extra(&self) -> RoutingFuture<Option<Value>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn find_announcement_audio_file_url(
+        &self,
+        _announcement_id: Uuid,
+    ) -> RoutingFuture<Option<String>> {
         Box::pin(async { Ok(None) })
     }
 }
