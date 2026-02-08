@@ -15,6 +15,7 @@ pub struct ActionConfig {
     pub ivr_flow_id: Option<Uuid>,
     pub recording_enabled: bool,
     pub announce_enabled: bool,
+    pub announcement_id: Option<Uuid>,
 }
 
 impl ActionConfig {
@@ -24,6 +25,7 @@ impl ActionConfig {
             ivr_flow_id: None,
             recording_enabled: true,
             announce_enabled: false,
+            announcement_id: None,
         }
     }
 
@@ -33,6 +35,7 @@ impl ActionConfig {
             ivr_flow_id: None,
             recording_enabled: false,
             announce_enabled: false,
+            announcement_id: None,
         }
     }
 }
@@ -47,6 +50,8 @@ struct ActionConfigDto {
     recording_enabled: bool,
     #[serde(default = "default_false")]
     announce_enabled: bool,
+    #[serde(default)]
+    announcement_id: Option<Uuid>,
 }
 
 impl From<ActionConfigDto> for ActionConfig {
@@ -56,6 +61,7 @@ impl From<ActionConfigDto> for ActionConfig {
             ivr_flow_id: dto.ivr_flow_id,
             recording_enabled: dto.recording_enabled,
             announce_enabled: dto.announce_enabled,
+            announcement_id: dto.announcement_id,
         }
     }
 }
@@ -369,6 +375,7 @@ fn to_action_config_from_registered(row: RegisteredNumberRow) -> ActionConfig {
         ivr_flow_id: row.ivr_flow_id,
         recording_enabled: row.recording_enabled,
         announce_enabled: row.announce_enabled,
+        announcement_id: row.announcement_id,
     }
 }
 
@@ -378,5 +385,37 @@ fn to_action_config_from_routing_rule(row: RoutingRuleRow) -> ActionConfig {
         ivr_flow_id: row.ivr_flow_id,
         recording_enabled: true,
         announce_enabled: true,
+        announcement_id: row.announcement_id,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ActionConfig, ActionConfigDto};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn action_config_dto_parses_announcement_id() {
+        let announcement_id = Uuid::now_v7();
+        let dto: ActionConfigDto = serde_json::from_value(json!({
+            "actionCode": "AN",
+            "announcementId": announcement_id
+        }))
+        .expect("dto should parse");
+        let config: ActionConfig = dto.into();
+        assert_eq!(config.action_code, "AN");
+        assert_eq!(config.announcement_id, Some(announcement_id));
+    }
+
+    #[test]
+    fn action_config_dto_defaults_without_announcement_id() {
+        let dto: ActionConfigDto = serde_json::from_value(json!({
+            "actionCode": "NR"
+        }))
+        .expect("dto should parse");
+        let config: ActionConfig = dto.into();
+        assert_eq!(config.action_code, "NR");
+        assert_eq!(config.announcement_id, None);
     }
 }

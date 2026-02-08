@@ -73,6 +73,27 @@ impl SessionCoordinator {
     pub(crate) fn finish_playback(&mut self, restart_ivr_timeout: bool) {
         self.playback = None;
         self.sending_audio = false;
+
+        if self.announce_mode {
+            if self.voicemail_mode {
+                self.announce_mode = false;
+                info!(
+                    "[session {}] voicemail announcement finished, recording continues",
+                    self.call_id
+                );
+            } else {
+                self.announce_mode = false;
+                info!(
+                    "[session {}] announcement finished, requesting hangup",
+                    self.call_id
+                );
+                let _ = self
+                    .control_tx
+                    .try_send(crate::protocol::session::types::SessionControlIn::AppHangup);
+                return;
+            }
+        }
+
         if self.ivr_state == IvrState::VoicebotIntroPlaying {
             self.ivr_state = IvrState::VoicebotMode;
             self.capture.reset();

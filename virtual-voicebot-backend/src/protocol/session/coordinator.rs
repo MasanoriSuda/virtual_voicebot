@@ -69,6 +69,8 @@ pub(crate) const TRANSFER_FAIL_WAV_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/data/zundamon_transfer_fail.wav"
 );
+pub(crate) const ANNOUNCEMENT_FALLBACK_WAV_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/data/zundamon_sorry.wav");
 
 pub struct SessionCoordinator {
     state_machine: SessionStateMachine,
@@ -113,6 +115,11 @@ pub struct SessionCoordinator {
     outbound_sent_180: bool,
     outbound_sent_183: bool,
     invite_rejected: bool,
+    no_response_mode: bool,
+    announce_mode: bool,
+    voicemail_mode: bool,
+    announcement_id: Option<Uuid>,
+    ivr_flow_id: Option<Uuid>,
     session_expires: Option<Duration>,
     session_refresher: Option<SessionRefresher>,
 }
@@ -185,6 +192,11 @@ impl SessionCoordinator {
             outbound_sent_180: false,
             outbound_sent_183: false,
             invite_rejected: false,
+            no_response_mode: false,
+            announce_mode: false,
+            voicemail_mode: false,
+            announcement_id: None,
+            ivr_flow_id: None,
             session_expires: None,
             session_refresher: None,
         };
@@ -271,6 +283,81 @@ impl SessionCoordinator {
         self.recording.set_enabled(enabled);
     }
 
+    pub(crate) fn set_invite_rejected(&mut self, rejected: bool) {
+        self.invite_rejected = rejected;
+    }
+
+    pub(crate) fn set_no_response_mode(&mut self, enabled: bool) {
+        self.no_response_mode = enabled;
+    }
+
+    pub(crate) fn set_announce_mode(&mut self, enabled: bool) {
+        self.announce_mode = enabled;
+    }
+
+    pub(crate) fn set_voicemail_mode(&mut self, enabled: bool) {
+        self.voicemail_mode = enabled;
+    }
+
+    pub(crate) fn set_announcement_id(&mut self, announcement_id: Uuid) {
+        self.announcement_id = Some(announcement_id);
+    }
+
+    pub(crate) fn set_ivr_flow_id(&mut self, ivr_flow_id: Uuid) {
+        self.ivr_flow_id = Some(ivr_flow_id);
+    }
+
+    pub(crate) fn set_ivr_state(&mut self, ivr_state: IvrState) {
+        self.ivr_state = ivr_state;
+    }
+
+    pub(crate) async fn send_sip_error(&mut self, code: u16, reason: &str) -> Result<(), Error> {
+        self.session_out_tx.try_send((
+            self.call_id.clone(),
+            SessionOut::SipSendError {
+                code,
+                reason: reason.to_string(),
+            },
+        ))?;
+        Ok(())
+    }
+
+    pub(crate) fn reset_action_modes(&mut self) {
+        self.no_response_mode = false;
+        self.announce_mode = false;
+        self.voicemail_mode = false;
+        self.announcement_id = None;
+        self.ivr_flow_id = None;
+    }
+
+    pub(crate) async fn resolve_announcement_playback_path(&self) -> Option<String> {
+        let announcement_id = self.announcement_id?;
+        match self
+            .routing_port
+            .find_announcement_audio_file_url(announcement_id)
+            .await
+        {
+            Ok(Some(audio_file_url)) => Some(map_audio_file_url_to_local_path(audio_file_url)),
+            Ok(None) => {
+                log::warn!(
+                    "[session {}] announcement not found id={}",
+                    self.call_id,
+                    announcement_id
+                );
+                None
+            }
+            Err(err) => {
+                log::warn!(
+                    "[session {}] failed to read announcement id={} error={}",
+                    self.call_id,
+                    announcement_id,
+                    err
+                );
+                None
+            }
+        }
+    }
+
     async fn send_silence_frame(&mut self) -> Result<(), Error> {
         if self.peer_sdp.is_none() {
             return Ok(());
@@ -347,7 +434,7 @@ impl SessionCoordinator {
             caller_number,
             caller_category: "unknown".to_string(),
             action_code: "IV".to_string(),
-            ivr_flow_id: None,
+            ivr_flow_id: self.ivr_flow_id,
             answered_at: None,
             end_reason: end_reason.to_string(),
             status: call_status.to_string(),
@@ -362,6 +449,40 @@ impl SessionCoordinator {
             );
         }
     }
+}
+
+fn map_audio_file_url_to_local_path(audio_file_url: String) -> String {
+    let trimmed = audio_file_url.trim();
+    let url_path = if let Some(scheme_sep) = trimmed.find("://") {
+        let after_scheme = &trimmed[scheme_sep + 3..];
+        if let Some(path_pos) = after_scheme.find('/') {
+            &after_scheme[path_pos..]
+        } else {
+            "/"
+        }
+    } else {
+        trimmed
+    };
+
+    if let Some(rest) = url_path.strip_prefix("/audio/announcements/") {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        let path = repo_root
+            .join("virtual-voicebot-frontend")
+            .join("public")
+            .join("audio")
+            .join("announcements")
+            .join(rest);
+        return path.to_string_lossy().to_string();
+    }
+
+    if let Some(path) = url_path.strip_prefix("file://") {
+        return path.to_string();
+    }
+
+    url_path.to_string()
 }
 
 fn extract_e164_caller_number(value: &str) -> Option<String> {
@@ -521,6 +642,11 @@ mod tests {
             outbound_sent_180: false,
             outbound_sent_183: false,
             invite_rejected: false,
+            no_response_mode: false,
+            announce_mode: false,
+            voicemail_mode: false,
+            announcement_id: None,
+            ivr_flow_id: None,
             session_expires: None,
             session_refresher: None,
         }
@@ -548,5 +674,19 @@ mod tests {
         session.ivr_state = IvrState::B2buaMode;
         session.send_silence_frame().await.unwrap();
         assert!(session.rtp_last_sent.is_none());
+    }
+
+    #[test]
+    fn audio_announcement_url_is_mapped_to_frontend_public_file() {
+        let mapped = super::map_audio_file_url_to_local_path(
+            "http://localhost:3000/audio/announcements/abc.wav".to_string(),
+        );
+        assert!(mapped.ends_with("virtual-voicebot-frontend/public/audio/announcements/abc.wav"));
+    }
+
+    #[test]
+    fn relative_audio_announcement_url_is_mapped_to_frontend_public_file() {
+        let mapped = super::map_audio_file_url_to_local_path("/audio/announcements/xyz.wav".into());
+        assert!(mapped.ends_with("virtual-voicebot-frontend/public/audio/announcements/xyz.wav"));
     }
 }
