@@ -17,9 +17,11 @@
     }
   ],
   "anonymousAction": {
-    "actionType": "deny",
+    "actionType": "allow",
     "actionConfig": {
-      "actionCode": "BZ"
+      "actionCode": "IV",
+      "ivrFlowId": "6df49d3f-600a-4fa6-9a4c-5a36bdbb609c",
+      "includeAnnouncement": true
     }
   },
   "defaultAction": {

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::interface::db::PostgresAdapter;
+use crate::interface::db::{PostgresAdapter, RoutingRepoImpl};
 use crate::interface::http;
 use crate::interface::notification::{LineAdapter, NoopNotification};
 use crate::protocol::rtp::tx::RtpTxHandle;
@@ -25,6 +25,7 @@ use crate::service::call_control::AppNotificationPort;
 use crate::service::recording;
 use crate::shared::ports::call_log_port::{CallLogPort, NoopCallLogPort};
 use crate::shared::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
+use crate::shared::ports::routing_port::{NoopRoutingPort, RoutingPort};
 use crate::shared::ports::session_lookup::SessionLookup;
 use crate::shared::{config, logging};
 
@@ -172,6 +173,13 @@ async fn main() -> anyhow::Result<()> {
             Arc::new(NoopCallLogPort::new())
         }
     };
+    let routing_port: Arc<dyn RoutingPort> = match postgres_adapter.clone() {
+        Some(adapter) => Arc::new(RoutingRepoImpl::new(adapter.pool())),
+        None => {
+            log::warn!("[main] routing evaluation disabled (DATABASE_URL unavailable)");
+            Arc::new(NoopRoutingPort::new())
+        }
+    };
 
     let notification_port: Arc<dyn AppNotificationPort> = {
         let cfg = config::line_notify_config();
@@ -249,6 +257,7 @@ async fn main() -> anyhow::Result<()> {
                                 ingest_port.clone(),
                                 storage_port.clone(),
                                 call_log_port.clone(),
+                                routing_port.clone(),
                                 session_cfg.clone(),
                             )
                             .await;

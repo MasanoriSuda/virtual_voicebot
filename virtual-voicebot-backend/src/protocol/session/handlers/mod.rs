@@ -2,7 +2,7 @@ pub(super) mod rtp_handler;
 pub(super) mod sip_handler;
 pub(super) mod timer_handler;
 
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use tokio::time::Instant;
 
 use super::services::ivr_service::{ivr_action_for_digit, ivr_state_after_action, IvrAction};
@@ -13,6 +13,7 @@ use crate::protocol::session::types::{
     IvrState, SessState, SessionControlIn, SessionMediaIn, SessionOut, SessionRefresher,
     SessionTimerInfo,
 };
+use crate::service::routing::{ActionExecutor, RuleEvaluator};
 use crate::shared::ports::app::{AppEvent, EndReason};
 
 impl SessionCoordinator {
@@ -43,6 +44,35 @@ impl SessionCoordinator {
                 self.outbound_sent_183 = false;
                 self.invite_rejected = false;
                 self.stop_ring_delay();
+
+                let caller_id =
+                    sip_handler::extract_user_from_to(self.from_uri.as_str()).unwrap_or_default();
+                let call_id_str = self.call_id.to_string();
+                let evaluator = RuleEvaluator::new(self.routing_port.clone());
+                match evaluator.evaluate(&caller_id, &call_id_str).await {
+                    Ok(action) => {
+                        info!(
+                            "[SessionCoordinator] call_id={} evaluated action_code={}",
+                            self.call_id, action.action_code
+                        );
+                        let executor = ActionExecutor::new();
+                        if let Err(err) = executor.execute(&action, &call_id_str, self).await {
+                            error!(
+                                "[SessionCoordinator] call_id={} action execution failed: {}",
+                                self.call_id, err
+                            );
+                            self.set_outbound_mode(false);
+                        }
+                    }
+                    Err(err) => {
+                        error!(
+                            "[SessionCoordinator] call_id={} rule evaluation failed: {}",
+                            self.call_id, err
+                        );
+                        self.set_outbound_mode(false);
+                    }
+                }
+
                 if self.runtime_cfg.outbound.enabled {
                     let outbound_cfg = &self.runtime_cfg.outbound;
                     let registrar = self.runtime_cfg.registrar.as_ref();

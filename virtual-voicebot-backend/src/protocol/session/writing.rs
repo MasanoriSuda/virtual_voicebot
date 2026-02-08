@@ -12,6 +12,7 @@ use crate::shared::config::SessionRuntimeConfig;
 use crate::shared::ports::app::AppEventTx;
 use crate::shared::ports::call_log_port::CallLogPort;
 use crate::shared::ports::ingest::IngestPort;
+use crate::shared::ports::routing_port::RoutingPort;
 use crate::shared::ports::storage::StoragePort;
 
 /// セッションを生成し、SessionOut を上位レイヤに配線する（挙動は従来と同じ）。
@@ -28,6 +29,7 @@ pub fn spawn_call(
     ingest_port: Arc<dyn IngestPort>,
     storage_port: Arc<dyn StoragePort>,
     call_log_port: Arc<dyn CallLogPort>,
+    routing_port: Arc<dyn RoutingPort>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> SessionHandle {
     let handle = Session::spawn(
@@ -43,6 +45,7 @@ pub fn spawn_call(
         ingest_port,
         storage_port,
         call_log_port,
+        routing_port,
         runtime_cfg,
     );
 
@@ -63,6 +66,7 @@ pub async fn spawn_session(
     ingest_port: Arc<dyn IngestPort>,
     storage_port: Arc<dyn StoragePort>,
     call_log_port: Arc<dyn CallLogPort>,
+    routing_port: Arc<dyn RoutingPort>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> SessionHandle {
     let handle = spawn_call(
@@ -78,6 +82,7 @@ pub async fn spawn_session(
         ingest_port,
         storage_port,
         call_log_port,
+        routing_port,
         runtime_cfg,
     );
     // Session manager の薄いラッパ経由で登録

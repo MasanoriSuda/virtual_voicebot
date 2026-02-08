@@ -24,6 +24,7 @@ use crate::shared::config::SessionRuntimeConfig;
 use crate::shared::ports::app::AppEventTx;
 use crate::shared::ports::call_log_port::{CallLogPort, EndedCallLog, EndedRecording};
 use crate::shared::ports::ingest::IngestPort;
+use crate::shared::ports::routing_port::RoutingPort;
 use crate::shared::ports::storage::StoragePort;
 use anyhow::Error;
 use uuid::Uuid;
@@ -86,6 +87,7 @@ pub struct SessionCoordinator {
     runtime_cfg: Arc<SessionRuntimeConfig>,
     media_cfg: MediaConfig,
     call_log_port: Arc<dyn CallLogPort>,
+    routing_port: Arc<dyn RoutingPort>,
     rtp: crate::protocol::session::rtp_stream_manager::RtpStreamManager,
     recording: crate::protocol::session::recording_manager::RecordingManager,
     started_at: Option<Instant>,
@@ -129,6 +131,7 @@ impl SessionCoordinator {
         ingest_port: Arc<dyn IngestPort>,
         storage_port: Arc<dyn StoragePort>,
         call_log_port: Arc<dyn CallLogPort>,
+        routing_port: Arc<dyn RoutingPort>,
         runtime_cfg: Arc<SessionRuntimeConfig>,
     ) -> SessionHandle {
         // Bounded channels: control is reliable, media is drop-on-full upstream.
@@ -155,6 +158,7 @@ impl SessionCoordinator {
             runtime_cfg: runtime_cfg.clone(),
             media_cfg,
             call_log_port,
+            routing_port,
             rtp: crate::protocol::session::rtp_stream_manager::RtpStreamManager::new(rtp_tx),
             recording: crate::protocol::session::recording_manager::RecordingManager::new(
                 call_id_clone.to_string(),
@@ -257,6 +261,14 @@ impl SessionCoordinator {
 
     fn stop_recorders(&mut self) {
         self.recording.stop_and_merge();
+    }
+
+    pub(crate) fn set_outbound_mode(&mut self, enabled: bool) {
+        self.outbound_mode = enabled;
+    }
+
+    pub(crate) fn set_recording_enabled(&mut self, enabled: bool) {
+        self.recording.set_enabled(enabled);
     }
 
     async fn send_silence_frame(&mut self) -> Result<(), Error> {
@@ -415,6 +427,7 @@ fn is_e164(value: &str) -> bool {
 mod tests {
     use super::*;
     use crate::shared::ports::ingest::IngestPayload;
+    use crate::shared::ports::routing_port::NoopRoutingPort;
 
     struct DummyIngestPort;
 
@@ -479,6 +492,7 @@ mod tests {
             runtime_cfg: runtime_cfg.clone(),
             media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
             call_log_port: Arc::new(DummyCallLogPort),
+            routing_port: Arc::new(NoopRoutingPort::new()),
             rtp: crate::protocol::session::rtp_stream_manager::RtpStreamManager::new(
                 RtpTxHandle::new(crate::shared::config::rtp_config().clone()),
             ),

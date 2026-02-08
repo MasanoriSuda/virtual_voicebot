@@ -2,6 +2,7 @@ pub mod ai;
 pub mod call_control;
 pub mod rag;
 pub mod recording;
+pub mod routing;
 
 pub use ai::DefaultAiPort;
 pub use call_control::{
