@@ -7,9 +7,9 @@
 |------|-----|
 | ステータス | Approved |
 | 作成日 | 2025-12-13（v1） |
-| 改訂日 | 2026-02-07（v2） |
-| 関連Issue | #7, #112 |
-| 関連ステアリング | STEER-112 |
+| 改訂日 | 2026-02-08（v2.1） |
+| 関連Issue | #7, #112, #138 |
+| 関連ステアリング | STEER-112, STEER-137 |
 
 ---
 
@@ -394,6 +394,133 @@ Serversync Worker が録音ファイル（実体）を転送する。
 - **Range 対応必須**（`Accept-Ranges: bytes`, `206 Partial Content`）
 - 不正 Range → `416 Range Not Satisfiable`
 
+### 5.4 Frontend 設定公開 API（Backend Pull 用）— Issue #138
+
+> Backend の Serversync が Frontend PoC の設定を Pull するための一時的 API。
+> 将来的には Backend DB → Frontend DB の一方向同期に移行し、これらの API は廃止される（STEER-137 参照）。
+
+| メソッド | パス | 説明 |
+|---------|------|------|
+| GET | /api/number-groups | 番号グループ一覧（CallerGroup） |
+| GET | /api/call-actions | 着信アクションルール一覧（IncomingRule） |
+| GET | /api/ivr-flows | IVR フロー定義一覧（IvrFlowDefinition） |
+
+#### GET /api/number-groups
+
+Frontend の `number-groups.json` から番号グループ一覧を返す。
+
+**レスポンス**:
+```json
+{
+  "ok": true,
+  "callerGroups": [
+    {
+      "id": "019503a0-1234-7000-8000-000000000001",
+      "name": "スパム",
+      "description": "迷惑電話",
+      "phoneNumbers": ["+819012345678", "+819087654321"],
+      "createdAt": "2026-02-08T00:00:00Z",
+      "updatedAt": "2026-02-08T00:00:00Z"
+    }
+  ]
+}
+```
+
+**処理内容**:
+- Frontend の JSON ファイル（`number-groups.json`）から読み取り
+- Backend Serversync が `registered_numbers.group_id` / `group_name` に保存
+
+#### GET /api/call-actions
+
+Frontend の `call-actions.json` から着信アクションルール一覧を返す。
+
+**レスポンス**:
+```json
+{
+  "ok": true,
+  "rules": [
+    {
+      "id": "019503a0-1234-7000-8000-000000000002",
+      "name": "スパム拒否",
+      "callerGroupId": "019503a0-1234-7000-8000-000000000001",
+      "actionType": "deny",
+      "actionConfig": {
+        "actionCode": "BZ"
+      },
+      "isActive": true,
+      "createdAt": "2026-02-08T00:00:00Z",
+      "updatedAt": "2026-02-08T00:00:00Z"
+    }
+  ],
+  "anonymousAction": {
+    "actionType": "deny",
+    "actionConfig": {
+      "actionCode": "BZ"
+    }
+  },
+  "defaultAction": {
+    "actionType": "allow",
+    "actionConfig": {
+      "actionCode": "VR",
+      "recordingEnabled": false,
+      "announceEnabled": false,
+      "announcementId": null
+    }
+  }
+}
+```
+
+**処理内容**:
+- Frontend の JSON ファイル（`call-actions.json`）から読み取り
+- Backend Serversync が `call_action_rules` テーブルに保存
+- `anonymousAction` / `defaultAction` は `system_settings.extra` (JSONB) に保存
+
+#### GET /api/ivr-flows（PoC Pull 用）
+
+Frontend の `ivr-flows.json` から IVR フロー定義一覧を返す。
+
+**レスポンス**:
+```json
+{
+  "ok": true,
+  "flows": [
+    {
+      "id": "019503a0-1234-7000-8000-000000000003",
+      "name": "メインメニュー",
+      "description": "受付振り分け",
+      "isActive": true,
+      "announcementId": "019503a0-1234-7000-8000-000000000004",
+      "timeoutSec": 10,
+      "maxRetries": 2,
+      "invalidInputAnnouncementId": null,
+      "timeoutAnnouncementId": null,
+      "routes": [
+        {
+          "dtmfKey": "1",
+          "label": "営業",
+          "destination": {
+            "actionCode": "VR"
+          }
+        }
+      ],
+      "fallbackAction": {
+        "actionCode": "VR"
+      },
+      "createdAt": "2026-02-08T00:00:00Z",
+      "updatedAt": "2026-02-08T00:00:00Z"
+    }
+  ]
+}
+```
+
+**処理内容**:
+- Frontend の JSON ファイル（`ivr-flows.json`）から読み取り
+- Backend Serversync が `ivr_nodes` + `ivr_transitions` に変換して保存
+
+**注**: セクション 5.2 の `GET /api/ivr-flows` は Backend → Frontend の CRUD API（Backend DB からの取得）。
+本セクション 5.4 の `GET /api/ivr-flows` は Frontend → Backend の Pull API（Frontend JSON からの取得）。
+混同を避けるため、将来的には `/api/ivr-flows/export` 等にリネーム推奨。
+
 ---
 
 ## 6. Error Format
@@ -449,3 +576,4 @@ Serversync Worker が録音ファイル（実体）を転送する。
 | 2025-12-13 | v1.0 | 初版作成（MVP） | @MasanoriSuda |
 | 2025-12-27 | v1.1 | Range 対応必須化（Issue #7） | @MasanoriSuda + Claude Code |
 | 2026-02-07 | v2.0 | 全面改訂（STEER-112）：SoT 原則・全エンティティ DTO・Enum 統一・API エンドポイント一覧 | Claude Code (Opus 4.6) |
+| 2026-02-08 | v2.1 | Issue #138 反映：セクション 5.4「Frontend 設定公開 API（Backend Pull 用）」追加（GET /api/number-groups, GET /api/call-actions, GET /api/ivr-flows） | Claude Code (claude-sonnet-4-5) |

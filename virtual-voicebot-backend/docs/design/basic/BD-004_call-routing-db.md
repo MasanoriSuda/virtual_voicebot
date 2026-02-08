@@ -8,8 +8,8 @@
 | ID | BD-004 |
 | ステータス | Approved |
 | 作成日 | 2026-02-02 |
-| 最終更新 | 2026-02-07 |
-| 関連Issue | #92, #110 |
+| 最終更新 | 2026-02-08 |
+| 関連Issue | #92, #110, #138 |
 | 対応RD | RD-004 |
 | 対応STEER | STEER-110 |
 | 対応IT | - |
@@ -168,10 +168,29 @@ IV → VB    # IVR完了後、ボイスボット（録音なし）
 │  │ created_at        │     │ ivr_flow_id (FK)──────┼──┐            │
 │  │ updated_at        │     │ recording_enabled     │  │            │
 │  └───────────────────┘     │ announce_enabled      │  │            │
-│  ※ WHERE deleted_at IS NULL│ notes, version        │  │            │
+│  ※ WHERE deleted_at IS NULL│ group_id (UUID※※)    │  │            │
+│                             │ group_name            │  │            │
+│                             │ notes, version        │  │            │
 │                             │ deleted_at            │  │            │
 │                             │ created_at, updated_at│  │            │
 │                             └───────────────────────┘  │            │
+│                             ※※ FK なし（削除済み対応） │            │
+│                                  ▲                     │            │
+│                                  │ (group_id)          │            │
+│  ┌───────────────────────┐       │                     │            │
+│  │  call_action_rules    │───────┘                     │            │
+│  │    (#138 追加)        │                             │            │
+│  ├───────────────────────┤                             │            │
+│  │ id (PK, UUID v7)      │                             │            │
+│  │ name                  │                             │            │
+│  │ caller_group_id (FK※) │                             │            │
+│  │ action_type           │                             │            │
+│  │ action_config (JSONB) │                             │            │
+│  │ priority              │                             │            │
+│  │ is_active             │                             │            │
+│  │ created_at, updated_at│                             │            │
+│  └───────────────────────┘                             │            │
+│  ※ FK なし（削除済みグループ対応）                      │            │
 │                                                        │            │
 │  ┌───────────────────────┐                             │            │
 │  │    routing_rules      │                             │            │
@@ -302,11 +321,18 @@ IV → VB    # IVR完了後、ボイスボット（録音なし）
 | ivr_flow_id | UUID (FK) | → ivr_flows |
 | recording_enabled | BOOLEAN | デフォルト TRUE |
 | announce_enabled | BOOLEAN | デフォルト TRUE |
+| group_id | UUID | 番号グループの不変ID（Frontend CallerGroup.id）、FK なし |
+| group_name | VARCHAR(255) | 番号グループの表示名（Frontend CallerGroup.name） |
 | notes | TEXT | |
 | version | INT | 楽観的排他制御 |
 | deleted_at | TIMESTAMPTZ | NULL = 有効 |
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
+
+> **Issue #138 追加**: `group_id` / `group_name` は Frontend CallerGroup（番号グループ）との対応を表す。
+> - `group_id` は不変ID（UUID）で、Frontend で CallerGroup をリネームしても変わらない
+> - `group_name` は表示名で、Frontend でリネームすると更新される
+> - `call_action_rules.caller_group_id` と照合して番号グループ評価を実施（RD-004 FR-1.4 参照）
 
 ##### routing_rules（ルーティングルール — 楽観ロック）
 
@@ -321,6 +347,30 @@ IV → VB    # IVR完了後、ボイスボット（録音なし）
 | version | INT | 楽観的排他制御 |
 | created_at | TIMESTAMPTZ | |
 | updated_at | TIMESTAMPTZ | |
+
+##### call_action_rules（着信アクションルール — Issue #138 追加）
+
+| カラム | 型 | 備考 |
+|--------|-----|------|
+| id | UUID v7 (PK) | Frontend IncomingRule.id と同一値 |
+| name | VARCHAR(255) | ルール名（例: "スパム拒否"） |
+| caller_group_id | UUID | → registered_numbers.group_id、FK なし、NULL 許容 |
+| action_type | VARCHAR(20) | 'allow' / 'deny' |
+| action_config | JSONB | ActionCode + 詳細設定（RD-004 FR-2.2 参照） |
+| priority | INT | 評価優先順位（小さいほど優先、Frontend 配列順） |
+| is_active | BOOLEAN | TRUE = 有効 |
+| created_at | TIMESTAMPTZ | |
+| updated_at | TIMESTAMPTZ | |
+
+> **設計方針**:
+> - Frontend の `IncomingRule` を Backend DB に同期（Serversync 経由）
+> - `caller_group_id` は `registered_numbers.group_id` を参照するが、FK 制約なし（削除済みグループ対応）
+> - `action_config` (JSONB) の例:
+>   ```json
+>   { "actionCode": "BZ" }
+>   { "actionCode": "IV", "ivrFlowId": "uuid-v7", "includeAnnouncement": true }
+>   ```
+> - RD-004 FR-1.1 の「段階2: 番号グループ評価」で使用
 
 ##### ivr_flows（IVRフロー定義 — root_node_id 廃止）
 
@@ -663,3 +713,4 @@ SIP INVITE 受信
 | 2026-02-02 | 1.0 | 初版作成（#92 壁打ち結果） | Claude Code |
 | 2026-02-02 | 1.1 | VB/VR（ボイスボット録音なし/あり）追加、IB追加、録音オプション対応表追加 | Claude Code |
 | 2026-02-07 | 2.0 | STEER-110 反映: root_node_id 廃止、UUID v7/E.164/論理削除/楽観ロック対応、通話系テーブル追加（call_log_index, call_logs, recordings）、同期・設定系追加（sync_outbox, system_settings）、ER図全面更新 | Claude Code |
+| 2026-02-08 | 2.1 | Issue #138 反映: registered_numbers に group_id/group_name カラム追加、call_action_rules テーブル追加（番号グループ評価用）、ER図更新 | Claude Code (claude-sonnet-4-5) |

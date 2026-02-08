@@ -14,6 +14,21 @@
       "isActive": true,
       "createdAt": "2026-02-07T20:37:30.714Z",
       "updatedAt": "2026-02-07T20:37:30.714Z"
+    },
+    {
+      "id": "e52f0208-2877-4b87-9a34-dfebaf6de9d0",
+      "name": "ルール 2",
+      "callerGroupId": "4fe4a030-aedd-41d4-9e55-1e85973b1b78",
+      "actionType": "allow",
+      "actionConfig": {
+        "actionCode": "VR",
+        "recordingEnabled": false,
+        "announceEnabled": false,
+        "announcementId": null
+      },
+      "isActive": true,
+      "createdAt": "2026-02-08T07:23:10.517Z",
+      "updatedAt": "2026-02-08T07:23:10.517Z"
     }
   ],
   "anonymousAction": {
