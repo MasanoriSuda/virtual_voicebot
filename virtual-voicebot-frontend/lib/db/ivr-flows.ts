@@ -115,6 +115,20 @@ function normalizeTerminalAction(raw: unknown): IvrTerminalAction {
         ivrFlowId,
       }
     }
+    case "VB": {
+      const scenarioId = asTrimmedString(raw.scenarioId)
+      if (!scenarioId) {
+        return { actionCode: "VR" }
+      }
+      return {
+        actionCode: "VB",
+        scenarioId,
+        welcomeAnnouncementId: asNullableString(raw.welcomeAnnouncementId),
+        recordingEnabled: typeof raw.recordingEnabled === "boolean" ? raw.recordingEnabled : true,
+        includeAnnouncement:
+          typeof raw.includeAnnouncement === "boolean" ? raw.includeAnnouncement : false,
+      }
+    }
     case "VR":
     default:
       return { actionCode: "VR" }
@@ -138,6 +152,20 @@ function normalizeFallbackAction(raw: unknown): IvrFallbackAction {
         actionCode: "AN",
         announcementId: asNullableString(raw.announcementId),
       }
+    case "VB": {
+      const scenarioId = asTrimmedString(raw.scenarioId)
+      if (!scenarioId) {
+        return { actionCode: "VR" }
+      }
+      return {
+        actionCode: "VB",
+        scenarioId,
+        welcomeAnnouncementId: asNullableString(raw.welcomeAnnouncementId),
+        recordingEnabled: typeof raw.recordingEnabled === "boolean" ? raw.recordingEnabled : true,
+        includeAnnouncement:
+          typeof raw.includeAnnouncement === "boolean" ? raw.includeAnnouncement : false,
+      }
+    }
     case "VR":
     default:
       return { actionCode: "VR" }

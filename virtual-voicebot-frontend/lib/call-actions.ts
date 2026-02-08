@@ -1,6 +1,6 @@
 export type CallActionType = "allow" | "deny"
 
-export type AllowActionCode = "VR" | "IV" | "VM"
+export type AllowActionCode = "VR" | "IV" | "VM" | "VB"
 export type DenyActionCode = "BZ" | "NR" | "AN"
 export type CallActionCode = AllowActionCode | DenyActionCode
 
@@ -35,6 +35,14 @@ export type AllowVM = {
   announcementId: string | null
 }
 
+export type AllowVB = {
+  actionCode: "VB"
+  scenarioId: string
+  welcomeAnnouncementId: string | null
+  recordingEnabled: boolean
+  includeAnnouncement: boolean
+}
+
 export type DenyBZ = {
   actionCode: "BZ"
 }
@@ -48,7 +56,7 @@ export type DenyAN = {
   announcementId: string | null
 }
 
-export type ActionConfig = AllowVR | AllowIV | AllowVM | DenyBZ | DenyNR | DenyAN
+export type ActionConfig = AllowVR | AllowIV | AllowVM | AllowVB | DenyBZ | DenyNR | DenyAN
 
 export interface IncomingRule {
   id: string
@@ -74,7 +82,7 @@ export interface CallActionsDatabase {
 
 const PHONE_NORMALIZE_RE = /[-\s()（）]/g
 
-const ALLOW_CODES: AllowActionCode[] = ["VR", "IV", "VM"]
+const ALLOW_CODES: AllowActionCode[] = ["VR", "IV", "VM", "VB"]
 const DENY_CODES: DenyActionCode[] = ["BZ", "NR", "AN"]
 
 export function normalizePhoneNumber(raw: string): string {
@@ -106,6 +114,14 @@ export function createActionConfig(
         return {
           actionCode: "VM",
           announcementId: null,
+        }
+      case "VB":
+        return {
+          actionCode: "VB",
+          scenarioId: "",
+          welcomeAnnouncementId: null,
+          recordingEnabled: true,
+          includeAnnouncement: false,
         }
       case "VR":
       default:
@@ -159,6 +175,8 @@ export function actionCodeLabel(actionCode: CallActionCode): string {
       return "IVR"
     case "VM":
       return "留守電"
+    case "VB":
+      return "ボイスボット"
     case "BZ":
       return "BUSY"
     case "NR":

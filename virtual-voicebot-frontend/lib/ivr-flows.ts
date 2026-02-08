@@ -7,11 +7,25 @@ export type IvrTerminalAction =
   | { actionCode: "VM"; announcementId: string | null }
   | { actionCode: "AN"; announcementId: string | null }
   | { actionCode: "IV"; ivrFlowId: string }
+  | {
+      actionCode: "VB"
+      scenarioId: string
+      welcomeAnnouncementId: string | null
+      recordingEnabled: boolean
+      includeAnnouncement: boolean
+    }
 
 export type IvrFallbackAction =
   | { actionCode: "VR" }
   | { actionCode: "VM"; announcementId: string | null }
   | { actionCode: "AN"; announcementId: string | null }
+  | {
+      actionCode: "VB"
+      scenarioId: string
+      welcomeAnnouncementId: string | null
+      recordingEnabled: boolean
+      includeAnnouncement: boolean
+    }
 
 export interface IvrRoute {
   dtmfKey: DtmfKey
@@ -113,7 +127,11 @@ export function cloneIvrFlow(flow: IvrFlowDefinition): IvrFlowDefinition {
   return JSON.parse(JSON.stringify(flow)) as IvrFlowDefinition
 }
 
-export function terminalActionLabel(action: IvrTerminalAction, flows: IvrFlowDefinition[]): string {
+export function terminalActionLabel(
+  action: IvrTerminalAction,
+  flows: IvrFlowDefinition[],
+  scenarioNameById?: Map<string, string>,
+): string {
   switch (action.actionCode) {
     case "VR":
       return "転送(VR)"
@@ -124,6 +142,11 @@ export function terminalActionLabel(action: IvrTerminalAction, flows: IvrFlowDef
     case "IV": {
       const label = flowLabel(action.ivrFlowId, flows)
       return `IVR(${label})`
+    }
+    case "VB": {
+      const scenarioId = action.scenarioId.trim()
+      const scenarioLabel = scenarioNameById?.get(scenarioId) ?? scenarioId
+      return `ボイスボット(${scenarioLabel || "未選択"})`
     }
   }
 }
@@ -222,7 +245,10 @@ export function getMaxDepth(flowId: string, flows: IvrFlowDefinition[]): number 
   return dfs(flowId, 1, new Set([flowId]))
 }
 
-export function validateIvrFlows(flows: IvrFlowDefinition[]): ValidationResult {
+export function validateIvrFlows(
+  flows: IvrFlowDefinition[],
+  knownScenarioIds?: Set<string>,
+): ValidationResult {
   const errors: string[] = []
   const warnings: string[] = []
   const byId = new Map(flows.map((flow) => [flow.id, flow]))
@@ -269,8 +295,26 @@ export function validateIvrFlows(flows: IvrFlowDefinition[]): ValidationResult {
             `${flowName}: キー ${route.dtmfKey} の参照先 IVR (${route.destination.ivrFlowId}) が見つかりません`,
           )
         }
+      } else if (route.destination.actionCode === "VB") {
+        const scenarioId = route.destination.scenarioId.trim()
+        if (scenarioId.length === 0) {
+          errors.push(`${flowName}: キー ${route.dtmfKey} のシナリオを選択してください`)
+        } else if (knownScenarioIds && !knownScenarioIds.has(scenarioId)) {
+          warnings.push(
+            `${flowName}: キー ${route.dtmfKey} の参照先シナリオ (${scenarioId}) が見つかりません`,
+          )
+        }
       }
     })
+
+    if (flow.fallbackAction.actionCode === "VB") {
+      const scenarioId = flow.fallbackAction.scenarioId.trim()
+      if (scenarioId.length === 0) {
+        errors.push(`${flowName}: fallback のシナリオを選択してください`)
+      } else if (knownScenarioIds && !knownScenarioIds.has(scenarioId)) {
+        warnings.push(`${flowName}: fallback の参照先シナリオ (${scenarioId}) が見つかりません`)
+      }
+    }
   })
 
   const cycles = detectCycles(flows)
@@ -305,6 +349,16 @@ export function toIvrDestinationFromCallAction(config: ActionConfig): IvrTermina
       return { actionCode: "AN", announcementId: normalizeNullableString(config.announcementId) }
     case "IV":
       return config.ivrFlowId ? { actionCode: "IV", ivrFlowId: config.ivrFlowId } : null
+    case "VB":
+      return config.scenarioId
+        ? {
+            actionCode: "VB",
+            scenarioId: config.scenarioId,
+            welcomeAnnouncementId: normalizeNullableString(config.welcomeAnnouncementId),
+            recordingEnabled: config.recordingEnabled,
+            includeAnnouncement: config.includeAnnouncement,
+          }
+        : null
     default:
       return null
   }

@@ -39,6 +39,7 @@ import {
   type IvrRoute,
   type IvrTerminalAction,
 } from "@/lib/ivr-flows"
+import type { VoicebotScenario } from "@/lib/scenarios"
 import { cn } from "@/lib/utils"
 
 interface IvrFlowsApiResponse {
@@ -60,18 +61,29 @@ interface AnnouncementsApiResponse {
   error?: string
 }
 
+interface ScenariosApiResponse {
+  ok: boolean
+  scenarios?: VoicebotScenario[]
+  error?: string
+}
+
 interface RouteDraft {
   dtmfKey: DtmfKey
   label: string
   destinationType: IvrTerminalAction["actionCode"]
   announcementId: string | null
   ivrFlowId: string | null
+  scenarioId: string
+  welcomeAnnouncementId: string | null
+  recordingEnabled: boolean
+  includeAnnouncement: boolean
 }
 
 type RouteDrafts = Record<string, RouteDraft | undefined>
 
 const NONE_VALUE = "__none__"
 const REQUIRED_ANNOUNCEMENT_VALUE = "__required_announcement__"
+const NONE_SCENARIO_VALUE = "__none_scenario__"
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -121,6 +133,14 @@ function routeDestinationFromDraft(draft: RouteDraft): IvrTerminalAction {
         actionCode: "IV",
         ivrFlowId: draft.ivrFlowId ?? "",
       }
+    case "VB":
+      return {
+        actionCode: "VB",
+        scenarioId: draft.scenarioId,
+        welcomeAnnouncementId: draft.welcomeAnnouncementId,
+        recordingEnabled: draft.recordingEnabled,
+        includeAnnouncement: draft.includeAnnouncement,
+      }
     case "VR":
     default:
       return {
@@ -129,12 +149,21 @@ function routeDestinationFromDraft(draft: RouteDraft): IvrTerminalAction {
   }
 }
 
-function fallbackDestinationFromCode(actionCode: "VR" | "VM" | "AN"): IvrFallbackAction {
+function fallbackDestinationFromCode(actionCode: "VR" | "VM" | "AN" | "VB"): IvrFallbackAction {
   if (actionCode === "VM") {
     return { actionCode: "VM", announcementId: null }
   }
   if (actionCode === "AN") {
     return { actionCode: "AN", announcementId: null }
+  }
+  if (actionCode === "VB") {
+    return {
+      actionCode: "VB",
+      scenarioId: "",
+      welcomeAnnouncementId: null,
+      recordingEnabled: true,
+      includeAnnouncement: false,
+    }
   }
   return { actionCode: "VR" }
 }
@@ -151,6 +180,10 @@ function routeDraftForFlow(flow: IvrFlowDefinition): RouteDraft | null {
     destinationType: "VR",
     announcementId: null,
     ivrFlowId: null,
+    scenarioId: "",
+    welcomeAnnouncementId: null,
+    recordingEnabled: true,
+    includeAnnouncement: false,
   }
 }
 
@@ -176,6 +209,7 @@ export function IvrContent() {
   const [savedFlows, setSavedFlows] = useState<IvrFlowDefinition[]>([])
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null)
   const [announcements, setAnnouncements] = useState<StoredAnnouncement[]>([])
+  const [scenarios, setScenarios] = useState<VoicebotScenario[]>([])
   const [searchQuery, setSearchQuery] = useState("")
   const [routeDrafts, setRouteDrafts] = useState<RouteDrafts>({})
 
@@ -231,6 +265,27 @@ export function IvrContent() {
     [announcements],
   )
 
+  const scenarioOptions = useMemo(
+    () =>
+      [...scenarios].sort((a, b) => {
+        if (a.isActive !== b.isActive) {
+          return a.isActive ? -1 : 1
+        }
+        return a.name.localeCompare(b.name, "ja")
+      }),
+    [scenarios],
+  )
+
+  const scenarioById = useMemo(
+    () => new Map(scenarios.map((scenario) => [scenario.id, scenario])),
+    [scenarios],
+  )
+
+  const scenarioNameById = useMemo(
+    () => new Map(scenarios.map((scenario) => [scenario.id, scenario.name])),
+    [scenarios],
+  )
+
   const flowById = useMemo(
     () => new Map(flows.map((flow) => [flow.id, flow])),
     [flows],
@@ -245,9 +300,10 @@ export function IvrContent() {
       setInfoMessage(null)
 
       try {
-        const [flowsRes, announcementsRes] = await Promise.all([
+        const [flowsRes, announcementsRes, scenariosRes] = await Promise.all([
           fetch("/api/ivr-flows", { cache: "no-store" }),
           fetch("/api/announcements", { cache: "no-store" }).catch(() => null),
+          fetch("/api/scenarios", { cache: "no-store" }).catch(() => null),
         ])
 
         const flowsBody = (await flowsRes.json()) as IvrFlowsApiResponse
@@ -265,6 +321,14 @@ export function IvrContent() {
           }
         }
 
+        let loadedScenarios: VoicebotScenario[] = []
+        if (scenariosRes && scenariosRes.ok) {
+          const scenariosBody = (await scenariosRes.json()) as ScenariosApiResponse
+          if (scenariosBody.ok && Array.isArray(scenariosBody.scenarios)) {
+            loadedScenarios = scenariosBody.scenarios
+          }
+        }
+
         if (cancelled) {
           return
         }
@@ -274,6 +338,7 @@ export function IvrContent() {
         const loadedRoots = collectRootFlows(loadedFlows)
         setSelectedFlowId(loadedRoots[0]?.id ?? loadedFlows[0]?.id ?? null)
         setAnnouncements(loadedAnnouncements)
+        setScenarios(loadedScenarios)
         setRouteDrafts({})
       } catch (error) {
         if (cancelled) {
@@ -375,6 +440,19 @@ export function IvrContent() {
         destination: {
           actionCode: "AN",
           announcementId: null,
+        },
+      }))
+      return
+    }
+    if (actionCode === "VB") {
+      updateRoute(flowId, routeIndex, (current) => ({
+        ...current,
+        destination: {
+          actionCode: "VB",
+          scenarioId: "",
+          welcomeAnnouncementId: null,
+          recordingEnabled: true,
+          includeAnnouncement: false,
         },
       }))
       return
@@ -546,6 +624,11 @@ export function IvrContent() {
       }
     }
 
+    if (routeDraft.destinationType === "VB" && routeDraft.scenarioId.trim().length === 0) {
+      setErrorMessage("シナリオを選択してください")
+      return
+    }
+
     let autoCreatedFlow: IvrFlowDefinition | null = null
     let destination = routeDestinationFromDraft(routeDraft)
     if (routeDraft.destinationType === "IV" && !routeDraft.ivrFlowId) {
@@ -639,7 +722,10 @@ export function IvrContent() {
   }
 
   const saveAll = async () => {
-    const validation = validateIvrFlows(flows)
+    const validation = validateIvrFlows(
+      flows,
+      new Set(scenarios.map((scenario) => scenario.id)),
+    )
     if (!validation.isValid) {
       setErrorMessage(validation.errors.join("\n"))
       return
@@ -781,6 +867,49 @@ export function IvrContent() {
               <SelectItem key={announcement.id} value={announcement.id}>
                 {announcement.name} ({announcementTypeLabel(announcement.announcementType)})
                 {!announcement.isActive ? " [無効]" : ""}
+              </SelectItem>
+            ))
+          )}
+        </SelectContent>
+      </Select>
+    )
+  }
+
+  const renderScenarioSelect = (
+    selectedScenarioId: string,
+    onValueChange: (value: string) => void,
+    disabled: boolean,
+  ) => {
+    const hasSelectedScenario = selectedScenarioId ? scenarioById.has(selectedScenarioId) : true
+    const selectDisabled = disabled || (scenarioOptions.length === 0 && selectedScenarioId.length === 0)
+
+    return (
+      <Select
+        value={selectedScenarioId || NONE_SCENARIO_VALUE}
+        onValueChange={onValueChange}
+        disabled={selectDisabled}
+      >
+        <SelectTrigger>
+          <SelectValue placeholder="シナリオを選択" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NONE_SCENARIO_VALUE}>選択してください</SelectItem>
+          {!hasSelectedScenario && selectedScenarioId && (
+            <SelectItem value={selectedScenarioId}>（削除済みシナリオ）</SelectItem>
+          )}
+          {scenarioOptions.length === 0 ? (
+            <SelectItem value="__empty_scenario__" disabled>
+              （シナリオ未登録）
+            </SelectItem>
+          ) : (
+            scenarioOptions.map((scenario) => (
+              <SelectItem
+                key={scenario.id}
+                value={scenario.id}
+                disabled={!scenario.isActive && scenario.id !== selectedScenarioId}
+              >
+                {scenario.name}
+                {!scenario.isActive ? " [無効]" : ""}
               </SelectItem>
             ))
           )}
@@ -991,6 +1120,7 @@ export function IvrContent() {
                           <SelectItem value="VR">転送(VR)</SelectItem>
                           <SelectItem value="VM">留守電(VM)</SelectItem>
                           <SelectItem value="AN">アナウンス→切断(AN)</SelectItem>
+                          <SelectItem value="VB">ボイスボット(VB)</SelectItem>
                           <SelectItem
                             value="IV"
                             disabled={!canNestFurther && route.destination.actionCode !== "IV"}
@@ -1034,6 +1164,79 @@ export function IvrContent() {
                     </div>
                   )}
 
+                  {route.destination.actionCode === "VB" && (
+                    <div className="space-y-3 rounded-md border p-3">
+                      <div className="space-y-2">
+                        <Label>シナリオ</Label>
+                        {renderScenarioSelect(
+                          route.destination.scenarioId,
+                          (value) =>
+                            updateRoute(flowId, routeIndex, (current) =>
+                              current.destination.actionCode === "VB"
+                                ? {
+                                    ...current,
+                                    destination: {
+                                      ...current.destination,
+                                      scenarioId: value === NONE_SCENARIO_VALUE ? "" : value,
+                                    },
+                                  }
+                                : current,
+                            ),
+                          busy,
+                        )}
+                        {route.destination.scenarioId &&
+                          !scenarioById.has(route.destination.scenarioId) && (
+                            <p className="text-xs text-amber-600">
+                              （削除済みシナリオ）参照を保持しています
+                            </p>
+                          )}
+                      </div>
+                      <div className="space-y-2">
+                        <Label>開始前アナウンス</Label>
+                        {renderAnnouncementSelect(
+                          route.destination.welcomeAnnouncementId,
+                          (value) =>
+                            updateRoute(flowId, routeIndex, (current) =>
+                              current.destination.actionCode === "VB"
+                                ? {
+                                    ...current,
+                                    destination: {
+                                      ...current.destination,
+                                      welcomeAnnouncementId: normalizeAnnouncementValue(value),
+                                    },
+                                  }
+                                : current,
+                            ),
+                          busy,
+                        )}
+                      </div>
+                      <div className="h-10 rounded-md border px-3 flex items-center justify-between">
+                        <span className="text-sm">録音あり（PoC固定）</span>
+                        <Switch checked={route.destination.recordingEnabled} disabled />
+                      </div>
+                      <div className="h-10 rounded-md border px-3 flex items-center justify-between">
+                        <span className="text-sm">includeAnnouncement</span>
+                        <Switch
+                          checked={route.destination.includeAnnouncement}
+                          onCheckedChange={(checked) =>
+                            updateRoute(flowId, routeIndex, (current) =>
+                              current.destination.actionCode === "VB"
+                                ? {
+                                    ...current,
+                                    destination: {
+                                      ...current.destination,
+                                      includeAnnouncement: checked,
+                                    },
+                                  }
+                                : current,
+                            )
+                          }
+                          disabled={busy}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {route.destination.actionCode === "IV" && (
                     <div className="space-y-2">
                       <Label>次層IVRフロー</Label>
@@ -1073,7 +1276,9 @@ export function IvrContent() {
                     </div>
                   )}
 
-                  <p className="text-xs text-muted-foreground">{terminalActionLabel(route.destination, flows)}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {terminalActionLabel(route.destination, flows, scenarioNameById)}
+                  </p>
 
                   {route.destination.actionCode === "IV" &&
                     selectedIvrFlow &&
@@ -1150,6 +1355,22 @@ export function IvrContent() {
                           destinationType: value,
                           announcementId: null,
                           ivrFlowId: null,
+                          scenarioId: "",
+                          welcomeAnnouncementId: null,
+                          recordingEnabled: true,
+                          includeAnnouncement: false,
+                        }
+                      }
+                      if (value === "VB") {
+                        return {
+                          ...current,
+                          destinationType: "VB",
+                          announcementId: null,
+                          ivrFlowId: null,
+                          scenarioId: "",
+                          welcomeAnnouncementId: null,
+                          recordingEnabled: true,
+                          includeAnnouncement: false,
                         }
                       }
                       if (!canNestFurther) {
@@ -1160,6 +1381,10 @@ export function IvrContent() {
                         destinationType: "IV",
                         announcementId: null,
                         ivrFlowId: null,
+                        scenarioId: "",
+                        welcomeAnnouncementId: null,
+                        recordingEnabled: true,
+                        includeAnnouncement: false,
                       }
                     })
                   }
@@ -1172,6 +1397,7 @@ export function IvrContent() {
                     <SelectItem value="VR">転送(VR)</SelectItem>
                     <SelectItem value="VM">留守電(VM)</SelectItem>
                     <SelectItem value="AN">アナウンス→切断(AN)</SelectItem>
+                    <SelectItem value="VB">ボイスボット(VB)</SelectItem>
                     <SelectItem value="IV" disabled={!canNestFurther}>
                       サブIVR(IV)
                     </SelectItem>
@@ -1192,6 +1418,52 @@ export function IvrContent() {
                     })),
                   busy,
                 )}
+              </div>
+            )}
+
+            {routeDraft.destinationType === "VB" && (
+              <div className="space-y-3 rounded-md border p-3">
+                <div className="space-y-2">
+                  <Label>シナリオ</Label>
+                  {renderScenarioSelect(
+                    routeDraft.scenarioId,
+                    (value) =>
+                      updateRouteDraft(flowId, (current) => ({
+                        ...current,
+                        scenarioId: value === NONE_SCENARIO_VALUE ? "" : value,
+                      })),
+                    busy,
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <Label>開始前アナウンス</Label>
+                  {renderAnnouncementSelect(
+                    routeDraft.welcomeAnnouncementId,
+                    (value) =>
+                      updateRouteDraft(flowId, (current) => ({
+                        ...current,
+                        welcomeAnnouncementId: normalizeAnnouncementValue(value),
+                      })),
+                    busy,
+                  )}
+                </div>
+                <div className="h-10 rounded-md border px-3 flex items-center justify-between">
+                  <span className="text-sm">録音あり（PoC固定）</span>
+                  <Switch checked={routeDraft.recordingEnabled} disabled />
+                </div>
+                <div className="h-10 rounded-md border px-3 flex items-center justify-between">
+                  <span className="text-sm">includeAnnouncement</span>
+                  <Switch
+                    checked={routeDraft.includeAnnouncement}
+                    onCheckedChange={(checked) =>
+                      updateRouteDraft(flowId, (current) => ({
+                        ...current,
+                        includeAnnouncement: checked,
+                      }))
+                    }
+                    disabled={busy}
+                  />
+                </div>
               </div>
             )}
 
@@ -1410,7 +1682,9 @@ export function IvrContent() {
                         onValueChange={(value) =>
                           updateSelectedFlow((flow) => ({
                             ...flow,
-                            fallbackAction: fallbackDestinationFromCode(value as "VR" | "VM" | "AN"),
+                            fallbackAction: fallbackDestinationFromCode(
+                              value as "VR" | "VM" | "AN" | "VB",
+                            ),
                           }))
                         }
                         disabled={busy}
@@ -1422,6 +1696,7 @@ export function IvrContent() {
                           <SelectItem value="VR">転送(VR)</SelectItem>
                           <SelectItem value="VM">留守電(VM)</SelectItem>
                           <SelectItem value="AN">アナウンス→切断(AN)</SelectItem>
+                          <SelectItem value="VB">ボイスボット(VB)</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -1446,6 +1721,76 @@ export function IvrContent() {
                             })),
                           busy,
                         )}
+                      </div>
+                    )}
+
+                    {selectedFlow.fallbackAction.actionCode === "VB" && (
+                      <div className="space-y-3 md:col-span-2 rounded-md border p-3">
+                        <div className="space-y-2">
+                          <Label>シナリオ</Label>
+                          {renderScenarioSelect(
+                            selectedFlow.fallbackAction.scenarioId,
+                            (value) =>
+                              updateSelectedFlow((flow) => ({
+                                ...flow,
+                                fallbackAction:
+                                  flow.fallbackAction.actionCode === "VB"
+                                    ? {
+                                        ...flow.fallbackAction,
+                                        scenarioId: value === NONE_SCENARIO_VALUE ? "" : value,
+                                      }
+                                    : flow.fallbackAction,
+                              })),
+                            busy,
+                          )}
+                          {selectedFlow.fallbackAction.scenarioId &&
+                            !scenarioById.has(selectedFlow.fallbackAction.scenarioId) && (
+                              <p className="text-xs text-amber-600">
+                                （削除済みシナリオ）参照を保持しています
+                              </p>
+                            )}
+                        </div>
+                        <div className="space-y-2">
+                          <Label>開始前アナウンス</Label>
+                          {renderAnnouncementSelect(
+                            selectedFlow.fallbackAction.welcomeAnnouncementId,
+                            (value) =>
+                              updateSelectedFlow((flow) => ({
+                                ...flow,
+                                fallbackAction:
+                                  flow.fallbackAction.actionCode === "VB"
+                                    ? {
+                                        ...flow.fallbackAction,
+                                        welcomeAnnouncementId: normalizeAnnouncementValue(value),
+                                      }
+                                    : flow.fallbackAction,
+                              })),
+                            busy,
+                          )}
+                        </div>
+                        <div className="h-10 rounded-md border px-3 flex items-center justify-between">
+                          <span className="text-sm">録音あり（PoC固定）</span>
+                          <Switch checked={selectedFlow.fallbackAction.recordingEnabled} disabled />
+                        </div>
+                        <div className="h-10 rounded-md border px-3 flex items-center justify-between">
+                          <span className="text-sm">includeAnnouncement</span>
+                          <Switch
+                            checked={selectedFlow.fallbackAction.includeAnnouncement}
+                            onCheckedChange={(checked) =>
+                              updateSelectedFlow((flow) => ({
+                                ...flow,
+                                fallbackAction:
+                                  flow.fallbackAction.actionCode === "VB"
+                                    ? {
+                                        ...flow.fallbackAction,
+                                        includeAnnouncement: checked,
+                                      }
+                                    : flow.fallbackAction,
+                              }))
+                            }
+                            disabled={busy}
+                          />
+                        </div>
                       </div>
                     )}
                   </div>

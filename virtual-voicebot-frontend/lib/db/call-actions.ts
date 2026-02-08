@@ -82,6 +82,16 @@ function normalizeActionConfig(actionType: CallActionType, raw: unknown): Action
           includeAnnouncement:
             typeof raw.includeAnnouncement === "boolean" ? raw.includeAnnouncement : false,
         }
+      case "VB":
+        return {
+          actionCode: "VB",
+          scenarioId: typeof raw.scenarioId === "string" ? raw.scenarioId.trim() : "",
+          welcomeAnnouncementId: normalizeNullableString(raw.welcomeAnnouncementId),
+          recordingEnabled:
+            typeof raw.recordingEnabled === "boolean" ? raw.recordingEnabled : true,
+          includeAnnouncement:
+            typeof raw.includeAnnouncement === "boolean" ? raw.includeAnnouncement : false,
+        }
       case "VM":
       default:
         return {
@@ -274,6 +284,16 @@ function parseActionConfigStrict(
         return {
           actionCode: "IV",
           ivrFlowId: optionalNullableString(record.ivrFlowId),
+          includeAnnouncement:
+            typeof record.includeAnnouncement === "boolean" ? record.includeAnnouncement : false,
+        }
+      case "VB":
+        return {
+          actionCode: "VB",
+          scenarioId: requireString(record.scenarioId, `${fieldPrefix}.scenarioId`),
+          welcomeAnnouncementId: optionalNullableString(record.welcomeAnnouncementId),
+          recordingEnabled:
+            typeof record.recordingEnabled === "boolean" ? record.recordingEnabled : true,
           includeAnnouncement:
             typeof record.includeAnnouncement === "boolean" ? record.includeAnnouncement : false,
         }

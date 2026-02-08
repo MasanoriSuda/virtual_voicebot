@@ -44,6 +44,7 @@ import {
   type StoredAction,
 } from "@/lib/call-actions"
 import type { IvrFlowDefinition } from "@/lib/ivr-flows"
+import type { VoicebotScenario } from "@/lib/scenarios"
 import { cn } from "@/lib/utils"
 
 interface CallActionsApiResponse {
@@ -79,9 +80,16 @@ interface IvrFlowsApiResponse {
   error?: string
 }
 
+interface ScenariosApiResponse {
+  ok: boolean
+  scenarios?: VoicebotScenario[]
+  error?: string
+}
+
 const NONE_ANNOUNCEMENT_VALUE = "__none__"
 const NONE_IVR_VALUE = "__none_ivr__"
-const ALLOW_ACTION_CODES: CallActionCode[] = ["VR", "IV", "VM"]
+const NONE_SCENARIO_VALUE = "__none_scenario__"
+const ALLOW_ACTION_CODES: CallActionCode[] = ["VR", "IV", "VM", "VB"]
 const DENY_ACTION_CODES: CallActionCode[] = ["BZ", "NR", "AN"]
 
 function createId(): string {
@@ -149,6 +157,8 @@ function getAnnouncementId(config: ActionConfig): string | null {
       return config.announcementId
     case "VM":
       return config.announcementId
+    case "VB":
+      return config.welcomeAnnouncementId
     case "AN":
       return config.announcementId
     default:
@@ -162,6 +172,8 @@ function withAnnouncementId(config: ActionConfig, announcementId: string | null)
       return { ...config, announcementId }
     case "VM":
       return { ...config, announcementId }
+    case "VB":
+      return { ...config, welcomeAnnouncementId: announcementId }
     case "AN":
       return { ...config, announcementId }
     default:
@@ -182,6 +194,10 @@ function buildActionSummary(actionType: CallActionType, actionConfig: ActionConf
 
   if (actionConfig.actionCode === "IV") {
     return `${head}${actionConfig.ivrFlowId ? ` (flow: ${actionConfig.ivrFlowId})` : ""}`
+  }
+
+  if (actionConfig.actionCode === "VB") {
+    return `${head}${actionConfig.scenarioId ? ` (scenario: ${actionConfig.scenarioId})` : ""}`
   }
 
   return head
@@ -253,6 +269,7 @@ export function CallActionsContent() {
   )
   const [announcements, setAnnouncements] = useState<StoredAnnouncement[]>([])
   const [ivrFlows, setIvrFlows] = useState<IvrFlowDefinition[]>([])
+  const [scenarios, setScenarios] = useState<VoicebotScenario[]>([])
 
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null)
   const [editorMode, setEditorMode] = useState<"rule" | "anonymous" | "default">("default")
@@ -301,6 +318,22 @@ export function CallActionsContent() {
     [ivrFlows],
   )
 
+  const scenarioOptions = useMemo(
+    () =>
+      [...scenarios].sort((a, b) => {
+        if (a.isActive !== b.isActive) {
+          return a.isActive ? -1 : 1
+        }
+        return a.name.localeCompare(b.name, "ja")
+      }),
+    [scenarios],
+  )
+
+  const scenarioById = useMemo(
+    () => new Map(scenarios.map((scenario) => [scenario.id, scenario])),
+    [scenarios],
+  )
+
   const rootIvrFlows = useMemo(() => collectRootIvrFlows(ivrFlows), [ivrFlows])
 
   const rootIvrFlowById = useMemo(
@@ -317,11 +350,12 @@ export function CallActionsContent() {
       setInfoMessage(null)
 
       try {
-        const [groupsRes, callActionsRes, announcementsRes, ivrFlowsRes] = await Promise.all([
+        const [groupsRes, callActionsRes, announcementsRes, ivrFlowsRes, scenariosRes] = await Promise.all([
           fetch("/api/number-groups", { cache: "no-store" }),
           fetch("/api/call-actions", { cache: "no-store" }),
           fetch("/api/announcements", { cache: "no-store" }).catch(() => null),
           fetch("/api/ivr-flows", { cache: "no-store" }).catch(() => null),
+          fetch("/api/scenarios", { cache: "no-store" }).catch(() => null),
         ])
 
         const groupsBody = (await groupsRes.json()) as NumberGroupsApiResponse
@@ -358,6 +392,14 @@ export function CallActionsContent() {
           }
         }
 
+        let loadedScenarios: VoicebotScenario[] = []
+        if (scenariosRes && scenariosRes.ok) {
+          const scenariosBody = (await scenariosRes.json()) as ScenariosApiResponse
+          if (scenariosBody.ok && Array.isArray(scenariosBody.scenarios)) {
+            loadedScenarios = scenariosBody.scenarios
+          }
+        }
+
         if (cancelled) {
           return
         }
@@ -368,6 +410,7 @@ export function CallActionsContent() {
         setDefaultAction(cloneStoredAction(loadedDefaultAction))
         setAnnouncements(loadedAnnouncements)
         setIvrFlows(loadedIvrFlows)
+        setScenarios(loadedScenarios)
 
         setSelectedRuleId(loadedRules[0]?.id ?? null)
         setEditorMode(loadedRules.length > 0 ? "rule" : "anonymous")
@@ -421,6 +464,37 @@ export function CallActionsContent() {
       nextEditorMode?: "rule" | "anonymous" | "default"
     },
   ): Promise<boolean> => {
+    const missingScenarioSelections: string[] = []
+    const deletedScenarioReferences: string[] = []
+    const collectScenarioIssues = (label: string, actionConfig: ActionConfig) => {
+      if (actionConfig.actionCode !== "VB") {
+        return
+      }
+      const scenarioId = actionConfig.scenarioId.trim()
+      if (scenarioId.length === 0) {
+        missingScenarioSelections.push(label)
+        return
+      }
+      if (!scenarioById.has(scenarioId)) {
+        deletedScenarioReferences.push(`${label} (${scenarioId})`)
+      }
+    }
+
+    for (const rule of next.rules) {
+      collectScenarioIssues(`ルール「${rule.name || rule.id}」`, rule.actionConfig)
+    }
+    collectScenarioIssues("非通知時アクション", next.anonymousAction.actionConfig)
+    collectScenarioIssues("デフォルトアクション", next.defaultAction.actionConfig)
+
+    if (missingScenarioSelections.length > 0) {
+      setErrorMessage(
+        `シナリオを選択してください:\n${missingScenarioSelections
+          .map((item) => `- ${item}`)
+          .join("\n")}`,
+      )
+      return false
+    }
+
     const invalidIvrReferences: string[] = []
     for (const rule of next.rules) {
       if (rule.actionConfig.actionCode === "IV" && rule.actionConfig.ivrFlowId) {
@@ -482,8 +556,19 @@ export function CallActionsContent() {
       setSelectedRuleId(nextSelectedRule)
       setEditorMode(options?.nextEditorMode ?? editorMode)
 
+      const infoMessages: string[] = []
       if (options?.message) {
-        setInfoMessage(options.message)
+        infoMessages.push(options.message)
+      }
+      if (deletedScenarioReferences.length > 0) {
+        infoMessages.push(
+          `（削除済みシナリオ）参照を保持しています:\n${deletedScenarioReferences
+            .map((item) => `- ${item}`)
+            .join("\n")}`,
+        )
+      }
+      if (infoMessages.length > 0) {
+        setInfoMessage(infoMessages.join("\n"))
       }
       return true
     } catch (error) {
@@ -755,6 +840,49 @@ export function CallActionsContent() {
     )
   }
 
+  const renderScenarioSelect = (
+    selectedScenarioId: string,
+    onValueChange: (value: string) => void,
+    disabled: boolean,
+  ) => {
+    const hasSelectedScenario = selectedScenarioId ? scenarioById.has(selectedScenarioId) : true
+    const selectDisabled = disabled || (scenarioOptions.length === 0 && selectedScenarioId.length === 0)
+
+    return (
+      <Select
+        value={selectedScenarioId || NONE_SCENARIO_VALUE}
+        onValueChange={onValueChange}
+        disabled={selectDisabled}
+      >
+        <SelectTrigger>
+          <SelectValue placeholder="シナリオを選択" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NONE_SCENARIO_VALUE}>選択してください</SelectItem>
+          {!hasSelectedScenario && selectedScenarioId && (
+            <SelectItem value={selectedScenarioId}>（削除済みシナリオ）</SelectItem>
+          )}
+          {scenarioOptions.length === 0 ? (
+            <SelectItem value="__empty_scenario__" disabled>
+              （シナリオ未登録）
+            </SelectItem>
+          ) : (
+            scenarioOptions.map((scenario) => (
+              <SelectItem
+                key={scenario.id}
+                value={scenario.id}
+                disabled={!scenario.isActive && scenario.id !== selectedScenarioId}
+              >
+                {scenario.name}
+                {!scenario.isActive ? " [無効]" : ""}
+              </SelectItem>
+            ))
+          )}
+        </SelectContent>
+      </Select>
+    )
+  }
+
   const renderActionEditor = (
     actionType: CallActionType,
     actionConfig: ActionConfig,
@@ -893,6 +1021,60 @@ export function CallActionsContent() {
                 onCheckedChange={(checked) =>
                   callbacks.onActionConfigChange((config) =>
                     config.actionCode === "IV"
+                      ? {
+                          ...config,
+                          includeAnnouncement: checked,
+                        }
+                      : config,
+                  )
+                }
+                disabled={busy}
+              />
+            </div>
+          </div>
+        )}
+
+        {actionConfig.actionCode === "VB" && (
+          <div className="space-y-3 rounded-md border p-3">
+            <p className="text-sm font-medium">ボイスボット設定</p>
+            <div className="space-y-2">
+              <Label>シナリオ</Label>
+              {renderScenarioSelect(
+                actionConfig.scenarioId,
+                (value) =>
+                  callbacks.onActionConfigChange((config) =>
+                    config.actionCode === "VB"
+                      ? {
+                          ...config,
+                          scenarioId: value === NONE_SCENARIO_VALUE ? "" : value,
+                        }
+                      : config,
+                  ),
+                busy,
+              )}
+              {actionConfig.scenarioId && !scenarioById.has(actionConfig.scenarioId) && (
+                <p className="text-xs text-amber-600">（削除済みシナリオ）参照を保持しています</p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label>開始前アナウンス</Label>
+              {renderAnnouncementSelect(
+                actionConfig.welcomeAnnouncementId,
+                (value) => onAnnouncementChange(value, callbacks.onActionConfigChange),
+                busy,
+              )}
+            </div>
+            <div className="h-10 rounded-md border px-3 flex items-center justify-between">
+              <span className="text-sm">録音あり（PoC固定）</span>
+              <Switch checked={actionConfig.recordingEnabled} disabled />
+            </div>
+            <div className="h-10 rounded-md border px-3 flex items-center justify-between">
+              <span className="text-sm">includeAnnouncement</span>
+              <Switch
+                checked={actionConfig.includeAnnouncement}
+                onCheckedChange={(checked) =>
+                  callbacks.onActionConfigChange((config) =>
+                    config.actionCode === "VB"
                       ? {
                           ...config,
                           includeAnnouncement: checked,
