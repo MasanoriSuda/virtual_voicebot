@@ -491,6 +491,7 @@ pub fn database_url() -> Option<String> {
 #[derive(Clone, Debug)]
 pub struct SyncConfig {
     pub poll_interval_sec: u64,
+    pub frontend_poll_interval_sec: u64,
     pub batch_size: i64,
     pub frontend_base_url: String,
     pub timeout_sec: u64,
@@ -501,6 +502,7 @@ impl SyncConfig {
         let frontend_base_url = env_non_empty("FRONTEND_BASE_URL")
             .ok_or_else(|| anyhow!("FRONTEND_BASE_URL must be set"))?;
         let poll_interval_sec = env_u64("SYNC_POLL_INTERVAL_SEC", 300);
+        let frontend_poll_interval_sec = env_u64("FRONTEND_SYNC_INTERVAL_SEC", 30);
         let batch_size = env_i64("SYNC_BATCH_SIZE", 100);
         if batch_size <= 0 {
             return Err(anyhow!("SYNC_BATCH_SIZE must be greater than 0"));
@@ -508,6 +510,7 @@ impl SyncConfig {
         let timeout_sec = env_u64("SYNC_TIMEOUT_SEC", 30);
         Ok(Self {
             poll_interval_sec,
+            frontend_poll_interval_sec,
             batch_size,
             frontend_base_url,
             timeout_sec,

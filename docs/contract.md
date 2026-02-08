@@ -7,9 +7,9 @@
 |------|-----|
 | ステータス | Approved |
 | 作成日 | 2025-12-13（v1） |
-| 改訂日 | 2026-02-08（v2.1） |
-| 関連Issue | #7, #112, #138 |
-| 関連ステアリング | STEER-112, STEER-137 |
+| 改訂日 | 2026-02-08（v2.2） |
+| 関連Issue | #7, #112, #138, #139 |
+| 関連ステアリング | STEER-112, STEER-137, STEER-139 |
 
 ---
 
@@ -403,7 +403,7 @@ Serversync Worker が録音ファイル（実体）を転送する。
 |---------|------|------|
 | GET | /api/number-groups | 番号グループ一覧（CallerGroup） |
 | GET | /api/call-actions | 着信アクションルール一覧（IncomingRule） |
-| GET | /api/ivr-flows | IVR フロー定義一覧（IvrFlowDefinition） |
+| GET | /api/ivr-flows/export | IVR フロー定義一覧（IvrFlowDefinition、Frontend JSON から取得） |
 
 #### GET /api/number-groups
 
@@ -475,9 +475,12 @@ Frontend の `call-actions.json` から着信アクションルール一覧を�
 - Backend Serversync が `call_action_rules` テーブルに保存
 - `anonymousAction` / `defaultAction` は `system_settings.extra` (JSONB) に保存
 
-#### GET /api/ivr-flows（PoC Pull 用）
+#### GET /api/ivr-flows/export（PoC Pull 用）
 
 Frontend の `ivr-flows.json` から IVR フロー定義一覧を返す。
+
+> **エンドポイント分離**: セクション 5.2 の `GET /api/ivr-flows` は Backend DB から取得する CRUD API。
+> 本エンドポイント `/export` は Frontend JSON から取得する Backend Pull 用 API。
 
 **レスポンス**:
 ```json
@@ -516,10 +519,6 @@ Frontend の `ivr-flows.json` から IVR フロー定義一覧を返す。
 **処理内容**:
 - Frontend の JSON ファイル（`ivr-flows.json`）から読み取り
 - Backend Serversync が `ivr_nodes` + `ivr_transitions` に変換して保存
-
-**注**: セクション 5.2 の `GET /api/ivr-flows` は Backend → Frontend の CRUD API（Backend DB からの取得）。
-本セクション 5.4 の `GET /api/ivr-flows` は Frontend → Backend の Pull API（Frontend JSON からの取得）。
-混同を避けるため、将来的には `/api/ivr-flows/export` 等にリネーム推奨。
 
 ---
 
@@ -577,3 +576,4 @@ Frontend の `ivr-flows.json` から IVR フロー定義一覧を返す。
 | 2025-12-27 | v1.1 | Range 対応必須化（Issue #7） | @MasanoriSuda + Claude Code |
 | 2026-02-07 | v2.0 | 全面改訂（STEER-112）：SoT 原則・全エンティティ DTO・Enum 統一・API エンドポイント一覧 | Claude Code (Opus 4.6) |
 | 2026-02-08 | v2.1 | Issue #138 反映：セクション 5.4「Frontend 設定公開 API（Backend Pull 用）」追加（GET /api/number-groups, GET /api/call-actions, GET /api/ivr-flows） | Claude Code (claude-sonnet-4-5) |
+| 2026-02-08 | v2.2 | Issue #139 決定反映：GET /api/ivr-flows → GET /api/ivr-flows/export に変更（既存 CRUD API と責務分離） | Claude Code (claude-sonnet-4-5) |
