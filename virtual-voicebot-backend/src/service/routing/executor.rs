@@ -87,7 +87,13 @@ impl ActionExecutor {
         session.set_recording_enabled(false);
         session.set_announce_mode(true);
         session.set_voicemail_mode(false);
-        if let Some(announcement_id) = action.announcement_id {
+        if let Some(audio_file_url) = action.announcement_audio_file_url.as_ref() {
+            session.set_announcement_audio_file_url(audio_file_url.clone());
+            info!(
+                "[ActionExecutor] call_id={} announcement_audio_file_url={}",
+                call_id, audio_file_url
+            );
+        } else if let Some(announcement_id) = action.announcement_id {
             session.set_announcement_id(announcement_id);
             info!(
                 "[ActionExecutor] call_id={} announcement_id={}",
@@ -116,7 +122,13 @@ impl ActionExecutor {
         session.set_recording_enabled(true);
         session.set_announce_mode(true);
         session.set_voicemail_mode(true);
-        if let Some(announcement_id) = action.announcement_id {
+        if let Some(audio_file_url) = action.announcement_audio_file_url.as_ref() {
+            session.set_announcement_audio_file_url(audio_file_url.clone());
+            info!(
+                "[ActionExecutor] call_id={} voicemail_announcement_audio_file_url={}",
+                call_id, audio_file_url
+            );
+        } else if let Some(announcement_id) = action.announcement_id {
             session.set_announcement_id(announcement_id);
             info!(
                 "[ActionExecutor] call_id={} voicemail_announcement_id={}",
