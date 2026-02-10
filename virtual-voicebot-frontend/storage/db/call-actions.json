@@ -12,8 +12,10 @@
   "defaultAction": {
     "actionType": "allow",
     "actionConfig": {
-      "actionCode": "VM",
-      "announcementId": "b07b7c10-69d6-4514-a010-e61fa7fe03ff"
+      "actionCode": "VR",
+      "recordingEnabled": false,
+      "announceEnabled": false,
+      "announcementId": null
     }
   }
 }

@@ -59,6 +59,31 @@ export interface ValidationResult {
   warnings: string[]
 }
 
+export type IvrTreeNodeType = "flow" | "valid-slot" | "invalid-slot" | "timeout-slot" | "route"
+
+export interface IvrTreeNode {
+  type: IvrTreeNodeType
+  flowId: string
+  routeIndex?: number
+  label: string
+  children: IvrTreeNode[]
+  depth: number
+  meta: {
+    routeCount?: number
+    actionLabel?: string
+    hasWarning?: boolean
+  }
+}
+
+export interface BreadcrumbItem {
+  flowId: string
+  flowName: string
+  viaRoute?: {
+    dtmfKey: DtmfKey
+    label: string
+  }
+}
+
 export const DTMF_KEYS: DtmfKey[] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "#", "*"]
 export const DEFAULT_TIMEOUT_SEC = 10
 export const DEFAULT_MAX_RETRIES = 2
@@ -100,6 +125,11 @@ function normalizeNullableString(value: string | null | undefined): string | nul
 
 function flowLabel(flowId: string, flows: IvrFlowDefinition[]): string {
   return flows.find((flow) => flow.id === flowId)?.name ?? flowId
+}
+
+function displayFlowName(flow: IvrFlowDefinition): string {
+  const name = flow.name.trim()
+  return name.length > 0 ? name : flow.id
 }
 
 export function createDefaultIvrFlow(): IvrFlowDefinition {
@@ -149,6 +179,170 @@ export function terminalActionLabel(
       return `ボイスボット(${scenarioLabel || "未選択"})`
     }
   }
+}
+
+export function buildIvrTree(
+  flows: IvrFlowDefinition[],
+  rootFlowId: string,
+  allFlows: Map<string, IvrFlowDefinition> = new Map(flows.map((flow) => [flow.id, flow])),
+  depth = 1,
+  ancestry: string[] = [rootFlowId],
+): IvrTreeNode | null {
+  const flow = allFlows.get(rootFlowId)
+  if (!flow) {
+    return null
+  }
+
+  const routeNodes: IvrTreeNode[] = flow.routes.map((route, routeIndex) => {
+    const routeNode: IvrTreeNode = {
+      type: "route",
+      flowId: flow.id,
+      routeIndex,
+      label: `${route.dtmfKey}: ${route.label || "（ラベル未設定）"}`,
+      children: [],
+      depth,
+      meta: {
+        actionLabel: terminalActionLabel(route.destination, flows),
+      },
+    }
+
+    if (route.destination.actionCode !== "IV") {
+      return routeNode
+    }
+
+    const childId = route.destination.ivrFlowId.trim()
+    if (childId.length === 0) {
+      routeNode.meta.hasWarning = true
+      return routeNode
+    }
+
+    const childFlow = allFlows.get(childId)
+    if (!childFlow) {
+      routeNode.meta.hasWarning = true
+      return routeNode
+    }
+
+    if (ancestry.includes(childId)) {
+      routeNode.meta.hasWarning = true
+      return routeNode
+    }
+
+    if (depth >= MAX_IVR_DEPTH) {
+      return routeNode
+    }
+
+    const childNode = buildIvrTree(
+      flows,
+      childId,
+      allFlows,
+      depth + 1,
+      ancestry.concat(childId),
+    )
+    if (childNode) {
+      routeNode.children.push(childNode)
+    }
+    return routeNode
+  })
+
+  const missingPrompt = !flow.announcementId || flow.announcementId.trim().length === 0
+
+  return {
+    type: "flow",
+    flowId: flow.id,
+    label: displayFlowName(flow),
+    children: [
+      {
+        type: "valid-slot",
+        flowId: flow.id,
+        label: "Valid Input",
+        children: routeNodes,
+        depth,
+        meta: {},
+      },
+      {
+        type: "invalid-slot",
+        flowId: flow.id,
+        label: "Invalid Input",
+        children: [],
+        depth,
+        meta: {},
+      },
+      {
+        type: "timeout-slot",
+        flowId: flow.id,
+        label: "Timeout",
+        children: [],
+        depth,
+        meta: {},
+      },
+    ],
+    depth,
+    meta: {
+      routeCount: flow.routes.length,
+      hasWarning: missingPrompt,
+    },
+  }
+}
+
+export function buildBreadcrumb(
+  targetFlowId: string,
+  flows: IvrFlowDefinition[],
+): BreadcrumbItem[] {
+  const flowById = new Map(flows.map((flow) => [flow.id, flow]))
+  const targetFlow = flowById.get(targetFlowId)
+  if (!targetFlow) {
+    return []
+  }
+
+  const items: BreadcrumbItem[] = [
+    {
+      flowId: targetFlow.id,
+      flowName: displayFlowName(targetFlow),
+    },
+  ]
+
+  const visited = new Set<string>([targetFlow.id])
+  let currentFlowId = targetFlow.id
+
+  while (true) {
+    const parent = flows.find((flow) =>
+      flow.routes.some(
+        (route) =>
+          route.destination.actionCode === "IV" &&
+          route.destination.ivrFlowId === currentFlowId,
+      ),
+    )
+
+    if (!parent || visited.has(parent.id)) {
+      break
+    }
+
+    const viaRoute = parent.routes.find(
+      (route) =>
+        route.destination.actionCode === "IV" &&
+        route.destination.ivrFlowId === currentFlowId,
+    )
+
+    items.unshift({
+      flowId: parent.id,
+      flowName: displayFlowName(parent),
+    })
+
+    if (viaRoute) {
+      items[1] = {
+        ...items[1],
+        viaRoute: {
+          dtmfKey: viaRoute.dtmfKey,
+          label: viaRoute.label,
+        },
+      }
+    }
+
+    currentFlowId = parent.id
+    visited.add(currentFlowId)
+  }
+
+  return items
 }
 
 function isValidDtmfKey(value: string): value is DtmfKey {
