@@ -8,15 +8,15 @@
       "announcementId": "b07b7c10-69d6-4514-a010-e61fa7fe03ff",
       "timeoutSec": 10,
       "maxRetries": 2,
-      "invalidInputAnnouncementId": null,
-      "timeoutAnnouncementId": null,
+      "invalidInputAnnouncementId": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
+      "timeoutAnnouncementId": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
       "routes": [
         {
           "dtmfKey": "1",
-          "label": "あ",
+          "label": "a",
           "destination": {
             "actionCode": "IV",
-            "ivrFlowId": "6959a9b1-3845-4570-834d-273a075f4ca2"
+            "ivrFlowId": "30e4fffd-566d-4b18-b152-282a42fa0d01"
           }
         }
       ],
@@ -24,39 +24,33 @@
         "actionCode": "VR"
       },
       "createdAt": "2026-02-08T01:46:01.434Z",
-      "updatedAt": "2026-02-08T01:46:26.522Z"
+      "updatedAt": "2026-02-09T23:20:45.140Z"
     },
     {
-      "id": "6959a9b1-3845-4570-834d-273a075f4ca2",
+      "id": "30e4fffd-566d-4b18-b152-282a42fa0d01",
       "name": "新規IVRフロー-1-1",
       "description": null,
       "isActive": true,
-      "announcementId": "b07b7c10-69d6-4514-a010-e61fa7fe03ff",
+      "announcementId": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
       "timeoutSec": 10,
       "maxRetries": 2,
-      "invalidInputAnnouncementId": null,
-      "timeoutAnnouncementId": null,
+      "invalidInputAnnouncementId": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
+      "timeoutAnnouncementId": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
       "routes": [
         {
           "dtmfKey": "1",
-          "label": "あ",
-          "destination": {
-            "actionCode": "VR"
-          }
-        },
-        {
-          "dtmfKey": "2",
-          "label": "い",
+          "label": "a",
           "destination": {
             "actionCode": "VR"
           }
         }
       ],
       "fallbackAction": {
-        "actionCode": "VR"
+        "actionCode": "AN",
+        "announcementId": "b07b7c10-69d6-4514-a010-e61fa7fe03ff"
       },
-      "createdAt": "2026-02-08T01:46:26.522Z",
-      "updatedAt": "2026-02-08T01:49:00.119Z"
+      "createdAt": "2026-02-09T23:17:52.533Z",
+      "updatedAt": "2026-02-09T23:21:50.548Z"
     }
   ]
 }
