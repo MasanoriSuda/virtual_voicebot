@@ -52,6 +52,23 @@ impl ActionExecutor {
         );
         session.set_outbound_mode(false);
         session.set_recording_enabled(action.recording_enabled);
+        if action.announce_enabled {
+            let recording_announcement_id =
+                action.recording_announcement_id.or(action.announcement_id);
+            session.set_recording_notice_pending(true);
+            if let Some(announcement_id) = recording_announcement_id {
+                session.set_announcement_id(announcement_id);
+                info!(
+                    "[ActionExecutor] call_id={} recording_announcement_id={}",
+                    call_id, announcement_id
+                );
+            } else {
+                info!(
+                    "[ActionExecutor] call_id={} recording notice uses fallback audio",
+                    call_id
+                );
+            }
+        }
         Ok(())
     }
 

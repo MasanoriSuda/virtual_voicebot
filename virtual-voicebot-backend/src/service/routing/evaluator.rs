@@ -15,6 +15,7 @@ pub struct ActionConfig {
     pub ivr_flow_id: Option<Uuid>,
     pub recording_enabled: bool,
     pub announce_enabled: bool,
+    pub recording_announcement_id: Option<Uuid>,
     pub announcement_id: Option<Uuid>,
     pub announcement_audio_file_url: Option<String>,
     pub scenario_id: Option<String>,
@@ -28,6 +29,7 @@ impl ActionConfig {
             ivr_flow_id: None,
             recording_enabled: true,
             announce_enabled: false,
+            recording_announcement_id: None,
             announcement_id: None,
             announcement_audio_file_url: None,
             scenario_id: None,
@@ -41,6 +43,7 @@ impl ActionConfig {
             ivr_flow_id: None,
             recording_enabled: false,
             announce_enabled: false,
+            recording_announcement_id: None,
             announcement_id: None,
             announcement_audio_file_url: None,
             scenario_id: None,
@@ -60,6 +63,8 @@ struct ActionConfigDto {
     #[serde(default = "default_false")]
     announce_enabled: bool,
     #[serde(default)]
+    recording_announcement_id: Option<Uuid>,
+    #[serde(default)]
     announcement_id: Option<Uuid>,
     #[serde(default)]
     scenario_id: Option<String>,
@@ -74,6 +79,7 @@ impl From<ActionConfigDto> for ActionConfig {
             ivr_flow_id: dto.ivr_flow_id,
             recording_enabled: dto.recording_enabled,
             announce_enabled: dto.announce_enabled,
+            recording_announcement_id: dto.recording_announcement_id,
             announcement_id: dto.announcement_id,
             announcement_audio_file_url: None,
             scenario_id: dto.scenario_id,
@@ -391,6 +397,7 @@ fn to_action_config_from_registered(row: RegisteredNumberRow) -> ActionConfig {
         ivr_flow_id: row.ivr_flow_id,
         recording_enabled: row.recording_enabled,
         announce_enabled: row.announce_enabled,
+        recording_announcement_id: None,
         announcement_id: row.announcement_id,
         announcement_audio_file_url: None,
         scenario_id: None,
@@ -404,6 +411,7 @@ fn to_action_config_from_routing_rule(row: RoutingRuleRow) -> ActionConfig {
         ivr_flow_id: row.ivr_flow_id,
         recording_enabled: true,
         announce_enabled: true,
+        recording_announcement_id: None,
         announcement_id: row.announcement_id,
         announcement_audio_file_url: None,
         scenario_id: None,
@@ -431,6 +439,23 @@ mod tests {
     }
 
     #[test]
+    fn action_config_dto_parses_recording_announcement_id() {
+        let recording_announcement_id = Uuid::now_v7();
+        let dto: ActionConfigDto = serde_json::from_value(json!({
+            "actionCode": "VR",
+            "announceEnabled": true,
+            "recordingAnnouncementId": recording_announcement_id
+        }))
+        .expect("dto should parse");
+        let config: ActionConfig = dto.into();
+        assert_eq!(config.action_code, "VR");
+        assert_eq!(
+            config.recording_announcement_id,
+            Some(recording_announcement_id)
+        );
+    }
+
+    #[test]
     fn action_config_dto_defaults_without_announcement_id() {
         let dto: ActionConfigDto = serde_json::from_value(json!({
             "actionCode": "NR"
@@ -438,6 +463,7 @@ mod tests {
         .expect("dto should parse");
         let config: ActionConfig = dto.into();
         assert_eq!(config.action_code, "NR");
+        assert_eq!(config.recording_announcement_id, None);
         assert_eq!(config.announcement_id, None);
     }
 }
