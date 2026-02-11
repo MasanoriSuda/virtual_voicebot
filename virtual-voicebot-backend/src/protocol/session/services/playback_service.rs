@@ -105,9 +105,11 @@ impl SessionCoordinator {
     }
 
     pub(crate) fn cancel_playback(&mut self) {
-        if self.playback.is_some() {
-            info!("[session {}] playback cancelled", self.call_id);
+        if self.playback.is_none() {
+            self.sending_audio = false;
+            return;
         }
+        info!("[session {}] playback cancelled", self.call_id);
         self.finish_playback(false);
     }
 }

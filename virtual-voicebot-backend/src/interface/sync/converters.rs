@@ -90,6 +90,22 @@ pub struct IvrActionDestination {
     pub include_announcement: Option<bool>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendAnnouncement {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    #[serde(default = "default_announcement_type")]
+    pub announcement_type: String,
+    #[serde(default = "default_true")]
+    pub is_active: bool,
+    pub audio_file_url: Option<String>,
+    pub tts_text: Option<String>,
+    pub duration_sec: Option<f64>,
+    pub language: Option<String>,
+}
+
 pub fn default_anonymous_action() -> StoredAction {
     StoredAction {
         action_type: "deny".to_string(),
@@ -108,11 +124,13 @@ pub async fn apply_frontend_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     groups: &[CallerGroup],
     actions: &CallActionsPayload,
+    announcements: &[FrontendAnnouncement],
     flows: &[IvrFlowDefinition],
 ) -> Result<(), ConverterError> {
     convert_caller_groups(tx, groups).await?;
     convert_incoming_rules(tx, &actions.rules).await?;
     save_call_actions_settings(tx, actions).await?;
+    convert_announcements(tx, announcements).await?;
     convert_ivr_flows(tx, flows).await?;
     Ok(())
 }
@@ -253,6 +271,79 @@ async fn save_call_actions_settings(
     .bind(extra)
     .execute(&mut **tx)
     .await?;
+
+    Ok(())
+}
+
+async fn convert_announcements(
+    tx: &mut Transaction<'_, Postgres>,
+    announcements: &[FrontendAnnouncement],
+) -> Result<(), ConverterError> {
+    let frontend_ids: Vec<Uuid> = announcements
+        .iter()
+        .map(|announcement| announcement.id)
+        .collect();
+    if !frontend_ids.is_empty() {
+        sqlx::query("DELETE FROM announcements WHERE NOT (id = ANY($1))")
+            .bind(&frontend_ids)
+            .execute(&mut **tx)
+            .await?;
+    } else {
+        sqlx::query("DELETE FROM announcements")
+            .execute(&mut **tx)
+            .await?;
+    }
+
+    for announcement in announcements {
+        let audio_file_url = normalize_optional_text(announcement.audio_file_url.as_deref());
+        let tts_text = normalize_optional_text(announcement.tts_text.as_deref());
+        if audio_file_url.is_none() && tts_text.is_none() {
+            log::warn!(
+                "[serversync] announcement has neither audio_file_url nor tts_text, skipping id={}",
+                announcement.id
+            );
+            continue;
+        }
+        let duration_sec = announcement
+            .duration_sec
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .map(|value| value.round() as i32);
+        let language = announcement
+            .language
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("ja");
+        sqlx::query(
+            "INSERT INTO announcements (
+                id, name, description, announcement_type, is_active, folder_id,
+                audio_file_url, tts_text, duration_sec, language, version, created_at, updated_at
+             )
+             VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9, 1, NOW(), NOW())
+             ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                description = EXCLUDED.description,
+                announcement_type = EXCLUDED.announcement_type,
+                is_active = EXCLUDED.is_active,
+                folder_id = NULL,
+                audio_file_url = EXCLUDED.audio_file_url,
+                tts_text = EXCLUDED.tts_text,
+                duration_sec = EXCLUDED.duration_sec,
+                language = EXCLUDED.language,
+                updated_at = NOW()",
+        )
+        .bind(announcement.id)
+        .bind(announcement.name.trim())
+        .bind(announcement.description.as_deref().map(str::trim))
+        .bind(normalize_announcement_type(&announcement.announcement_type))
+        .bind(announcement.is_active)
+        .bind(audio_file_url)
+        .bind(tts_text)
+        .bind(duration_sec)
+        .bind(language)
+        .execute(&mut **tx)
+        .await?;
+    }
 
     Ok(())
 }
@@ -516,6 +607,24 @@ fn normalize_action_type(raw: &str) -> &'static str {
     }
 }
 
+fn normalize_announcement_type(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "greeting" => "greeting",
+        "hold" => "hold",
+        "ivr" => "ivr",
+        "closed" => "closed",
+        "recording_notice" => "recording_notice",
+        "custom" => "custom",
+        _ => "custom",
+    }
+}
+
+fn normalize_optional_text(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn normalize_action_code(raw: &str) -> String {
     raw.trim().to_ascii_uppercase()
 }
@@ -530,6 +639,10 @@ fn default_timeout_sec() -> i32 {
 
 fn default_max_retries() -> i32 {
     2
+}
+
+fn default_announcement_type() -> String {
+    "custom".to_string()
 }
 
 fn default_ivr_destination() -> IvrActionDestination {

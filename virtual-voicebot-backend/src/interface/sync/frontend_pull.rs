@@ -9,7 +9,7 @@ use tokio::time::{interval, MissedTickBehavior};
 
 use crate::interface::sync::converters::{
     apply_frontend_snapshot, default_anonymous_action, default_default_action, CallActionsPayload,
-    CallerGroup, ConverterError, IvrFlowDefinition, StoredAction,
+    CallerGroup, ConverterError, FrontendAnnouncement, IvrFlowDefinition, StoredAction,
 };
 use crate::shared::config::SyncConfig;
 
@@ -64,6 +64,15 @@ struct IvrFlowsResponse {
     error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AnnouncementsResponse {
+    ok: bool,
+    #[serde(default)]
+    announcements: Vec<FrontendAnnouncement>,
+    error: Option<String>,
+}
+
 impl FrontendPullWorker {
     pub async fn new(database_url: String, config: SyncConfig) -> Result<Self, FrontendPullError> {
         let timeout = Duration::from_secs(config.timeout_sec);
@@ -108,13 +117,19 @@ impl FrontendPullWorker {
             "[serversync] GET /api/call-actions: success rules={}",
             actions.rules.len()
         );
+        let announcements = self.fetch_announcements().await?;
+        log::info!(
+            "[serversync] GET /api/announcements: success announcements={}",
+            announcements.len()
+        );
         let flows = self.fetch_ivr_flows_export().await?;
         log::info!(
             "[serversync] GET /api/ivr-flows/export: success flows={}",
             flows.len()
         );
 
-        self.save_snapshot(&groups, &actions, &flows).await?;
+        self.save_snapshot(&groups, &actions, &announcements, &flows)
+            .await?;
         log::info!("[serversync] frontend pull saved");
         Ok(())
     }
@@ -199,14 +214,40 @@ impl FrontendPullWorker {
         Ok(body.flows)
     }
 
+    async fn fetch_announcements(&self) -> Result<Vec<FrontendAnnouncement>, FrontendPullError> {
+        let url = format!("{}/api/announcements", self.frontend_base_url);
+        let response = self.http_client.get(url).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(FrontendPullError::InvalidResponse(format!(
+                "GET /api/announcements returned status {}",
+                status
+            )));
+        }
+        let body: AnnouncementsResponse = response.json().await?;
+        if !body.ok {
+            return Err(FrontendPullError::InvalidResponse(format!(
+                "GET /api/announcements returned ok=false{}",
+                body.error
+                    .as_ref()
+                    .map(|value| format!(" ({value})"))
+                    .unwrap_or_default()
+            )));
+        }
+        Ok(body.announcements)
+    }
+
     async fn save_snapshot(
         &self,
         groups: &[CallerGroup],
         actions: &CallActionsPayload,
+        announcements: &[FrontendAnnouncement],
         flows: &[IvrFlowDefinition],
     ) -> Result<(), FrontendPullError> {
         let mut tx: Transaction<'_, Postgres> = self.pool.begin().await?;
-        if let Err(error) = apply_frontend_snapshot(&mut tx, groups, actions, flows).await {
+        if let Err(error) =
+            apply_frontend_snapshot(&mut tx, groups, actions, announcements, flows).await
+        {
             tx.rollback().await?;
             return Err(FrontendPullError::ConverterFailed(error));
         }
@@ -217,7 +258,7 @@ impl FrontendPullWorker {
 
 #[cfg(test)]
 mod tests {
-    use super::{CallActionsResponse, NumberGroupsResponse};
+    use super::{AnnouncementsResponse, CallActionsResponse, NumberGroupsResponse};
 
     #[test]
     fn number_groups_response_accepts_camel_case_fields() {
@@ -234,5 +275,13 @@ mod tests {
         assert!(parsed.ok);
         assert!(parsed.anonymous_action.is_none());
         assert!(parsed.default_action.is_none());
+    }
+
+    #[test]
+    fn announcements_response_accepts_announcement_list() {
+        let raw = r#"{"ok":true,"announcements":[{"id":"11111111-1111-4111-8111-111111111111","name":"greeting","announcementType":"custom","isActive":true,"audioFileUrl":"/audio/announcements/a.wav"}]}"#;
+        let parsed: AnnouncementsResponse = serde_json::from_str(raw).expect("valid response");
+        assert!(parsed.ok);
+        assert_eq!(parsed.announcements.len(), 1);
     }
 }

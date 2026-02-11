@@ -1,0 +1,10 @@
+{
+  "callId": "-IMCImCHU7-LAFsyFYhACw..",
+  "recordingStartedAt": "2026-02-11T17:25:43.442937136Z",
+  "sampleRate": 8000,
+  "channels": 2,
+  "durationSec": 15.04,
+  "files": {
+    "mixed": "mixed.wav"
+  }
+}

@@ -1,38 +1,55 @@
 {
   "announcements": {
-    "b07b7c10-69d6-4514-a010-e61fa7fe03ff": {
-      "id": "b07b7c10-69d6-4514-a010-e61fa7fe03ff",
-      "name": "ずんだもん録音アナウンス告知",
+    "e7165a92-2c90-4985-bc73-66dd751462c8": {
+      "id": "e7165a92-2c90-4985-bc73-66dd751462c8",
+      "name": "四国めたんアナウンス",
       "description": null,
-      "announcementType": "greeting",
+      "announcementType": "custom",
       "isActive": true,
       "folderId": "folder-greetings",
-      "audioFileUrl": "/audio/announcements/b07b7c10-69d6-4514-a010-e61fa7fe03ff.wav",
-      "ttsText": "こんにちは、ずんだもんなのだ、このつうわはさーびすこうじょうのためにろくおんしてるのでごりょうしょうねがうのだ",
-      "speakerId": 3,
-      "speakerName": "ずんだもん - ノーマル",
-      "durationSec": 7.819,
-      "language": "ja",
-      "source": "tts",
-      "createdAt": "2026-02-07T17:54:47.383Z",
-      "updatedAt": "2026-02-07T17:54:47.383Z"
-    },
-    "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a": {
-      "id": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
-      "name": "四国めたん録音アナウンス告知",
-      "description": null,
-      "announcementType": "greeting",
-      "isActive": true,
-      "folderId": "folder-greetings",
-      "audioFileUrl": "/audio/announcements/bc8e32af-8b58-4d61-b39f-a9e2d5f2894a.wav",
+      "audioFileUrl": "/audio/announcements/e7165a92-2c90-4985-bc73-66dd751462c8.wav",
       "ttsText": "おでんわありがとうございます、このつうわはさーびすこうじょうのためろくおんしております。",
       "speakerId": 2,
       "speakerName": "四国めたん - ノーマル",
       "durationSec": 5.365,
       "language": "ja",
       "source": "tts",
-      "createdAt": "2026-02-07T17:56:15.404Z",
-      "updatedAt": "2026-02-07T17:56:15.404Z"
+      "createdAt": "2026-02-11T16:32:29.426Z",
+      "updatedAt": "2026-02-11T16:46:30.017Z"
+    },
+    "cd578151-c750-4e3a-a491-5c9b46c4ec54": {
+      "id": "cd578151-c750-4e3a-a491-5c9b46c4ec54",
+      "name": "ずんだもんアナウンス",
+      "description": null,
+      "announcementType": "custom",
+      "isActive": true,
+      "folderId": "folder-greetings",
+      "audioFileUrl": "/audio/announcements/cd578151-c750-4e3a-a491-5c9b46c4ec54.wav",
+      "ttsText": "おでんわありがとうございます、このつうわはさーびすこうじょうのためろくおんしております。",
+      "speakerId": 3,
+      "speakerName": "ずんだもん - ノーマル",
+      "durationSec": 6.219,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-11T16:33:28.289Z",
+      "updatedAt": "2026-02-11T16:33:28.289Z"
+    },
+    "dca2a704-23c6-45fe-a16a-2c059bab0e45": {
+      "id": "dca2a704-23c6-45fe-a16a-2c059bab0e45",
+      "name": "四国めたん非通知",
+      "description": null,
+      "announcementType": "custom",
+      "isActive": true,
+      "folderId": "folder-greetings",
+      "audioFileUrl": "/audio/announcements/dca2a704-23c6-45fe-a16a-2c059bab0e45.wav",
+      "ttsText": "おそれいりますが、ばんごうをつうちのうえおかけなおしください。",
+      "speakerId": 2,
+      "speakerName": "四国めたん - ノーマル",
+      "durationSec": 3.808,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-11T16:48:23.274Z",
+      "updatedAt": "2026-02-11T16:48:23.274Z"
     }
   },
   "folders": {
@@ -73,5 +90,5 @@
       "updatedAt": "2026-02-07T17:48:30.883Z"
     }
   },
-  "updatedAt": "2026-02-07T17:56:15.404Z"
+  "updatedAt": "2026-02-11T16:48:23.274Z"
 }
