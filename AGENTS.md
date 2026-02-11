@@ -71,7 +71,7 @@ docs 修正は原則、**全文再生成ではなく最小差分（patch）で�
    - §5 差分仕様（レビュー指摘に基づく修正）
    - §6 受入条件（レビュー指摘に基づく修正）
    - §7 未確定点/質問（質問の解消）
-5. **レビュー要件**: 修正内容は Claude Code またはオーナーのレビューを受けること
+5. **レビュー要件**: 修正内容は Claude Code またはオーナーのレビューを受けること（運用例外: Claude Code 使用量不足時は Codex セルフレビュー可）
 6. **差分最小**: 全文再生成ではなく、最小差分で修正すること
 
 **禁止事項:**
@@ -161,13 +161,14 @@ DOCS_OK_SCOPE: #<issue number>
 
 1. **Codex が修正**: ステアリング §5 等をレビュー指摘に基づき修正
 2. **PR 作成**: 修正内容を PR にして以下をチェック
-3. **レビュー依頼**: Claude Code またはオーナーに依頼
+3. **レビュー依頼**: Claude Code またはオーナーに依頼（運用例外: Claude Code 使用量不足時は Codex がレビュー実施）
 
-**Claude Code のレビュー要件:**
+**レビュー要件（共通）:**
 - 単なる形式チェックではなく、[CLAUDE.md](CLAUDE.md) に定義された観点から実質的レビューを行う
 - 指摘がある場合は、重大/中/軽に分類して根拠（該当 docs 章/行）とともに提示
 - 「オーナーが承認済み」であっても、仕様観点から独立したレビューを実施
 - レビュー結果は PR コメントまたは `docs/reviews/` に記録
+- 運用例外で Codex がレビューする場合は、`Codexレビュー→指摘→Codex修正` の流れを許可する
 
 **レビュー判定と続行条件（必須）:**
 - レビュー結果は `OK` / `NG` を明示する。
@@ -182,7 +183,7 @@ DOCS_OK_SCOPE: #<issue number>
 ```markdown
 ## Review Checklist (for STEER edits)
 
-- [ ] Claude Code / Owner reviewed (required for STEER edits in Review/Approved)
+- [ ] Claude Code / Owner reviewed（運用例外: Claude 使用量不足時は Codex self-review 可）
 - [ ] DOCS_OK included (required for SoT docs edits)
 - [ ] ストーリー（§2）を変更していない
 - [ ] 差分は最小限（全文再生成していない）
