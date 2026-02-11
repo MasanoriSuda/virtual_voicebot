@@ -118,6 +118,7 @@ pub struct SessionCoordinator {
     no_response_mode: bool,
     announce_mode: bool,
     voicemail_mode: bool,
+    recording_notice_pending: bool,
     announcement_id: Option<Uuid>,
     announcement_audio_file_url: Option<String>,
     ivr_flow_id: Option<Uuid>,
@@ -201,6 +202,7 @@ impl SessionCoordinator {
             no_response_mode: false,
             announce_mode: false,
             voicemail_mode: false,
+            recording_notice_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
             ivr_flow_id: None,
@@ -311,6 +313,10 @@ impl SessionCoordinator {
         self.voicemail_mode = enabled;
     }
 
+    pub(crate) fn set_recording_notice_pending(&mut self, pending: bool) {
+        self.recording_notice_pending = pending;
+    }
+
     pub(crate) fn set_announcement_id(&mut self, announcement_id: Uuid) {
         self.announcement_id = Some(announcement_id);
     }
@@ -342,6 +348,7 @@ impl SessionCoordinator {
         self.no_response_mode = false;
         self.announce_mode = false;
         self.voicemail_mode = false;
+        self.recording_notice_pending = false;
         self.announcement_id = None;
         self.announcement_audio_file_url = None;
         self.ivr_flow_id = None;
@@ -671,6 +678,7 @@ mod tests {
             no_response_mode: false,
             announce_mode: false,
             voicemail_mode: false,
+            recording_notice_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
             ivr_flow_id: None,

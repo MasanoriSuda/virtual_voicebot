@@ -40,6 +40,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-108](STEER-108_sip-core-engine-refactor.md) | 3層アーキテクチャへのリファクタリング | Draft | #108 | P1 | 全モジュールを Protocol/Service/Interface の3層構造に再構成し、依存方向を明確化 |
 | [STEER-110](STEER-110_backend-db-design.md) | バックエンド側データベース設計 | Approved | #110 | P0 | PostgreSQL 統合 DB 設計（11テーブル、UUID v7、月次パーティション、Outbox 同期） |
 | [STEER-123](STEER-123_recording-outbox-enqueue.md) | 録音データ sync_outbox エンキュー実装（Serversync バグフィックス） | Draft | #123 | P0 | 通話終了時に recording と recording_file を sync_outbox にエンキューするトランザクショナルライト実装 |
+| [STEER-143](STEER-143_recording-enhancement.md) | Backend 録音実装強化（Phase 5） | Approved | #143 | P2 | 録音フラグ連動・録音メタデータ管理・Frontend 同期の整合実装 |
 
 ---
 
@@ -82,4 +83,4 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-06 | 1.1 | STEER-108 追加 | Claude Code |
 | 2026-02-07 | 1.2 | STEER-095, STEER-110 追加 | Claude Code |
 | 2026-02-07 | 1.3 | STEER-096, STEER-123 追加（Serversync 実装とバグフィックス） | Claude Code |
-
+| 2026-02-11 | 1.4 | STEER-143 追加（Phase 5: 録音実装強化） | Codex |

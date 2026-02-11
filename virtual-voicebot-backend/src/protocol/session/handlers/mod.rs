@@ -842,7 +842,25 @@ impl SessionCoordinator {
         self.ivr_max_retries = 0;
         self.ivr_timeout_override = None;
 
-        if let Err(err) = self.start_playback(&[super::IVR_INTRO_WAV_PATH]).await {
+        let mut playback_paths: Vec<String> = Vec::with_capacity(2);
+        if self.recording_notice_pending {
+            self.recording_notice_pending = false;
+            let recording_notice_path = self
+                .resolve_announcement_playback_path()
+                .await
+                .unwrap_or_else(|| super::ANNOUNCEMENT_FALLBACK_WAV_PATH.to_string());
+            info!(
+                "[session {}] prepending recording notice path={}",
+                self.call_id, recording_notice_path
+            );
+            playback_paths.push(recording_notice_path);
+            self.announcement_id = None;
+            self.announcement_audio_file_url = None;
+        }
+        playback_paths.push(super::IVR_INTRO_WAV_PATH.to_string());
+        let playback_refs: Vec<&str> = playback_paths.iter().map(String::as_str).collect();
+
+        if let Err(err) = self.start_playback(playback_refs.as_slice()).await {
             warn!(
                 "[session {}] failed to send IVR intro wav: {:?}",
                 self.call_id, err
