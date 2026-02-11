@@ -188,9 +188,15 @@ Backend と共通。詳細は [Backend プロセス定義書 §7](../../virtual-
 
 | 役割 | Claude Code | Codex |
 |------|-------------|-------|
-| 主担当 | 仕様/ドキュメント | 実装/テスト |
-| 出力 | RD/BD/DD/ステアリング | ソースコード |
+| 主担当 | 仕様/ドキュメント（Draft 作成） | 実装/テスト/Review 修正 |
+| 出力 | RD/BD/DD/ステアリング（Draft） | ソースコード/ステアリング（Review 修正） |
 | コード変更 | しない | する |
+
+**重要な変更（Issue #153）:**
+- Claude Code: ステアリング Draft 作成のみ（Review 以降は編集しない）
+- Codex: Review 時の修正・段取り更新を担当（レビュー必須）
+
+詳細な RACI マトリクス（フェーズごとの責任分担）は [Backend プロセス定義書 §6.2](../../virtual-voicebot-backend/docs/process/v-model.md) を参照。
 
 ---
 

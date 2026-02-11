@@ -199,8 +199,9 @@
 | フェーズ | R (実行) | A (説明責任) | C (相談) | I (報告先) |
 |---------|---------|-------------|---------|-----------|
 | 起票 | PL/PO | PL | Arch | Team |
-| 仕様作成 | 担当者+Claude Code | 担当者 | Arch | PL |
+| 仕様作成（Draft） | 担当者+Claude Code | 担当者 | Arch | PL |
 | レビュー | Arch | Arch | - | PL |
+| レビュー指摘対応 | 担当者+Codex | 担当者 | Claude Code/Arch | PL |
 | 承認 | PL/PO | PL/PO | - | Team |
 | 実装 | 担当者+Codex | 担当者 | Arch | PL |
 | コードレビュー | CodeRabbit | Arch | - | PL |

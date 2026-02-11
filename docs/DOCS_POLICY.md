@@ -32,9 +32,11 @@ virtual-voicebot/
 │   │   └── RD-004_call-routing.md      # 電話番号振り分け・迷惑電話対策
 │   ├── design/                         # システム横断設計
 │   │   └── index.md
-│   ├── steering/                       # システム横断ステアリング
-│   │   ├── STEER-099_frontend-mvp.md
-│   │   └── STEER-112_sot-reconstruction.md
+│   ├── steering/                       # システム横断ステアリング（Frontend-Backend 連携）
+│   │   ├── STEER-112_sot-reconstruction.md
+│   │   ├── STEER-113_docs-consolidation.md
+│   │   ├── STEER-137_backend-integration-strategy.md
+│   │   └── STEER-139_frontend-backend-sync-impl.md
 │   ├── style/
 │   │   └── rust.md                     # Rust 固有スタイル
 │   └── reviews/                        # レビュー結果保存先

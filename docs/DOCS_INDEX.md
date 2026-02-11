@@ -53,11 +53,16 @@
 
 ### 2.3 ステアリング（docs/steering/）
 
+**システム横断（Frontend-Backend 連携）のステアリングのみ格納**
+
 | ファイル | 内容 | ステータス |
 |---------|------|----------|
-| [STEER-099_frontend-mvp.md](steering/STEER-099_frontend-mvp.md) | Frontend MVP 仕様 | - |
 | [STEER-112_sot-reconstruction.md](steering/STEER-112_sot-reconstruction.md) | SoT 再構築 | Approved |
 | [STEER-113_docs-consolidation.md](steering/STEER-113_docs-consolidation.md) | 開発ガイドライン統合 | Draft |
+| [STEER-137_backend-integration-strategy.md](steering/STEER-137_backend-integration-strategy.md) | Backend 連携統合戦略 | Approved |
+| [STEER-139_frontend-backend-sync-impl.md](steering/STEER-139_frontend-backend-sync-impl.md) | Frontend → Backend 同期実装 | Approved |
+
+**注:** Backend/Frontend 専用のステアリングは各サブプロジェクト配下の `docs/steering/` を参照
 
 ### 2.4 レビュー（docs/reviews/）
 
