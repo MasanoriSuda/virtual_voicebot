@@ -1,7 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
+use serde_json::json;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -59,9 +60,18 @@ impl RecordingUploader {
         let audio = tokio::fs::read(&request.audio_path)
             .await
             .map_err(|e| RecordingUploadError::FileReadFailed(e.to_string()))?;
-        let meta = tokio::fs::read_to_string(&request.meta_path)
-            .await
-            .map_err(|e| RecordingUploadError::FileReadFailed(e.to_string()))?;
+        let meta = match tokio::fs::read_to_string(&request.meta_path).await {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                log::warn!(
+                    "[serversync] recording meta not found, generating fallback meta recording_id={} path={}",
+                    request.recording_id,
+                    request.meta_path.display()
+                );
+                fallback_meta_json(&request.audio_path)
+            }
+            Err(err) => return Err(RecordingUploadError::FileReadFailed(err.to_string())),
+        };
 
         let audio_part = reqwest::multipart::Part::bytes(audio)
             .file_name("mixed.wav")
@@ -100,5 +110,39 @@ impl RecordingUploader {
         }
 
         Ok(body.file_url)
+    }
+}
+
+fn fallback_meta_json(audio_path: &Path) -> String {
+    let call_id = audio_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown");
+    json!({
+        "callId": call_id,
+        "recordingStartedAt": serde_json::Value::Null,
+        "sampleRate": 8000,
+        "channels": 2,
+        "durationSec": 0.0,
+        "files": {
+            "mixed": "mixed.wav"
+        }
+    })
+    .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_meta_json_is_valid_json() {
+        let meta = fallback_meta_json(Path::new("storage/recordings/call-a/mixed.wav"));
+        let parsed: serde_json::Value = serde_json::from_str(&meta).expect("valid json");
+        assert_eq!(parsed["callId"], "call-a");
+        assert_eq!(parsed["files"]["mixed"], "mixed.wav");
+        assert_eq!(parsed["sampleRate"], 8000);
+        assert_eq!(parsed["channels"], 2);
     }
 }

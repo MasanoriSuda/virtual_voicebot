@@ -3,10 +3,9 @@
   "anonymousAction": {
     "actionType": "allow",
     "actionConfig": {
-      "actionCode": "VR",
-      "recordingEnabled": true,
-      "announceEnabled": true,
-      "announcementId": "e7165a92-2c90-4985-bc73-66dd751462c8"
+      "actionCode": "IV",
+      "ivrFlowId": "8f2daa6a-4c96-472f-8c1f-0276ed102e7a",
+      "includeAnnouncement": true
     }
   },
   "defaultAction": {

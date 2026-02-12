@@ -1,7 +1,7 @@
 {
   "flows": [
     {
-      "id": "8a268a54-f4be-4ff3-b2c9-ca59d34fe286",
+      "id": "8f2daa6a-4c96-472f-8c1f-0276ed102e7a",
       "name": "test",
       "description": null,
       "isActive": true,
@@ -12,18 +12,27 @@
       "timeoutAnnouncementId": "46290e37-45b5-4f0d-9d9e-7df2bd2019bc",
       "routes": [
         {
-          "dtmfKey": "1",
-          "label": "オペレーター転送",
+          "dtmfKey": "2",
+          "label": "hote",
           "destination": {
             "actionCode": "VR"
+          }
+        },
+        {
+          "dtmfKey": "1",
+          "label": "hote2",
+          "destination": {
+            "actionCode": "AN",
+            "announcementId": "dca2a704-23c6-45fe-a16a-2c059bab0e45"
           }
         }
       ],
       "fallbackAction": {
-        "actionCode": "VR"
+        "actionCode": "AN",
+        "announcementId": "cddcb296-b596-431a-a9c5-2ed27b5030ec"
       },
-      "createdAt": "2026-02-08T01:46:01.434Z",
-      "updatedAt": "2026-02-12T01:06:20.345Z"
+      "createdAt": "2026-02-12T13:29:43.164Z",
+      "updatedAt": "2026-02-12T14:14:54.679Z"
     }
   ]
 }
