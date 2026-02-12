@@ -580,6 +580,7 @@ fn is_e164(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::session::types::SessionControlIn;
     use crate::shared::ports::ingest::IngestPayload;
     use crate::shared::ports::routing_port::NoopRoutingPort;
 
@@ -619,14 +620,19 @@ mod tests {
         }
     }
 
-    fn build_test_session(storage_port: Arc<dyn StoragePort>) -> SessionCoordinator {
+    fn build_test_session_with_control(
+        storage_port: Arc<dyn StoragePort>,
+    ) -> (
+        SessionCoordinator,
+        tokio::sync::mpsc::Receiver<SessionControlIn>,
+    ) {
         let (session_out_tx, _session_out_rx) = mpsc::channel(32);
         let (app_tx, _app_rx) = crate::shared::ports::app::app_event_channel(16);
-        let (control_tx, _control_rx) = mpsc::channel(SESSION_CONTROL_CHANNEL_CAPACITY);
+        let (control_tx, control_rx) = mpsc::channel(SESSION_CONTROL_CHANNEL_CAPACITY);
         let (media_tx, _media_rx) = mpsc::channel(SESSION_MEDIA_CHANNEL_CAPACITY);
         let base_cfg = crate::shared::config::Config::from_env().expect("config loads");
         let runtime_cfg = Arc::new(SessionRuntimeConfig::from_env(&base_cfg));
-        SessionCoordinator {
+        let session = SessionCoordinator {
             state_machine: SessionStateMachine::new(),
             call_id: CallId::new("test-call".to_string()).expect("valid test call id"),
             from_uri: "sip:from@example.com".to_string(),
@@ -689,7 +695,13 @@ mod tests {
             ivr_timeout_override: None,
             session_expires: None,
             session_refresher: None,
-        }
+        };
+        (session, control_rx)
+    }
+
+    fn build_test_session(storage_port: Arc<dyn StoragePort>) -> SessionCoordinator {
+        let (session, _control_rx) = build_test_session_with_control(storage_port);
+        session
     }
 
     #[tokio::test]
@@ -701,6 +713,29 @@ mod tests {
         session.cancel_playback();
         assert!(session.playback.is_none());
         assert!(!session.sending_audio);
+    }
+
+    #[tokio::test]
+    async fn finish_playback_requests_transfer_after_recording_notice() {
+        let (mut session, mut control_rx) =
+            build_test_session_with_control(Arc::new(DummyStoragePort));
+        session.set_announce_mode(true);
+        session.set_recording_notice_pending(true);
+
+        session.finish_playback(false);
+
+        assert!(!session.announce_mode);
+        assert!(!session.recording_notice_pending);
+        let control = tokio::time::timeout(Duration::from_millis(50), control_rx.recv())
+            .await
+            .expect("control message should be sent")
+            .expect("control channel should stay open");
+        match control {
+            SessionControlIn::AppTransferRequest { person } => {
+                assert_eq!(person, "recording_notice");
+            }
+            other => panic!("unexpected control message: {:?}", other),
+        }
     }
 
     #[tokio::test]

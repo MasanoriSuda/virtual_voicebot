@@ -81,6 +81,19 @@ impl SessionCoordinator {
                     "[session {}] voicemail announcement finished, recording continues",
                     self.call_id
                 );
+            } else if self.recording_notice_pending {
+                self.announce_mode = false;
+                self.recording_notice_pending = false;
+                info!(
+                    "[session {}] recording notice finished, requesting transfer",
+                    self.call_id
+                );
+                let _ = self.control_tx.try_send(
+                    crate::protocol::session::types::SessionControlIn::AppTransferRequest {
+                        person: "recording_notice".to_string(),
+                    },
+                );
+                return;
             } else {
                 self.announce_mode = false;
                 info!(

@@ -1,11 +1,9 @@
 {
   "rules": [],
   "anonymousAction": {
-    "actionType": "allow",
+    "actionType": "deny",
     "actionConfig": {
-      "actionCode": "VR",
-      "recordingEnabled": true,
-      "announceEnabled": true,
+      "actionCode": "AN",
       "announcementId": "dca2a704-23c6-45fe-a16a-2c059bab0e45"
     }
   },

@@ -55,6 +55,9 @@ impl ActionExecutor {
         if action.announce_enabled {
             let recording_announcement_id =
                 action.recording_announcement_id.or(action.announcement_id);
+            // Route through announce flow so recording notice is handled
+            // separately from legacy IVR intro playback.
+            session.set_announce_mode(true);
             session.set_recording_notice_pending(true);
             if let Some(announcement_id) = recording_announcement_id {
                 session.set_announcement_id(announcement_id);
