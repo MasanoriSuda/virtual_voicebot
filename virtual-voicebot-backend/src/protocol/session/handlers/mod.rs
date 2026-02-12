@@ -289,6 +289,22 @@ impl SessionCoordinator {
                                 let _ = self.control_tx.try_send(SessionControlIn::AppHangup);
                             }
                         }
+                    } else if self.voicebot_direct_mode {
+                        let intro_path = if self.recording_notice_pending {
+                            self.recording_notice_pending = false;
+                            let path = self
+                                .resolve_announcement_playback_path()
+                                .await
+                                .unwrap_or_else(|| {
+                                    super::ANNOUNCEMENT_FALLBACK_WAV_PATH.to_string()
+                                });
+                            self.announcement_id = None;
+                            self.announcement_audio_file_url = None;
+                            Some(path)
+                        } else {
+                            None
+                        };
+                        self.transition_to_voicebot_mode(intro_path).await;
                     } else {
                         if let Some(ivr_flow_id) = self.ivr_flow_id {
                             if !self.enter_db_ivr_flow(ivr_flow_id).await {

@@ -67,6 +67,8 @@ struct ActionConfigDto {
     #[serde(default)]
     announcement_id: Option<Uuid>,
     #[serde(default)]
+    welcome_announcement_id: Option<Uuid>,
+    #[serde(default)]
     scenario_id: Option<String>,
     #[serde(default)]
     include_announcement: Option<bool>,
@@ -74,13 +76,14 @@ struct ActionConfigDto {
 
 impl From<ActionConfigDto> for ActionConfig {
     fn from(dto: ActionConfigDto) -> Self {
+        let announcement_id = dto.welcome_announcement_id.or(dto.announcement_id);
         Self {
             action_code: dto.action_code,
             ivr_flow_id: dto.ivr_flow_id,
             recording_enabled: dto.recording_enabled,
             announce_enabled: dto.announce_enabled,
             recording_announcement_id: dto.recording_announcement_id,
-            announcement_id: dto.announcement_id,
+            announcement_id,
             announcement_audio_file_url: None,
             scenario_id: dto.scenario_id,
             include_announcement: dto.include_announcement,
@@ -465,5 +468,30 @@ mod tests {
         assert_eq!(config.action_code, "NR");
         assert_eq!(config.recording_announcement_id, None);
         assert_eq!(config.announcement_id, None);
+    }
+
+    #[test]
+    fn action_config_dto_maps_welcome_announcement_id() {
+        let welcome_announcement_id = Uuid::now_v7();
+        let dto: ActionConfigDto = serde_json::from_value(json!({
+            "actionCode": "VB",
+            "welcomeAnnouncementId": welcome_announcement_id
+        }))
+        .expect("dto should parse");
+        let config: ActionConfig = dto.into();
+        assert_eq!(config.action_code, "VB");
+        assert_eq!(config.announcement_id, Some(welcome_announcement_id));
+    }
+
+    #[test]
+    fn action_config_dto_parses_include_announcement() {
+        let dto: ActionConfigDto = serde_json::from_value(json!({
+            "actionCode": "VR",
+            "includeAnnouncement": true
+        }))
+        .expect("dto should parse");
+        let config: ActionConfig = dto.into();
+        assert_eq!(config.action_code, "VR");
+        assert_eq!(config.include_announcement, Some(true));
     }
 }

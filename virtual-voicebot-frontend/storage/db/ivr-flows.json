@@ -2,21 +2,20 @@
   "flows": [
     {
       "id": "8a268a54-f4be-4ff3-b2c9-ca59d34fe286",
-      "name": "新規IVRフロー-1",
+      "name": "test",
       "description": null,
       "isActive": true,
-      "announcementId": "b07b7c10-69d6-4514-a010-e61fa7fe03ff",
+      "announcementId": "46290e37-45b5-4f0d-9d9e-7df2bd2019bc",
       "timeoutSec": 10,
       "maxRetries": 2,
-      "invalidInputAnnouncementId": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
-      "timeoutAnnouncementId": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
+      "invalidInputAnnouncementId": "b27a3fff-5d53-433e-a3ef-18217d9c3907",
+      "timeoutAnnouncementId": "46290e37-45b5-4f0d-9d9e-7df2bd2019bc",
       "routes": [
         {
           "dtmfKey": "1",
-          "label": "a",
+          "label": "オペレーター転送",
           "destination": {
-            "actionCode": "IV",
-            "ivrFlowId": "30e4fffd-566d-4b18-b152-282a42fa0d01"
+            "actionCode": "VR"
           }
         }
       ],
@@ -24,33 +23,7 @@
         "actionCode": "VR"
       },
       "createdAt": "2026-02-08T01:46:01.434Z",
-      "updatedAt": "2026-02-09T23:20:45.140Z"
-    },
-    {
-      "id": "30e4fffd-566d-4b18-b152-282a42fa0d01",
-      "name": "新規IVRフロー-1-1",
-      "description": null,
-      "isActive": true,
-      "announcementId": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
-      "timeoutSec": 10,
-      "maxRetries": 2,
-      "invalidInputAnnouncementId": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
-      "timeoutAnnouncementId": "bc8e32af-8b58-4d61-b39f-a9e2d5f2894a",
-      "routes": [
-        {
-          "dtmfKey": "1",
-          "label": "a",
-          "destination": {
-            "actionCode": "VR"
-          }
-        }
-      ],
-      "fallbackAction": {
-        "actionCode": "AN",
-        "announcementId": "b07b7c10-69d6-4514-a010-e61fa7fe03ff"
-      },
-      "createdAt": "2026-02-09T23:17:52.533Z",
-      "updatedAt": "2026-02-09T23:21:50.548Z"
+      "updatedAt": "2026-02-12T01:06:20.345Z"
     }
   ]
 }

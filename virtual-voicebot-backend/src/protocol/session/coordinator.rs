@@ -117,6 +117,7 @@ pub struct SessionCoordinator {
     invite_rejected: bool,
     no_response_mode: bool,
     announce_mode: bool,
+    voicebot_direct_mode: bool,
     voicemail_mode: bool,
     recording_notice_pending: bool,
     announcement_id: Option<Uuid>,
@@ -201,6 +202,7 @@ impl SessionCoordinator {
             invite_rejected: false,
             no_response_mode: false,
             announce_mode: false,
+            voicebot_direct_mode: false,
             voicemail_mode: false,
             recording_notice_pending: false,
             announcement_id: None,
@@ -309,6 +311,10 @@ impl SessionCoordinator {
         self.announce_mode = enabled;
     }
 
+    pub(crate) fn set_voicebot_direct_mode(&mut self, enabled: bool) {
+        self.voicebot_direct_mode = enabled;
+    }
+
     pub(crate) fn set_voicemail_mode(&mut self, enabled: bool) {
         self.voicemail_mode = enabled;
     }
@@ -347,6 +353,7 @@ impl SessionCoordinator {
     pub(crate) fn reset_action_modes(&mut self) {
         self.no_response_mode = false;
         self.announce_mode = false;
+        self.voicebot_direct_mode = false;
         self.voicemail_mode = false;
         self.recording_notice_pending = false;
         self.announcement_id = None;
@@ -683,6 +690,7 @@ mod tests {
             invite_rejected: false,
             no_response_mode: false,
             announce_mode: false,
+            voicebot_direct_mode: false,
             voicemail_mode: false,
             recording_notice_pending: false,
             announcement_id: None,
@@ -736,6 +744,14 @@ mod tests {
             }
             other => panic!("unexpected control message: {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn reset_action_modes_clears_voicebot_direct_mode() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        session.set_voicebot_direct_mode(true);
+        session.reset_action_modes();
+        assert!(!session.voicebot_direct_mode);
     }
 
     #[tokio::test]

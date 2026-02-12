@@ -89,8 +89,12 @@ function normalizeActionConfig(actionType: CallActionType, raw: unknown): Action
           welcomeAnnouncementId: normalizeNullableString(raw.welcomeAnnouncementId),
           recordingEnabled:
             typeof raw.recordingEnabled === "boolean" ? raw.recordingEnabled : true,
-          includeAnnouncement:
-            typeof raw.includeAnnouncement === "boolean" ? raw.includeAnnouncement : false,
+          announceEnabled:
+            typeof raw.announceEnabled === "boolean"
+              ? raw.announceEnabled
+              : typeof raw.includeAnnouncement === "boolean"
+                ? raw.includeAnnouncement
+                : false,
         }
       case "VM":
       default:
@@ -169,6 +173,39 @@ function normalizeRules(input: unknown, nowIso: string): IncomingRule[] {
   return rules
 }
 
+function isLegacyVbActionConfig(input: unknown): boolean {
+  if (!isRecord(input) || input.actionCode !== "VB") {
+    return false
+  }
+  return (
+    typeof input.includeAnnouncement === "boolean" &&
+    typeof input.announceEnabled !== "boolean"
+  )
+}
+
+function hasLegacyVbAnnouncementFlag(input: unknown): boolean {
+  if (!isRecord(input)) {
+    return false
+  }
+
+  const hasLegacyStoredAction = (value: unknown): boolean => {
+    if (!isRecord(value)) {
+      return false
+    }
+    return isLegacyVbActionConfig(value.actionConfig)
+  }
+
+  if (hasLegacyStoredAction(input.anonymousAction) || hasLegacyStoredAction(input.defaultAction)) {
+    return true
+  }
+
+  if (!Array.isArray(input.rules)) {
+    return false
+  }
+
+  return input.rules.some((rule) => isRecord(rule) && isLegacyVbActionConfig(rule.actionConfig))
+}
+
 function normalizeDatabase(input: unknown): CallActionsDatabase {
   const defaults = createDefaultCallActionsDatabase()
   const nowIso = new Date().toISOString()
@@ -198,7 +235,12 @@ async function readDb(): Promise<CallActionsDatabase> {
   await ensureDbDir()
   try {
     const raw = await fs.readFile(CALL_ACTIONS_DB_FILE, "utf8")
-    return normalizeDatabase(JSON.parse(raw))
+    const parsed = JSON.parse(raw)
+    const normalized = normalizeDatabase(parsed)
+    if (hasLegacyVbAnnouncementFlag(parsed)) {
+      await writeDb(normalized)
+    }
+    return normalized
   } catch (error) {
     const err = error as NodeJS.ErrnoException
     if (err.code === "ENOENT") {
@@ -294,8 +336,12 @@ function parseActionConfigStrict(
           welcomeAnnouncementId: optionalNullableString(record.welcomeAnnouncementId),
           recordingEnabled:
             typeof record.recordingEnabled === "boolean" ? record.recordingEnabled : true,
-          includeAnnouncement:
-            typeof record.includeAnnouncement === "boolean" ? record.includeAnnouncement : false,
+          announceEnabled:
+            typeof record.announceEnabled === "boolean"
+              ? record.announceEnabled
+              : typeof record.includeAnnouncement === "boolean"
+                ? record.includeAnnouncement
+                : false,
         }
       case "VM":
       default:

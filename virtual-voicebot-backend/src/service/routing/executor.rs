@@ -24,7 +24,8 @@ impl ActionExecutor {
         );
         session.reset_action_modes();
         match action.action_code.as_str() {
-            "VR" | "VB" => self.execute_vr(action, call_id, session).await,
+            "VR" => self.execute_vr(action, call_id, session).await,
+            "VB" => self.execute_vb(action, call_id, session).await,
             "BZ" => self.execute_bz(call_id, session).await,
             "NR" => self.execute_nr(call_id, session).await,
             "AN" => self.execute_an(action, call_id, session).await,
@@ -68,6 +69,39 @@ impl ActionExecutor {
             } else {
                 info!(
                     "[ActionExecutor] call_id={} recording notice uses fallback audio",
+                    call_id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn execute_vb(
+        &self,
+        action: &ActionConfig,
+        call_id: &str,
+        session: &mut SessionCoordinator,
+    ) -> Result<()> {
+        info!(
+            "[ActionExecutor] call_id={} executing VB (voicebot mode, recording_enabled=false)",
+            call_id
+        );
+        session.set_outbound_mode(false);
+        session.set_voicebot_direct_mode(true);
+        session.set_recording_enabled(false);
+        if action.announce_enabled {
+            // VB should remain on voicebot path; prepend notice in legacy IVR path
+            // and then continue to voicebot mode.
+            session.set_recording_notice_pending(true);
+            if let Some(announcement_id) = action.announcement_id {
+                session.set_announcement_id(announcement_id);
+                info!(
+                    "[ActionExecutor] call_id={} welcome_announcement_id={}",
+                    call_id, announcement_id
+                );
+            } else {
+                info!(
+                    "[ActionExecutor] call_id={} welcome announcement uses fallback audio",
                     call_id
                 );
             }

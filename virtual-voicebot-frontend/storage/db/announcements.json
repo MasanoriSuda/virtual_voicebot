@@ -50,6 +50,57 @@
       "source": "tts",
       "createdAt": "2026-02-11T16:48:23.274Z",
       "updatedAt": "2026-02-11T16:48:23.274Z"
+    },
+    "b27a3fff-5d53-433e-a3ef-18217d9c3907": {
+      "id": "b27a3fff-5d53-433e-a3ef-18217d9c3907",
+      "name": "四国めたん不正アナウンス",
+      "description": null,
+      "announcementType": "custom",
+      "isActive": true,
+      "folderId": "folder-ivr",
+      "audioFileUrl": "/audio/announcements/b27a3fff-5d53-433e-a3ef-18217d9c3907.wav",
+      "ttsText": "ただしいばんごうがおされませんでした",
+      "speakerId": 2,
+      "speakerName": "四国めたん - ノーマル",
+      "durationSec": 2.357,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-12T00:57:06.843Z",
+      "updatedAt": "2026-02-12T00:57:06.843Z"
+    },
+    "cddcb296-b596-431a-a9c5-2ed27b5030ec": {
+      "id": "cddcb296-b596-431a-a9c5-2ed27b5030ec",
+      "name": "四国めたんIVR終了アナウス",
+      "description": null,
+      "announcementType": "custom",
+      "isActive": true,
+      "folderId": "folder-ivr",
+      "audioFileUrl": "/audio/announcements/cddcb296-b596-431a-a9c5-2ed27b5030ec.wav",
+      "ttsText": "おそれいりますが、さいどおかけなおしください",
+      "speakerId": 2,
+      "speakerName": "四国めたん - ノーマル",
+      "durationSec": 2.912,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-12T00:58:52.497Z",
+      "updatedAt": "2026-02-12T00:58:52.497Z"
+    },
+    "46290e37-45b5-4f0d-9d9e-7df2bd2019bc": {
+      "id": "46290e37-45b5-4f0d-9d9e-7df2bd2019bc",
+      "name": "四国めたんIVR案内",
+      "description": null,
+      "announcementType": "custom",
+      "isActive": true,
+      "folderId": "folder-ivr",
+      "audioFileUrl": "/audio/announcements/46290e37-45b5-4f0d-9d9e-7df2bd2019bc.wav",
+      "ttsText": "オペレーターへお繋ぎしたい方は１を、もう一度聞きたい方は９を押してください",
+      "speakerId": 2,
+      "speakerName": "四国めたん - ノーマル",
+      "durationSec": 5.397,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-12T01:02:38.291Z",
+      "updatedAt": "2026-02-12T01:02:38.291Z"
     }
   },
   "folders": {
@@ -90,5 +141,5 @@
       "updatedAt": "2026-02-07T17:48:30.883Z"
     }
   },
-  "updatedAt": "2026-02-11T16:48:23.274Z"
+  "updatedAt": "2026-02-12T01:02:38.291Z"
 }
