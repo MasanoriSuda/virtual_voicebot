@@ -28,6 +28,8 @@ pub enum SyncWorkerError {
     FileCleanupFailed(String),
 }
 
+const FILE_READ_RETRY_GRACE_SECONDS: i64 = 300;
+
 #[derive(Clone)]
 pub struct OutboxWorker {
     outbox_repo: Arc<dyn SyncOutboxPort>,
@@ -79,6 +81,16 @@ impl OutboxWorker {
                     entry.entity_type,
                     error
                 );
+                if should_mark_processed_on_error(&entry, &error) {
+                    log::warn!(
+                        "[serversync] marking outbox entry {} as processed due to non-retryable error",
+                        entry.id
+                    );
+                    self.outbox_repo
+                        .mark_processed(entry.id, Utc::now())
+                        .await
+                        .map_err(|e| SyncWorkerError::OutboxFailed(e.to_string()))?;
+                }
                 continue;
             }
             self.outbox_repo
@@ -177,6 +189,7 @@ impl RecordingFilePayload {
                         .to_string(),
                 )
             })?;
+        let audio_path = resolve_recording_path(audio_path);
 
         let recording_dir = audio_path.parent().map(Path::to_path_buf).ok_or_else(|| {
             SyncWorkerError::InvalidPayload("audio_path has no parent directory".to_string())
@@ -200,6 +213,7 @@ impl RecordingFilePayload {
             .or_else(|| value.get("meta_path"))
             .and_then(Value::as_str)
             .map(PathBuf::from)
+            .map(resolve_recording_path)
             .unwrap_or_else(|| recording_dir.join("meta.json"));
 
         Ok(Self {
@@ -226,6 +240,31 @@ fn parse_uuid(value: &Value, camel: &str, snake: &str) -> Result<Uuid, SyncWorke
         .map_err(|e| SyncWorkerError::InvalidPayload(format!("{camel}/{snake} is invalid: {e}")))
 }
 
+fn resolve_recording_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(&path));
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    candidates.push(manifest_dir.join(&path));
+    if let Some(repo_root) = manifest_dir.parent() {
+        candidates.push(repo_root.join(&path));
+    }
+
+    for candidate in candidates {
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    path
+}
+
 async fn cleanup_recording_dir(dir: &Path, call_id: &str) -> Result<(), SyncWorkerError> {
     let Some(parent) = dir.parent() else {
         return Err(SyncWorkerError::FileCleanupFailed(
@@ -249,6 +288,28 @@ async fn cleanup_recording_dir(dir: &Path, call_id: &str) -> Result<(), SyncWork
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(SyncWorkerError::FileCleanupFailed(err.to_string())),
+    }
+}
+
+fn should_mark_processed_on_error(entry: &PendingOutboxEntry, error: &SyncWorkerError) -> bool {
+    if entry.entity_type != "recording_file" {
+        return false;
+    }
+    match error {
+        SyncWorkerError::InvalidPayload(_) => true,
+        SyncWorkerError::RecordingUploadFailed(RecordingUploadError::FileReadFailed(message)) => {
+            let lower = message.to_ascii_lowercase();
+            let is_not_found =
+                message.contains("No such file or directory") || lower.contains("not found");
+            if !is_not_found {
+                return false;
+            }
+            // File creation can lag slightly behind outbox enqueue.
+            // Keep retrying for a grace period before considering it non-retryable.
+            let age_sec = (Utc::now() - entry.created_at).num_seconds();
+            age_sec >= FILE_READ_RETRY_GRACE_SECONDS
+        }
+        _ => false,
     }
 }
 
@@ -292,5 +353,44 @@ mod tests {
             parsed.meta_path,
             PathBuf::from("storage/recordings/call-b/meta.json")
         );
+    }
+
+    fn sample_pending_recording_entry() -> PendingOutboxEntry {
+        PendingOutboxEntry {
+            id: 1,
+            entity_type: "recording_file".to_string(),
+            entity_id: Uuid::nil(),
+            payload: json!({}),
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn missing_file_error_is_retryable_within_grace_period() {
+        let entry = sample_pending_recording_entry();
+        let error = SyncWorkerError::RecordingUploadFailed(RecordingUploadError::FileReadFailed(
+            "No such file or directory (os error 2)".to_string(),
+        ));
+        assert!(!should_mark_processed_on_error(&entry, &error));
+    }
+
+    #[test]
+    fn missing_file_error_is_marked_processed_after_grace_period() {
+        let mut entry = sample_pending_recording_entry();
+        entry.created_at =
+            Utc::now() - chrono::Duration::seconds(FILE_READ_RETRY_GRACE_SECONDS + 1);
+        let error = SyncWorkerError::RecordingUploadFailed(RecordingUploadError::FileReadFailed(
+            "No such file or directory (os error 2)".to_string(),
+        ));
+        assert!(should_mark_processed_on_error(&entry, &error));
+    }
+
+    #[test]
+    fn retryable_transport_error_is_not_marked_processed() {
+        let entry = sample_pending_recording_entry();
+        let error = SyncWorkerError::RecordingUploadFailed(RecordingUploadError::TransportFailed(
+            "timeout".to_string(),
+        ));
+        assert!(!should_mark_processed_on_error(&entry, &error));
     }
 }

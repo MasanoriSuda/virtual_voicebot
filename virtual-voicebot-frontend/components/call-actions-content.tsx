@@ -1069,15 +1069,15 @@ export function CallActionsContent() {
               <Switch checked={actionConfig.recordingEnabled} disabled />
             </div>
             <div className="h-10 rounded-md border px-3 flex items-center justify-between">
-              <span className="text-sm">includeAnnouncement</span>
+              <span className="text-sm">announceEnabled</span>
               <Switch
-                checked={actionConfig.includeAnnouncement}
+                checked={actionConfig.announceEnabled}
                 onCheckedChange={(checked) =>
                   callbacks.onActionConfigChange((config) =>
                     config.actionCode === "VB"
                       ? {
                           ...config,
-                          includeAnnouncement: checked,
+                          announceEnabled: checked,
                         }
                       : config,
                   )

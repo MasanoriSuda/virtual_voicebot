@@ -117,8 +117,10 @@ pub struct SessionCoordinator {
     invite_rejected: bool,
     no_response_mode: bool,
     announce_mode: bool,
+    voicebot_direct_mode: bool,
     voicemail_mode: bool,
     recording_notice_pending: bool,
+    transfer_after_answer_pending: bool,
     announcement_id: Option<Uuid>,
     announcement_audio_file_url: Option<String>,
     ivr_flow_id: Option<Uuid>,
@@ -201,8 +203,10 @@ impl SessionCoordinator {
             invite_rejected: false,
             no_response_mode: false,
             announce_mode: false,
+            voicebot_direct_mode: false,
             voicemail_mode: false,
             recording_notice_pending: false,
+            transfer_after_answer_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
             ivr_flow_id: None,
@@ -309,12 +313,20 @@ impl SessionCoordinator {
         self.announce_mode = enabled;
     }
 
+    pub(crate) fn set_voicebot_direct_mode(&mut self, enabled: bool) {
+        self.voicebot_direct_mode = enabled;
+    }
+
     pub(crate) fn set_voicemail_mode(&mut self, enabled: bool) {
         self.voicemail_mode = enabled;
     }
 
     pub(crate) fn set_recording_notice_pending(&mut self, pending: bool) {
         self.recording_notice_pending = pending;
+    }
+
+    pub(crate) fn set_transfer_after_answer_pending(&mut self, pending: bool) {
+        self.transfer_after_answer_pending = pending;
     }
 
     pub(crate) fn set_announcement_id(&mut self, announcement_id: Uuid) {
@@ -347,8 +359,10 @@ impl SessionCoordinator {
     pub(crate) fn reset_action_modes(&mut self) {
         self.no_response_mode = false;
         self.announce_mode = false;
+        self.voicebot_direct_mode = false;
         self.voicemail_mode = false;
         self.recording_notice_pending = false;
+        self.transfer_after_answer_pending = false;
         self.announcement_id = None;
         self.announcement_audio_file_url = None;
         self.ivr_flow_id = None;
@@ -580,6 +594,7 @@ fn is_e164(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::session::types::SessionControlIn;
     use crate::shared::ports::ingest::IngestPayload;
     use crate::shared::ports::routing_port::NoopRoutingPort;
 
@@ -619,14 +634,19 @@ mod tests {
         }
     }
 
-    fn build_test_session(storage_port: Arc<dyn StoragePort>) -> SessionCoordinator {
+    fn build_test_session_with_control(
+        storage_port: Arc<dyn StoragePort>,
+    ) -> (
+        SessionCoordinator,
+        tokio::sync::mpsc::Receiver<SessionControlIn>,
+    ) {
         let (session_out_tx, _session_out_rx) = mpsc::channel(32);
         let (app_tx, _app_rx) = crate::shared::ports::app::app_event_channel(16);
-        let (control_tx, _control_rx) = mpsc::channel(SESSION_CONTROL_CHANNEL_CAPACITY);
+        let (control_tx, control_rx) = mpsc::channel(SESSION_CONTROL_CHANNEL_CAPACITY);
         let (media_tx, _media_rx) = mpsc::channel(SESSION_MEDIA_CHANNEL_CAPACITY);
         let base_cfg = crate::shared::config::Config::from_env().expect("config loads");
         let runtime_cfg = Arc::new(SessionRuntimeConfig::from_env(&base_cfg));
-        SessionCoordinator {
+        let session = SessionCoordinator {
             state_machine: SessionStateMachine::new(),
             call_id: CallId::new("test-call".to_string()).expect("valid test call id"),
             from_uri: "sip:from@example.com".to_string(),
@@ -677,8 +697,10 @@ mod tests {
             invite_rejected: false,
             no_response_mode: false,
             announce_mode: false,
+            voicebot_direct_mode: false,
             voicemail_mode: false,
             recording_notice_pending: false,
+            transfer_after_answer_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
             ivr_flow_id: None,
@@ -689,7 +711,13 @@ mod tests {
             ivr_timeout_override: None,
             session_expires: None,
             session_refresher: None,
-        }
+        };
+        (session, control_rx)
+    }
+
+    fn build_test_session(storage_port: Arc<dyn StoragePort>) -> SessionCoordinator {
+        let (session, _control_rx) = build_test_session_with_control(storage_port);
+        session
     }
 
     #[tokio::test]
@@ -701,6 +729,39 @@ mod tests {
         session.cancel_playback();
         assert!(session.playback.is_none());
         assert!(!session.sending_audio);
+    }
+
+    #[tokio::test]
+    async fn finish_playback_requests_transfer_after_recording_notice() {
+        let (mut session, mut control_rx) =
+            build_test_session_with_control(Arc::new(DummyStoragePort));
+        session.set_announce_mode(true);
+        session.set_recording_notice_pending(true);
+
+        session.finish_playback(false);
+
+        assert!(!session.announce_mode);
+        assert!(!session.recording_notice_pending);
+        let control = tokio::time::timeout(Duration::from_millis(50), control_rx.recv())
+            .await
+            .expect("control message should be sent")
+            .expect("control channel should stay open");
+        match control {
+            SessionControlIn::AppTransferRequest { person } => {
+                assert_eq!(person, "recording_notice");
+            }
+            other => panic!("unexpected control message: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn reset_action_modes_clears_voicebot_direct_mode() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        session.set_voicebot_direct_mode(true);
+        session.set_transfer_after_answer_pending(true);
+        session.reset_action_modes();
+        assert!(!session.voicebot_direct_mode);
+        assert!(!session.transfer_after_answer_pending);
     }
 
     #[tokio::test]

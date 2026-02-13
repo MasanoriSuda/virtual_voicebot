@@ -40,7 +40,7 @@ export type AllowVB = {
   scenarioId: string
   welcomeAnnouncementId: string | null
   recordingEnabled: boolean
-  includeAnnouncement: boolean
+  announceEnabled: boolean
 }
 
 export type DenyBZ = {
@@ -121,7 +121,7 @@ export function createActionConfig(
           scenarioId: "",
           welcomeAnnouncementId: null,
           recordingEnabled: true,
-          includeAnnouncement: false,
+          announceEnabled: false,
         }
       case "VR":
       default:

@@ -263,7 +263,10 @@ impl SessionCoordinator {
                     .await;
 
                 if !self.outbound_mode {
-                    if self.announce_mode {
+                    if self.transfer_after_answer_pending {
+                        self.transfer_after_answer_pending = false;
+                        self.start_b2bua_transfer("vr_initial");
+                    } else if self.announce_mode {
                         self.ivr_state = IvrState::Transferring;
                         let announcement_path = self
                             .resolve_announcement_playback_path()
@@ -289,6 +292,22 @@ impl SessionCoordinator {
                                 let _ = self.control_tx.try_send(SessionControlIn::AppHangup);
                             }
                         }
+                    } else if self.voicebot_direct_mode {
+                        let intro_path = if self.recording_notice_pending {
+                            self.recording_notice_pending = false;
+                            let path = self
+                                .resolve_announcement_playback_path()
+                                .await
+                                .unwrap_or_else(|| {
+                                    super::ANNOUNCEMENT_FALLBACK_WAV_PATH.to_string()
+                                });
+                            self.announcement_id = None;
+                            self.announcement_audio_file_url = None;
+                            Some(path)
+                        } else {
+                            None
+                        };
+                        self.transition_to_voicebot_mode(intro_path).await;
                     } else {
                         if let Some(ivr_flow_id) = self.ivr_flow_id {
                             if !self.enter_db_ivr_flow(ivr_flow_id).await {
@@ -534,26 +553,9 @@ impl SessionCoordinator {
                 self.send_call_ended(EndReason::AppHangup);
             }
             (_, SessionControlIn::AppTransferRequest { person }) => {
-                if self.transfer_cancel.is_some() || self.b_leg.is_some() {
-                    warn!(
-                        "[session {}] transfer already active (person={})",
-                        self.call_id, person
-                    );
+                if !self.start_b2bua_transfer(person.as_str()) {
                     return false;
                 }
-                info!(
-                    "[session {}] transfer requested by app (person={})",
-                    self.call_id, person
-                );
-                self.cancel_playback();
-                self.stop_ivr_timeout();
-                self.ivr_state = IvrState::Transferring;
-                self.transfer_cancel = Some(b2bua::spawn_transfer(
-                    self.call_id.clone(),
-                    self.control_tx.clone(),
-                    self.media_tx.clone(),
-                    self.runtime_cfg.clone(),
-                ));
             }
             (_, SessionControlIn::SipSessionExpires { timer }) => {
                 self.update_session_expires(timer);
@@ -832,6 +834,30 @@ impl SessionCoordinator {
                 }
             }
         }
+    }
+
+    fn start_b2bua_transfer(&mut self, person: &str) -> bool {
+        if self.transfer_cancel.is_some() || self.b_leg.is_some() {
+            warn!(
+                "[session {}] transfer already active (person={})",
+                self.call_id, person
+            );
+            return false;
+        }
+        info!(
+            "[session {}] transfer requested by app (person={})",
+            self.call_id, person
+        );
+        self.cancel_playback();
+        self.stop_ivr_timeout();
+        self.ivr_state = IvrState::Transferring;
+        self.transfer_cancel = Some(b2bua::spawn_transfer(
+            self.call_id.clone(),
+            self.control_tx.clone(),
+            self.media_tx.clone(),
+            self.runtime_cfg.clone(),
+        ));
+        true
     }
 
     async fn start_legacy_ivr_menu(&mut self) {
@@ -1130,8 +1156,8 @@ impl SessionCoordinator {
                 }
             }
             "VR" => {
-                self.transition_to_voicebot_mode(Some(super::VOICEBOT_INTRO_WAV_PATH.to_string()))
-                    .await;
+                self.set_transfer_after_answer_pending(false);
+                self.start_b2bua_transfer("ivr_vr");
             }
             "VB" => {
                 let intro_path = if action.include_announcement.unwrap_or(false) {
