@@ -64,7 +64,8 @@ impl RecordingUploader {
             Ok(meta) => meta,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 log::warn!(
-                    "[serversync] recording meta not found, generating fallback meta recording_id={} path={}",
+                    "[serversync] recording meta not found, generating fallback meta call_id={} recording_id={} path={}",
+                    request.call_log_id,
                     request.recording_id,
                     request.meta_path.display()
                 );
