@@ -5,21 +5,22 @@
       "name": "test",
       "description": null,
       "isActive": true,
-      "announcementId": "46290e37-45b5-4f0d-9d9e-7df2bd2019bc",
+      "announcementId": "2314c33c-bf36-4cbe-855e-9ea81c147adb",
       "timeoutSec": 10,
       "maxRetries": 2,
       "invalidInputAnnouncementId": "b27a3fff-5d53-433e-a3ef-18217d9c3907",
       "timeoutAnnouncementId": "46290e37-45b5-4f0d-9d9e-7df2bd2019bc",
       "routes": [
         {
-          "dtmfKey": "2",
+          "dtmfKey": "1",
           "label": "hote",
           "destination": {
-            "actionCode": "VR"
+            "actionCode": "IV",
+            "ivrFlowId": "03805f87-13f6-407e-a660-efc1ee2da076"
           }
         },
         {
-          "dtmfKey": "1",
+          "dtmfKey": "2",
           "label": "hote2",
           "destination": {
             "actionCode": "AN",
@@ -32,7 +33,44 @@
         "announcementId": "cddcb296-b596-431a-a9c5-2ed27b5030ec"
       },
       "createdAt": "2026-02-12T13:29:43.164Z",
-      "updatedAt": "2026-02-12T14:14:54.679Z"
+      "updatedAt": "2026-02-13T14:56:05.752Z"
+    },
+    {
+      "id": "03805f87-13f6-407e-a660-efc1ee2da076",
+      "name": "test-2",
+      "description": null,
+      "isActive": true,
+      "announcementId": "a40b0404-4b77-4430-bdbe-35ca77a6cdef",
+      "timeoutSec": 10,
+      "maxRetries": 2,
+      "invalidInputAnnouncementId": "46290e37-45b5-4f0d-9d9e-7df2bd2019bc",
+      "timeoutAnnouncementId": "46290e37-45b5-4f0d-9d9e-7df2bd2019bc",
+      "routes": [
+        {
+          "dtmfKey": "1",
+          "label": "test2-1",
+          "destination": {
+            "actionCode": "VR"
+          }
+        },
+        {
+          "dtmfKey": "2",
+          "label": "test2-2",
+          "destination": {
+            "actionCode": "VB",
+            "scenarioId": "scenario-faq",
+            "welcomeAnnouncementId": null,
+            "recordingEnabled": true,
+            "includeAnnouncement": false
+          }
+        }
+      ],
+      "fallbackAction": {
+        "actionCode": "AN",
+        "announcementId": "cddcb296-b596-431a-a9c5-2ed27b5030ec"
+      },
+      "createdAt": "2026-02-12T14:27:20.988Z",
+      "updatedAt": "2026-02-13T15:49:58.686Z"
     }
   ]
 }

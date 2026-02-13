@@ -48,11 +48,12 @@ impl ActionExecutor {
         session: &mut SessionCoordinator,
     ) -> Result<()> {
         info!(
-            "[ActionExecutor] call_id={} executing VR (voicebot mode, recording_enabled={})",
+            "[ActionExecutor] call_id={} executing VR (B2BUA transfer mode, recording_enabled={})",
             call_id, action.recording_enabled
         );
         session.set_outbound_mode(false);
         session.set_recording_enabled(action.recording_enabled);
+        session.set_transfer_after_answer_pending(!action.announce_enabled);
         if action.announce_enabled {
             let recording_announcement_id =
                 action.recording_announcement_id.or(action.announcement_id);
@@ -72,6 +73,11 @@ impl ActionExecutor {
                     call_id
                 );
             }
+        } else {
+            info!(
+                "[ActionExecutor] call_id={} transfer will start immediately after answer",
+                call_id
+            );
         }
         Ok(())
     }

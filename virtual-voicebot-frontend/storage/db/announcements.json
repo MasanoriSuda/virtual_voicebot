@@ -101,6 +101,57 @@
       "source": "tts",
       "createdAt": "2026-02-12T01:02:38.291Z",
       "updatedAt": "2026-02-12T01:02:38.291Z"
+    },
+    "2314c33c-bf36-4cbe-855e-9ea81c147adb": {
+      "id": "2314c33c-bf36-4cbe-855e-9ea81c147adb",
+      "name": "四国めたん１層",
+      "description": null,
+      "announcementType": "custom",
+      "isActive": true,
+      "folderId": "folder-greetings",
+      "audioFileUrl": "/audio/announcements/2314c33c-bf36-4cbe-855e-9ea81c147adb.wav",
+      "ttsText": "IVRてすと、だいいっそう、つぎのそうへいきたいかたは１、あなうんすをききたいかたは２をおしてください",
+      "speakerId": 2,
+      "speakerName": "四国めたん - ノーマル",
+      "durationSec": 7.552,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-13T14:53:55.971Z",
+      "updatedAt": "2026-02-13T14:53:55.971Z"
+    },
+    "a40b0404-4b77-4430-bdbe-35ca77a6cdef": {
+      "id": "a40b0404-4b77-4430-bdbe-35ca77a6cdef",
+      "name": "四国めたん２層",
+      "description": null,
+      "announcementType": "custom",
+      "isActive": true,
+      "folderId": "folder-greetings",
+      "audioFileUrl": "/audio/announcements/a40b0404-4b77-4430-bdbe-35ca77a6cdef.wav",
+      "ttsText": "IVRてすと、だいにそう、オペレーターへおつなぎをごきぼうのかたは１を、ぼいすぼっとへおつなぎをごきぼうのかたは２をおしてください",
+      "speakerId": 2,
+      "speakerName": "四国めたん - ノーマル",
+      "durationSec": 9.131,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-13T14:55:29.325Z",
+      "updatedAt": "2026-02-13T14:55:29.325Z"
+    },
+    "f6b67055-827e-49bb-ac62-a82d57228376": {
+      "id": "f6b67055-827e-49bb-ac62-a82d57228376",
+      "name": "四国めたん留守電",
+      "description": null,
+      "announcementType": "greeting",
+      "isActive": true,
+      "folderId": "folder-greetings",
+      "audioFileUrl": "/audio/announcements/f6b67055-827e-49bb-ac62-a82d57228376.wav",
+      "ttsText": "るすばんでんわです、あんないのあとにメッセージをお願いします",
+      "speakerId": 2,
+      "speakerName": "四国めたん - ノーマル",
+      "durationSec": 3.989,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-13T15:59:44.524Z",
+      "updatedAt": "2026-02-13T15:59:44.524Z"
     }
   },
   "folders": {
@@ -141,5 +192,5 @@
       "updatedAt": "2026-02-07T17:48:30.883Z"
     }
   },
-  "updatedAt": "2026-02-12T01:02:38.291Z"
+  "updatedAt": "2026-02-13T15:59:44.524Z"
 }

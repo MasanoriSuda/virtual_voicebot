@@ -120,6 +120,7 @@ pub struct SessionCoordinator {
     voicebot_direct_mode: bool,
     voicemail_mode: bool,
     recording_notice_pending: bool,
+    transfer_after_answer_pending: bool,
     announcement_id: Option<Uuid>,
     announcement_audio_file_url: Option<String>,
     ivr_flow_id: Option<Uuid>,
@@ -205,6 +206,7 @@ impl SessionCoordinator {
             voicebot_direct_mode: false,
             voicemail_mode: false,
             recording_notice_pending: false,
+            transfer_after_answer_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
             ivr_flow_id: None,
@@ -323,6 +325,10 @@ impl SessionCoordinator {
         self.recording_notice_pending = pending;
     }
 
+    pub(crate) fn set_transfer_after_answer_pending(&mut self, pending: bool) {
+        self.transfer_after_answer_pending = pending;
+    }
+
     pub(crate) fn set_announcement_id(&mut self, announcement_id: Uuid) {
         self.announcement_id = Some(announcement_id);
     }
@@ -356,6 +362,7 @@ impl SessionCoordinator {
         self.voicebot_direct_mode = false;
         self.voicemail_mode = false;
         self.recording_notice_pending = false;
+        self.transfer_after_answer_pending = false;
         self.announcement_id = None;
         self.announcement_audio_file_url = None;
         self.ivr_flow_id = None;
@@ -693,6 +700,7 @@ mod tests {
             voicebot_direct_mode: false,
             voicemail_mode: false,
             recording_notice_pending: false,
+            transfer_after_answer_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
             ivr_flow_id: None,
@@ -750,8 +758,10 @@ mod tests {
     async fn reset_action_modes_clears_voicebot_direct_mode() {
         let mut session = build_test_session(Arc::new(DummyStoragePort));
         session.set_voicebot_direct_mode(true);
+        session.set_transfer_after_answer_pending(true);
         session.reset_action_modes();
         assert!(!session.voicebot_direct_mode);
+        assert!(!session.transfer_after_answer_pending);
     }
 
     #[tokio::test]
