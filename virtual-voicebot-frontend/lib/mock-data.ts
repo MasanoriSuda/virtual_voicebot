@@ -1,4 +1,12 @@
-import type { Call, CallStatus, CallerCategory } from "./types"
+import type {
+  ActionCode,
+  Call,
+  CallDisposition,
+  CallStatus,
+  CallerCategory,
+  FinalAction,
+  TransferStatus,
+} from "./types"
 
 export type CallDirection = "inbound" | "outbound" | "missed"
 
@@ -7,12 +15,16 @@ export type CallRecordStatus = "ended" | "missed" | "in_call"
 export type CallRecord = {
   id: string
   callId: string
+  actionCode: ActionCode
   from: string
   fromName: string
   to: string
   startedAt: string
   endedAt: string | null
   status: CallRecordStatus
+  callDisposition: CallDisposition
+  finalAction: FinalAction | null
+  transferStatus: TransferStatus
   durationSec: number
   summary: string
   recordingUrl: string | null
@@ -40,6 +52,12 @@ export const mockCalls: Call[] = [
     endedAt: "2026-02-02T10:35:00Z",
     durationSec: 300,
     endReason: "normal",
+    callDisposition: "allowed",
+    finalAction: "normal_call",
+    transferStatus: "answered",
+    transferStartedAt: "2026-02-02T10:30:08Z",
+    transferAnsweredAt: "2026-02-02T10:30:12Z",
+    transferEndedAt: "2026-02-02T10:35:00Z",
   },
   {
     id: "2",
@@ -53,6 +71,12 @@ export const mockCalls: Call[] = [
     endedAt: "2026-02-02T09:07:45Z",
     durationSec: 165,
     endReason: "normal",
+    callDisposition: "allowed",
+    finalAction: "ivr",
+    transferStatus: "none",
+    transferStartedAt: null,
+    transferAnsweredAt: null,
+    transferEndedAt: null,
   },
   {
     id: "3",
@@ -66,6 +90,12 @@ export const mockCalls: Call[] = [
     endedAt: null,
     durationSec: 72,
     endReason: "normal",
+    callDisposition: "allowed",
+    finalAction: "ivr",
+    transferStatus: "trying",
+    transferStartedAt: "2026-02-02T08:12:20Z",
+    transferAnsweredAt: null,
+    transferEndedAt: null,
   },
   {
     id: "4",
@@ -79,6 +109,12 @@ export const mockCalls: Call[] = [
     endedAt: "2026-02-01T17:50:10Z",
     durationSec: 130,
     endReason: "normal",
+    callDisposition: "allowed",
+    finalAction: "normal_call",
+    transferStatus: "answered",
+    transferStartedAt: "2026-02-01T17:48:10Z",
+    transferAnsweredAt: "2026-02-01T17:48:20Z",
+    transferEndedAt: "2026-02-01T17:50:10Z",
   },
   {
     id: "5",
@@ -92,6 +128,12 @@ export const mockCalls: Call[] = [
     endedAt: "2026-02-01T16:20:20Z",
     durationSec: 0,
     endReason: "rejected",
+    callDisposition: "denied",
+    finalAction: "rejected",
+    transferStatus: "no_transfer",
+    transferStartedAt: null,
+    transferAnsweredAt: null,
+    transferEndedAt: null,
   },
   {
     id: "6",
@@ -105,6 +147,12 @@ export const mockCalls: Call[] = [
     endedAt: "2026-02-01T14:18:20Z",
     durationSec: 380,
     endReason: "normal",
+    callDisposition: "allowed",
+    finalAction: "normal_call",
+    transferStatus: "answered",
+    transferStartedAt: "2026-02-01T14:12:08Z",
+    transferAnsweredAt: "2026-02-01T14:12:15Z",
+    transferEndedAt: "2026-02-01T14:18:20Z",
   },
   {
     id: "7",
@@ -118,6 +166,12 @@ export const mockCalls: Call[] = [
     endedAt: "2026-01-31T11:08:00Z",
     durationSec: 180,
     endReason: "normal",
+    callDisposition: "allowed",
+    finalAction: "normal_call",
+    transferStatus: "answered",
+    transferStartedAt: "2026-01-31T11:05:12Z",
+    transferAnsweredAt: "2026-01-31T11:05:20Z",
+    transferEndedAt: "2026-01-31T11:08:00Z",
   },
   {
     id: "8",
@@ -131,6 +185,12 @@ export const mockCalls: Call[] = [
     endedAt: "2026-01-31T09:36:30Z",
     durationSec: 270,
     endReason: "normal",
+    callDisposition: "allowed",
+    finalAction: "normal_call",
+    transferStatus: "answered",
+    transferStartedAt: "2026-01-31T09:32:08Z",
+    transferAnsweredAt: "2026-01-31T09:32:14Z",
+    transferEndedAt: "2026-01-31T09:36:30Z",
   },
   {
     id: "9",
@@ -144,6 +204,12 @@ export const mockCalls: Call[] = [
     endedAt: "2026-01-30T18:42:50Z",
     durationSec: 170,
     endReason: "normal",
+    callDisposition: "allowed",
+    finalAction: "ivr",
+    transferStatus: "none",
+    transferStartedAt: null,
+    transferAnsweredAt: null,
+    transferEndedAt: null,
   },
   {
     id: "10",
@@ -157,6 +223,12 @@ export const mockCalls: Call[] = [
     endedAt: null,
     durationSec: null,
     endReason: "timeout",
+    callDisposition: "no_answer",
+    finalAction: null,
+    transferStatus: "no_transfer",
+    transferStartedAt: null,
+    transferAnsweredAt: null,
+    transferEndedAt: null,
   },
 ]
 
@@ -238,12 +310,16 @@ export const mockCallRecords: CallRecord[] = mockCalls.map((call) => {
   return {
     id: call.id,
     callId: call.externalCallId,
+    actionCode: call.actionCode,
     from: call.callerNumber ?? "非通知",
     fromName: view?.fromName ?? categoryLabel(call.callerCategory),
     to: view?.to ?? "未設定",
     startedAt: call.startedAt,
     endedAt: call.endedAt,
     status: toCallRecordStatus(call.status),
+    callDisposition: call.callDisposition,
+    finalAction: call.finalAction,
+    transferStatus: call.transferStatus,
     durationSec: call.durationSec ?? 0,
     summary: view?.summary ?? "",
     recordingUrl: view?.recordingUrl ?? null,

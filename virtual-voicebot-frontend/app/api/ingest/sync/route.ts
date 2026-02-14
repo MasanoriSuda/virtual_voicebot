@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
   try {
     const result = await applySyncEntries(entries)
     if (result.skipped > 0) {
-      console.warn(`[ingest/sync] skipped ${result.skipped} unsupported entries`)
+      console.warn(`[ingest/sync] skipped ${result.skipped} unsupported or invalid entries`)
     }
     return NextResponse.json({ ok: true })
   } catch (error) {

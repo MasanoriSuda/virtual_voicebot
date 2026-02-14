@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { ChevronDown, ChevronUp, PhoneIncoming, PhoneMissed, PhoneOutgoing } from "lucide-react"
 
 import {
@@ -45,15 +46,19 @@ export function CallsTable({ calls, sortDirection, onSortToggle, onRowClick }: C
             <TableHead>方向</TableHead>
             <TableHead>発信者</TableHead>
             <TableHead>着信先</TableHead>
+            <TableHead>着信応答</TableHead>
+            <TableHead>実行アクション</TableHead>
+            <TableHead>転送状況</TableHead>
             <TableHead>通話時間</TableHead>
             <TableHead>ステータス</TableHead>
+            <TableHead>IVR詳細</TableHead>
             <TableHead className="text-right">操作</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {calls.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={7} className="py-12 text-center text-sm text-muted-foreground">
+              <TableCell colSpan={11} className="py-12 text-center text-sm text-muted-foreground">
                 該当する通話履歴がありません
               </TableCell>
             </TableRow>
@@ -77,6 +82,9 @@ export function CallsTable({ calls, sortDirection, onSortToggle, onRowClick }: C
                   </div>
                 </TableCell>
                 <TableCell className="text-sm">{call.to}</TableCell>
+                <TableCell className="text-sm">{dispositionLabel(call.callDisposition)}</TableCell>
+                <TableCell className="text-sm">{finalActionLabel(call.finalAction)}</TableCell>
+                <TableCell className="text-sm">{transferStatusLabel(call.transferStatus)}</TableCell>
                 <TableCell className="font-mono text-xs">
                   {formatDuration(call.durationSec)}
                 </TableCell>
@@ -84,6 +92,19 @@ export function CallsTable({ calls, sortDirection, onSortToggle, onRowClick }: C
                   <Badge className={cn("px-2 py-0.5 text-xs", statusClass(call.status))}>
                     {statusLabel(call.status)}
                   </Badge>
+                </TableCell>
+                <TableCell className="text-sm">
+                  {call.actionCode === "IV" ? (
+                    <Link
+                      href={`/calls/${encodeURIComponent(call.id)}/ivr-trace`}
+                      className="text-primary underline-offset-2 hover:underline"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      詳細を見る
+                    </Link>
+                  ) : (
+                    "-"
+                  )}
                 </TableCell>
                 <TableCell className="text-right">
                   <Button
@@ -143,6 +164,60 @@ function statusLabel(status: CallRecord["status"]) {
       return "不在"
     case "in_call":
       return "通話中"
+    default:
+      return "-"
+  }
+}
+
+function dispositionLabel(disposition: CallRecord["callDisposition"]) {
+  switch (disposition) {
+    case "allowed":
+      return "許可"
+    case "denied":
+      return "拒否"
+    case "no_answer":
+      return "無応答"
+    default:
+      return "-"
+  }
+}
+
+function finalActionLabel(action: CallRecord["finalAction"]) {
+  if (!action) return "-"
+  switch (action) {
+    case "normal_call":
+      return "通常着信"
+    case "voicebot":
+      return "ボイスボット"
+    case "ivr":
+      return "IVR"
+    case "voicemail":
+      return "留守番電話"
+    case "announcement":
+      return "アナウンス"
+    case "busy":
+      return "ビジー"
+    case "rejected":
+      return "着信拒否"
+    case "announcement_deny":
+      return "アナウンス拒否"
+    default:
+      return action
+  }
+}
+
+function transferStatusLabel(status: CallRecord["transferStatus"]) {
+  switch (status) {
+    case "no_transfer":
+      return "転送なし"
+    case "none":
+      return "-"
+    case "trying":
+      return "転送試行中"
+    case "answered":
+      return "転送成立"
+    case "failed":
+      return "転送失敗"
     default:
       return "-"
   }

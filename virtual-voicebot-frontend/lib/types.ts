@@ -13,6 +13,28 @@ export type ActionCode = "VB" | "VR" | "NR" | "RJ" | "BZ" | "AN" | "AR" | "VM" |
 
 export type EndReason = "normal" | "cancelled" | "rejected" | "timeout" | "error"
 
+export type CallDisposition = "allowed" | "denied" | "no_answer"
+
+export type FinalAction =
+  | "normal_call"
+  | "voicemail"
+  | "voicebot"
+  | "ivr"
+  | "announcement"
+  | "busy"
+  | "rejected"
+  | "announcement_deny"
+
+export type TransferStatus = "no_transfer" | "none" | "trying" | "answered" | "failed"
+
+export type IvrEventType =
+  | "node_enter"
+  | "dtmf_input"
+  | "transition"
+  | "timeout"
+  | "invalid_input"
+  | "exit"
+
 export type IvrNodeType = "ANNOUNCE" | "KEYPAD" | "FORWARD" | "TRANSFER" | "RECORD" | "EXIT"
 
 export type IvrInputType = "DTMF" | "TIMEOUT" | "INVALID" | "COMPLETE"
@@ -43,6 +65,12 @@ export interface Call {
   endedAt: string | null
   durationSec: number | null
   endReason: EndReason
+  callDisposition: CallDisposition
+  finalAction: FinalAction | null
+  transferStatus: TransferStatus
+  transferStartedAt: string | null
+  transferAnsweredAt: string | null
+  transferEndedAt: string | null
 }
 
 export interface Recording {
@@ -56,6 +84,20 @@ export interface Recording {
   fileSizeBytes: number | null
   startedAt: string
   endedAt: string | null
+}
+
+export interface IvrSessionEvent {
+  id: string
+  callLogId: string
+  sequence: number
+  eventType: IvrEventType
+  occurredAt: string
+  nodeId: string | null
+  dtmfKey: string | null
+  transitionId: string | null
+  exitAction: string | null
+  exitReason: string | null
+  metadata: Record<string, unknown> | null
 }
 
 // --- Settings DTOs ---

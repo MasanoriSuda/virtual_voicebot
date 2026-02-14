@@ -751,8 +751,13 @@ impl CallLogPort for PostgresAdapter {
             sqlx::query(
                 "INSERT INTO call_logs (
                     id, started_at, external_call_id, sip_call_id, caller_number, caller_category,
-                    action_code, ivr_flow_id, answered_at, ended_at, duration_sec, end_reason, status
-                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                    action_code, ivr_flow_id, answered_at, ended_at, duration_sec, end_reason, status,
+                    call_disposition, final_action, transfer_status,
+                    transfer_started_at, transfer_answered_at, transfer_ended_at
+                 ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                    $14, $15, $16, $17, $18, $19
+                 )",
             )
             .bind(call_log.id)
             .bind(call_log.started_at)
@@ -767,6 +772,12 @@ impl CallLogPort for PostgresAdapter {
             .bind(call_log.duration_sec)
             .bind(call_log.end_reason.clone())
             .bind(call_log.status.clone())
+            .bind(call_log.call_disposition.clone())
+            .bind(call_log.final_action.clone())
+            .bind(call_log.transfer_status.clone())
+            .bind(call_log.transfer_started_at)
+            .bind(call_log.transfer_answered_at)
+            .bind(call_log.transfer_ended_at)
             .execute(&mut *tx)
             .await
             .map_err(map_call_log_write_err)?;
@@ -790,10 +801,62 @@ impl CallLogPort for PostgresAdapter {
                 "durationSec": call_log.duration_sec,
                 "endReason": call_log.end_reason.clone(),
                 "status": call_log.status.clone(),
+                "callDisposition": call_log.call_disposition.clone(),
+                "finalAction": call_log.final_action.clone(),
+                "transferStatus": call_log.transfer_status.clone(),
+                "transferStartedAt": call_log.transfer_started_at.as_ref().map(DateTime::to_rfc3339),
+                "transferAnsweredAt": call_log.transfer_answered_at.as_ref().map(DateTime::to_rfc3339),
+                "transferEndedAt": call_log.transfer_ended_at.as_ref().map(DateTime::to_rfc3339),
             }))
             .execute(&mut *tx)
             .await
             .map_err(map_call_log_write_err)?;
+
+            for event in &call_log.ivr_events {
+                sqlx::query(
+                    "INSERT INTO ivr_session_events (
+                        id, call_log_id, sequence, event_type, occurred_at,
+                        node_id, dtmf_key, transition_id, exit_action, exit_reason, metadata
+                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                )
+                .bind(event.id)
+                .bind(call_log.id)
+                .bind(event.sequence)
+                .bind(event.event_type.clone())
+                .bind(event.occurred_at)
+                .bind(event.node_id)
+                .bind(event.dtmf_key.clone())
+                .bind(event.transition_id)
+                .bind(event.exit_action.clone())
+                .bind(event.exit_reason.clone())
+                .bind(event.metadata.clone())
+                .execute(&mut *tx)
+                .await
+                .map_err(map_call_log_write_err)?;
+
+                sqlx::query(
+                    "INSERT INTO sync_outbox (entity_type, entity_id, payload)
+                     VALUES ($1, $2, $3)",
+                )
+                .bind("ivr_session_event")
+                .bind(event.id)
+                .bind(json!({
+                    "id": event.id.to_string(),
+                    "callLogId": call_log.id.to_string(),
+                    "sequence": event.sequence,
+                    "eventType": event.event_type.clone(),
+                    "occurredAt": event.occurred_at.to_rfc3339(),
+                    "nodeId": event.node_id.map(|value| value.to_string()),
+                    "dtmfKey": event.dtmf_key.clone(),
+                    "transitionId": event.transition_id.map(|value| value.to_string()),
+                    "exitAction": event.exit_action.clone(),
+                    "exitReason": event.exit_reason.clone(),
+                    "metadata": event.metadata.clone(),
+                }))
+                .execute(&mut *tx)
+                .await
+                .map_err(map_call_log_write_err)?;
+            }
 
             if let Some(recording) = call_log.recording {
                 sqlx::query(
