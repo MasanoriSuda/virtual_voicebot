@@ -609,7 +609,7 @@ impl SessionCoordinator {
         if transfer_status == "answered" && self.transfer_ended_at.is_none() {
             self.transfer_ended_at = Some(ended_at);
         }
-        let ivr_events = std::mem::take(&mut self.ivr_events);
+        let ivr_events = self.ivr_events.clone();
 
         let recording_path = self.recording.mixed_file_path();
         let recording = match tokio::fs::metadata(&recording_path).await {
@@ -668,6 +668,7 @@ impl SessionCoordinator {
             return;
         }
         self.ingest_persisted = true;
+        self.ivr_events.clear();
     }
 }
 
@@ -804,8 +805,10 @@ fn is_e164(value: &str) -> bool {
 mod tests {
     use super::*;
     use crate::protocol::session::types::SessionControlIn;
+    use crate::shared::ports::call_log_port::CallLogPortError;
     use crate::shared::ports::ingest::IngestPayload;
     use crate::shared::ports::routing_port::NoopRoutingPort;
+    use std::sync::{Arc, Mutex};
 
     struct DummyIngestPort;
 
@@ -840,6 +843,40 @@ mod tests {
             _call_log: EndedCallLog,
         ) -> crate::shared::ports::call_log_port::CallLogFuture<()> {
             Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[derive(Default)]
+    struct FailingThenSucceedingState {
+        attempts: usize,
+        ivr_event_counts: Vec<usize>,
+    }
+
+    struct FailingThenSucceedingCallLogPort {
+        state: Arc<Mutex<FailingThenSucceedingState>>,
+    }
+
+    impl FailingThenSucceedingCallLogPort {
+        fn new(state: Arc<Mutex<FailingThenSucceedingState>>) -> Self {
+            Self { state }
+        }
+    }
+
+    impl CallLogPort for FailingThenSucceedingCallLogPort {
+        fn persist_call_ended(
+            &self,
+            call_log: EndedCallLog,
+        ) -> crate::shared::ports::call_log_port::CallLogFuture<()> {
+            let state = self.state.clone();
+            Box::pin(async move {
+                let mut guard = state.lock().expect("state lock should be available");
+                guard.attempts += 1;
+                guard.ivr_event_counts.push(call_log.ivr_events.len());
+                if guard.attempts == 1 {
+                    return Err(CallLogPortError::WriteFailed("simulated transient failure".into()));
+                }
+                Ok(())
+            })
         }
     }
 
@@ -1044,5 +1081,27 @@ mod tests {
         assert_eq!(session.ivr_events.len(), 1);
         assert_eq!(session.ivr_events[0].sequence, 0);
         assert_eq!(session.ivr_events[0].event_type, "node_enter");
+    }
+
+    #[tokio::test]
+    async fn send_ingest_keeps_ivr_events_until_persist_succeeds() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let state = Arc::new(Mutex::new(FailingThenSucceedingState::default()));
+        session.call_log_port = Arc::new(FailingThenSucceedingCallLogPort::new(state.clone()));
+        session.initial_action_code = Some("VR".to_string());
+        session.record_ivr_event("node_enter", None, None, None, None, None);
+        assert_eq!(session.ivr_events.len(), 1);
+
+        session.send_ingest("ended").await;
+        assert!(!session.ingest_persisted);
+        assert_eq!(session.ivr_events.len(), 1);
+
+        session.send_ingest("ended").await;
+        assert!(session.ingest_persisted);
+        assert!(session.ivr_events.is_empty());
+
+        let guard = state.lock().expect("state lock should be available");
+        assert_eq!(guard.attempts, 2);
+        assert_eq!(guard.ivr_event_counts, vec![1, 1]);
     }
 }
