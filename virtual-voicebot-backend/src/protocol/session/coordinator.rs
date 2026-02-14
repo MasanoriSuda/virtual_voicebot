@@ -873,7 +873,9 @@ mod tests {
                 guard.attempts += 1;
                 guard.ivr_event_counts.push(call_log.ivr_events.len());
                 if guard.attempts == 1 {
-                    return Err(CallLogPortError::WriteFailed("simulated transient failure".into()));
+                    return Err(CallLogPortError::WriteFailed(
+                        "simulated transient failure".into(),
+                    ));
                 }
                 Ok(())
             })

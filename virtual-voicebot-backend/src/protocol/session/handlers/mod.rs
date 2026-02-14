@@ -1008,9 +1008,9 @@ impl SessionCoordinator {
 
     async fn handle_db_ivr_dtmf(&mut self, digit: char) {
         self.record_ivr_event("dtmf_input", None, Some(digit), None, None, None);
-        let Some(keypad_node_id) = self.ivr_keypad_node_id else {
+        let Some(ivr_flow_id) = self.ivr_flow_id else {
             warn!(
-                "[session {}] DB IVR keypad node missing while handling DTMF '{}'",
+                "[session {}] DB IVR flow missing while handling DTMF '{}'",
                 self.call_id, digit
             );
             self.reset_ivr_timeout();
@@ -1020,7 +1020,7 @@ impl SessionCoordinator {
         let dtmf_key = digit.to_string();
         match self
             .routing_port
-            .find_ivr_dtmf_destination(keypad_node_id, dtmf_key.as_str())
+            .find_ivr_dtmf_destination_by_flow(ivr_flow_id, dtmf_key.as_str())
             .await
         {
             Ok(Some(destination)) => {
@@ -1065,9 +1065,9 @@ impl SessionCoordinator {
             return;
         }
 
-        let Some(keypad_node_id) = self.ivr_keypad_node_id else {
+        let Some(ivr_flow_id) = self.ivr_flow_id else {
             warn!(
-                "[session {}] IVR fallback cannot resolve because keypad node is missing",
+                "[session {}] IVR fallback cannot resolve because flow_id is missing",
                 self.call_id
             );
             self.replay_current_ivr_menu().await;
@@ -1081,12 +1081,12 @@ impl SessionCoordinator {
         let fallback_result = match input_type {
             "TIMEOUT" => {
                 self.routing_port
-                    .find_ivr_timeout_destination(keypad_node_id)
+                    .find_ivr_timeout_destination_by_flow(ivr_flow_id)
                     .await
             }
             _ => {
                 self.routing_port
-                    .find_ivr_invalid_destination(keypad_node_id)
+                    .find_ivr_invalid_destination_by_flow(ivr_flow_id)
                     .await
             }
         };
@@ -1371,6 +1371,314 @@ fn normalize_max_retries(max_retries: i32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::rtp::tx::RtpTxHandle;
+    use crate::protocol::session::capture::AudioCapture;
+    use crate::protocol::session::state_machine::SessionStateMachine;
+    use crate::protocol::session::timers::SessionTimers;
+    use crate::protocol::session::types::{CallId, IvrState, MediaConfig, Sdp};
+    use crate::shared::config::SessionRuntimeConfig;
+    use crate::shared::ports::app::app_event_channel;
+    use crate::shared::ports::call_log_port::{CallLogPort, EndedCallLog};
+    use crate::shared::ports::ingest::{IngestError, IngestFuture, IngestPayload, IngestPort};
+    use crate::shared::ports::routing_port::{
+        CallActionRuleRow, IvrDestinationRow, IvrMenuRow, NoopRoutingPort, RegisteredNumberRow,
+        RoutingFuture, RoutingPort, RoutingRuleRow,
+    };
+    use crate::shared::ports::storage::{StorageError, StoragePort};
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::mpsc;
+    use tokio::time::Duration;
+
+    struct DummyIngestPort;
+
+    impl IngestPort for DummyIngestPort {
+        fn post(
+            &self,
+            _url: String,
+            _payload: IngestPayload,
+        ) -> IngestFuture<Result<(), IngestError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct DummyStoragePort;
+
+    impl StoragePort for DummyStoragePort {
+        fn load_wav_as_pcmu_frames(&self, _path: &str) -> Result<Vec<Vec<u8>>, StorageError> {
+            Ok(vec![vec![0xFF; 160]])
+        }
+    }
+
+    struct DummyCallLogPort;
+
+    impl CallLogPort for DummyCallLogPort {
+        fn persist_call_ended(
+            &self,
+            _call_log: EndedCallLog,
+        ) -> crate::shared::ports::call_log_port::CallLogFuture<()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[derive(Default, Debug)]
+    struct RoutingLookupState {
+        old_dtmf_calls: usize,
+        old_timeout_calls: usize,
+        old_invalid_calls: usize,
+        by_flow_dtmf: Vec<(Uuid, String)>,
+        by_flow_timeout: Vec<Uuid>,
+        by_flow_invalid: Vec<Uuid>,
+    }
+
+    struct FlowAwareRoutingPort {
+        state: Arc<Mutex<RoutingLookupState>>,
+        dtmf_destination: Option<IvrDestinationRow>,
+        timeout_destination: Option<IvrDestinationRow>,
+        invalid_destination: Option<IvrDestinationRow>,
+        noop: NoopRoutingPort,
+    }
+
+    impl FlowAwareRoutingPort {
+        fn new(
+            state: Arc<Mutex<RoutingLookupState>>,
+            dtmf_destination: Option<IvrDestinationRow>,
+            timeout_destination: Option<IvrDestinationRow>,
+            invalid_destination: Option<IvrDestinationRow>,
+        ) -> Self {
+            Self {
+                state,
+                dtmf_destination,
+                timeout_destination,
+                invalid_destination,
+                noop: NoopRoutingPort::new(),
+            }
+        }
+    }
+
+    impl RoutingPort for FlowAwareRoutingPort {
+        fn find_registered_number(
+            &self,
+            phone_number: &str,
+        ) -> RoutingFuture<Option<RegisteredNumberRow>> {
+            self.noop.find_registered_number(phone_number)
+        }
+
+        fn find_caller_group(&self, phone_number: &str) -> RoutingFuture<Option<Uuid>> {
+            self.noop.find_caller_group(phone_number)
+        }
+
+        fn find_call_action_rule(
+            &self,
+            group_id: Uuid,
+        ) -> RoutingFuture<Option<CallActionRuleRow>> {
+            self.noop.find_call_action_rule(group_id)
+        }
+
+        fn is_spam(&self, phone_number: &str) -> RoutingFuture<bool> {
+            self.noop.is_spam(phone_number)
+        }
+
+        fn is_registered(&self, phone_number: &str) -> RoutingFuture<bool> {
+            self.noop.is_registered(phone_number)
+        }
+
+        fn find_routing_rule(&self, category: &str) -> RoutingFuture<Option<RoutingRuleRow>> {
+            self.noop.find_routing_rule(category)
+        }
+
+        fn get_system_settings_extra(&self) -> RoutingFuture<Option<Value>> {
+            self.noop.get_system_settings_extra()
+        }
+
+        fn find_announcement_audio_file_url(
+            &self,
+            announcement_id: Uuid,
+        ) -> RoutingFuture<Option<String>> {
+            self.noop.find_announcement_audio_file_url(announcement_id)
+        }
+
+        fn find_ivr_menu(&self, flow_id: Uuid) -> RoutingFuture<Option<IvrMenuRow>> {
+            self.noop.find_ivr_menu(flow_id)
+        }
+
+        fn find_ivr_dtmf_destination(
+            &self,
+            _keypad_node_id: Uuid,
+            _dtmf_key: &str,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            let state = self.state.clone();
+            Box::pin(async move {
+                let mut guard = state.lock().expect("routing state lock");
+                guard.old_dtmf_calls += 1;
+                Ok(None)
+            })
+        }
+
+        fn find_ivr_dtmf_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+            dtmf_key: &str,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            let state = self.state.clone();
+            let dtmf_key = dtmf_key.to_string();
+            let destination = self.dtmf_destination.clone();
+            Box::pin(async move {
+                let mut guard = state.lock().expect("routing state lock");
+                guard.by_flow_dtmf.push((flow_id, dtmf_key));
+                Ok(destination)
+            })
+        }
+
+        fn find_ivr_timeout_destination(
+            &self,
+            _keypad_node_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            let state = self.state.clone();
+            Box::pin(async move {
+                let mut guard = state.lock().expect("routing state lock");
+                guard.old_timeout_calls += 1;
+                Ok(None)
+            })
+        }
+
+        fn find_ivr_timeout_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            let state = self.state.clone();
+            let destination = self.timeout_destination.clone();
+            Box::pin(async move {
+                let mut guard = state.lock().expect("routing state lock");
+                guard.by_flow_timeout.push(flow_id);
+                Ok(destination)
+            })
+        }
+
+        fn find_ivr_invalid_destination(
+            &self,
+            _keypad_node_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            let state = self.state.clone();
+            Box::pin(async move {
+                let mut guard = state.lock().expect("routing state lock");
+                guard.old_invalid_calls += 1;
+                Ok(None)
+            })
+        }
+
+        fn find_ivr_invalid_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            let state = self.state.clone();
+            let destination = self.invalid_destination.clone();
+            Box::pin(async move {
+                let mut guard = state.lock().expect("routing state lock");
+                guard.by_flow_invalid.push(flow_id);
+                Ok(destination)
+            })
+        }
+    }
+
+    fn build_test_session(routing_port: Arc<dyn RoutingPort>) -> SessionCoordinator {
+        let (session_out_tx, _session_out_rx) = mpsc::channel(32);
+        let (app_tx, _app_rx) = app_event_channel(16);
+        let (control_tx, _control_rx) =
+            mpsc::channel(super::super::SESSION_CONTROL_CHANNEL_CAPACITY);
+        let (media_tx, _media_rx) = mpsc::channel(super::super::SESSION_MEDIA_CHANNEL_CAPACITY);
+        let base_cfg = crate::shared::config::Config::from_env().expect("config loads");
+        let runtime_cfg = Arc::new(SessionRuntimeConfig::from_env(&base_cfg));
+
+        SessionCoordinator {
+            state_machine: SessionStateMachine::new(),
+            call_id: CallId::new("test-call".to_string()).expect("valid test call id"),
+            from_uri: "sip:from@example.com".to_string(),
+            to_uri: "sip:to@example.com".to_string(),
+            ingest: crate::protocol::session::ingest_manager::IngestManager::new(
+                None,
+                Arc::new(DummyIngestPort),
+            ),
+            recording_base_url: None,
+            storage_port: Arc::new(DummyStoragePort),
+            peer_sdp: Some(Sdp::pcmu("127.0.0.1", 10000)),
+            local_sdp: None,
+            session_out_tx,
+            control_tx,
+            media_tx,
+            app_tx,
+            runtime_cfg: runtime_cfg.clone(),
+            media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
+            call_log_port: Arc::new(DummyCallLogPort),
+            routing_port,
+            rtp: crate::protocol::session::rtp_stream_manager::RtpStreamManager::new(
+                RtpTxHandle::new(crate::shared::config::rtp_config().clone()),
+            ),
+            recording: crate::protocol::session::recording_manager::RecordingManager::new(
+                "test-call",
+            ),
+            started_at: None,
+            started_wall: None,
+            rtp_last_sent: None,
+            a_leg_rtp_started: false,
+            timers: SessionTimers::new(Duration::from_secs(0)),
+            sending_audio: false,
+            playback: None,
+            speaking: false,
+            capture: AudioCapture::new(runtime_cfg.vad.clone()),
+            intro_sent: false,
+            ivr_state: IvrState::default(),
+            ivr_timeout_stop: None,
+            b_leg: None,
+            transfer_cancel: None,
+            transfer_announce_stop: None,
+            ring_delay_cancel: None,
+            pending_answer: None,
+            outbound_mode: false,
+            outbound_answered: false,
+            outbound_sent_180: false,
+            outbound_sent_183: false,
+            invite_rejected: false,
+            no_response_mode: false,
+            announce_mode: false,
+            voicebot_direct_mode: false,
+            voicemail_mode: false,
+            recording_notice_pending: false,
+            transfer_after_answer_pending: false,
+            announcement_id: None,
+            announcement_audio_file_url: None,
+            ivr_flow_id: None,
+            ivr_menu_audio_file_url: None,
+            ivr_keypad_node_id: None,
+            ivr_retry_count: 0,
+            ivr_max_retries: 0,
+            ivr_timeout_override: None,
+            call_log_id: None,
+            initial_action_code: None,
+            caller_category: "unknown".to_string(),
+            call_disposition: "allowed".to_string(),
+            final_action: None,
+            transfer_status: "no_transfer".to_string(),
+            transfer_started_at: None,
+            transfer_answered_at: None,
+            transfer_ended_at: None,
+            ivr_event_sequence: 0,
+            ivr_events: Vec::new(),
+            ingest_persisted: false,
+            session_expires: None,
+            session_refresher: None,
+        }
+    }
+
+    fn voicebot_destination() -> IvrDestinationRow {
+        IvrDestinationRow {
+            transition_id: Uuid::from_u128(0x10),
+            node_id: Uuid::from_u128(0x20),
+            action_code: "VB".to_string(),
+            audio_file_url: None,
+            metadata_json: Some(r#"{"includeAnnouncement":false}"#.to_string()),
+        }
+    }
 
     #[test]
     fn parse_ivr_destination_metadata_reads_known_fields() {
@@ -1406,5 +1714,69 @@ mod tests {
         assert_eq!(normalize_max_retries(-1), 2);
         assert_eq!(normalize_max_retries(0), 0);
         assert_eq!(normalize_max_retries(3), 3);
+    }
+
+    #[tokio::test]
+    async fn db_ivr_dtmf_uses_flow_lookup_not_keypad_lookup() {
+        let flow_id = Uuid::from_u128(0x101);
+        let keypad_node_id = Uuid::from_u128(0x202);
+        let state = Arc::new(Mutex::new(RoutingLookupState::default()));
+        let routing_port = Arc::new(FlowAwareRoutingPort::new(
+            state.clone(),
+            Some(voicebot_destination()),
+            None,
+            None,
+        ));
+        let mut session = build_test_session(routing_port);
+        session.ivr_flow_id = Some(flow_id);
+        session.ivr_keypad_node_id = Some(keypad_node_id);
+
+        session.handle_db_ivr_dtmf('1').await;
+
+        let guard = state.lock().expect("routing state lock");
+        assert_eq!(guard.old_dtmf_calls, 0);
+        assert_eq!(guard.by_flow_dtmf, vec![(flow_id, "1".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn db_ivr_timeout_retry_uses_flow_lookup_after_retry_exhaustion() {
+        let flow_id = Uuid::from_u128(0x303);
+        let state = Arc::new(Mutex::new(RoutingLookupState::default()));
+        let routing_port = Arc::new(FlowAwareRoutingPort::new(
+            state.clone(),
+            None,
+            Some(voicebot_destination()),
+            None,
+        ));
+        let mut session = build_test_session(routing_port);
+        session.ivr_flow_id = Some(flow_id);
+        session.ivr_max_retries = 0;
+
+        session.handle_db_ivr_retry("TIMEOUT").await;
+
+        let guard = state.lock().expect("routing state lock");
+        assert_eq!(guard.old_timeout_calls, 0);
+        assert_eq!(guard.by_flow_timeout, vec![flow_id]);
+    }
+
+    #[tokio::test]
+    async fn db_ivr_invalid_retry_uses_flow_lookup_after_retry_exhaustion() {
+        let flow_id = Uuid::from_u128(0x404);
+        let state = Arc::new(Mutex::new(RoutingLookupState::default()));
+        let routing_port = Arc::new(FlowAwareRoutingPort::new(
+            state.clone(),
+            None,
+            None,
+            Some(voicebot_destination()),
+        ));
+        let mut session = build_test_session(routing_port);
+        session.ivr_flow_id = Some(flow_id);
+        session.ivr_max_retries = 0;
+
+        session.handle_db_ivr_retry("INVALID").await;
+
+        let guard = state.lock().expect("routing state lock");
+        assert_eq!(guard.old_invalid_calls, 0);
+        assert_eq!(guard.by_flow_invalid, vec![flow_id]);
     }
 }
