@@ -71,6 +71,26 @@ async fn main() -> anyhow::Result<()> {
     let recording_http_addr = cfg.recording_http_addr;
     let ingest_call_url = cfg.ingest_call_url;
     let recording_base_url = cfg.recording_base_url;
+    let postgres_adapter = if let Some(database_url) = config::database_url() {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            PostgresAdapter::new(database_url),
+        )
+        .await
+        {
+            Ok(Ok(adapter)) => Some(Arc::new(adapter)),
+            Ok(Err(err)) => {
+                log::warn!("[main] postgres adapter init failed: {}", err);
+                None
+            }
+            Err(_) => {
+                log::warn!("[main] postgres adapter init timed out");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // --- セッションとRTP送信元管理の共有マップ ---
     let session_registry = SessionRegistry::new();
@@ -104,7 +124,10 @@ async fn main() -> anyhow::Result<()> {
     // 録音配信の簡易HTTPサーバ（/recordings/<callId>/... を静的配信）
     {
         let base_dir = std::env::current_dir()?.join(recording::RECORDINGS_DIR);
-        http::spawn_recording_server(&recording_http_addr, base_dir).await;
+        let recording_http_pool = postgres_adapter
+            .as_ref()
+            .map(|adapter| adapter.pool().clone());
+        http::spawn_recording_server(&recording_http_addr, base_dir, recording_http_pool).await;
     }
 
     // packetループ起動（UDP受信 → SIP/RTP振り分け → セッションへ）
@@ -134,26 +157,6 @@ async fn main() -> anyhow::Result<()> {
 
     // --- SIP処理ループ: packet層からのSIP入力をセッションへ結線 ---
     let ai_port = Arc::new(ai::DefaultAiPort::new());
-    let postgres_adapter = if let Some(database_url) = config::database_url() {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            PostgresAdapter::new(database_url),
-        )
-        .await
-        {
-            Ok(Ok(adapter)) => Some(Arc::new(adapter)),
-            Ok(Err(err)) => {
-                log::warn!("[main] postgres adapter init failed: {}", err);
-                None
-            }
-            Err(_) => {
-                log::warn!("[main] postgres adapter init timed out");
-                None
-            }
-        }
-    } else {
-        None
-    };
 
     let phone_lookup: Arc<dyn PhoneLookupPort> = if config::phone_lookup_enabled() {
         match postgres_adapter.clone() {

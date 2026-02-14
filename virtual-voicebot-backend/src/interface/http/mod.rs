@@ -3,7 +3,10 @@ use std::ffi::OsStr;
 use std::io::SeekFrom;
 use std::path::{Component, Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use log::info;
+use serde::Serialize;
+use sqlx::PgPool;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -13,10 +16,10 @@ pub mod ingest;
 
 /// 録音ファイルを静的配信するシンプルなHTTPサーバ。
 /// GET /recordings/<callId>/mixed.wav のようなパスだけを扱う。
-pub async fn spawn_recording_server(bind: &str, base_dir: PathBuf) {
+pub async fn spawn_recording_server(bind: &str, base_dir: PathBuf, pool: Option<PgPool>) {
     let bind = bind.to_string();
     tokio::spawn(async move {
-        if let Err(e) = run(&bind, base_dir).await {
+        if let Err(e) = run(&bind, base_dir, pool).await {
             log::error!("[http] recording server error: {:?}", e);
         }
     });
@@ -26,27 +29,33 @@ pub async fn spawn_recording_server(bind: &str, base_dir: PathBuf) {
 pub async fn spawn_recording_server_with_listener(
     listener: TcpListener,
     base_dir: PathBuf,
+    pool: Option<PgPool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(e) = run_with_listener(listener, base_dir).await {
+        if let Err(e) = run_with_listener(listener, base_dir, pool).await {
             log::error!("[http] recording server error: {:?}", e);
         }
     })
 }
 
-async fn run(bind: &str, base_dir: PathBuf) -> std::io::Result<()> {
+async fn run(bind: &str, base_dir: PathBuf, pool: Option<PgPool>) -> std::io::Result<()> {
     let listener = TcpListener::bind(bind).await?;
     log::info!("[http] serving recordings on {}", bind);
 
-    run_with_listener(listener, base_dir).await
+    run_with_listener(listener, base_dir, pool).await
 }
 
-async fn run_with_listener(listener: TcpListener, base_dir: PathBuf) -> std::io::Result<()> {
+async fn run_with_listener(
+    listener: TcpListener,
+    base_dir: PathBuf,
+    pool: Option<PgPool>,
+) -> std::io::Result<()> {
     loop {
         let (mut socket, _) = listener.accept().await?;
         let base_dir = base_dir.clone();
+        let pool = pool.clone();
         tokio::spawn(async move {
-            let _ = handle_conn(&mut socket, &base_dir).await;
+            let _ = handle_conn(&mut socket, &base_dir, pool).await;
         });
     }
 }
@@ -69,11 +78,15 @@ async fn run_with_listener(listener: TcpListener, base_dir: PathBuf) -> std::io:
 /// // Example usage (illustrative): connect to a server socket and handle the connection.
 /// // In real usage `socket` will be the accepted client stream from a listener.
 /// if let Ok(mut socket) = TcpStream::connect("127.0.0.1:0").await {
-///     let _ = crate::handle_conn(&mut socket, Path::new("/var/lib/recordings")).await;
+///     let _ = crate::handle_conn(&mut socket, Path::new("/var/lib/recordings"), None).await;
 /// }
 /// # })
 /// ```
-async fn handle_conn(socket: &mut tokio::net::TcpStream, base_dir: &Path) -> std::io::Result<()> {
+async fn handle_conn(
+    socket: &mut tokio::net::TcpStream,
+    base_dir: &Path,
+    pool: Option<PgPool>,
+) -> std::io::Result<()> {
     let mut buf = vec![0u8; 4096];
     let mut read_len = 0usize;
     loop {
@@ -115,6 +128,35 @@ async fn handle_conn(socket: &mut tokio::net::TcpStream, base_dir: &Path) -> std
 
     let req_path = path.to_string();
     let range_value = headers.get("range").map(|v| v.as_str());
+
+    if method == "GET" && path == "/api/sync/status" {
+        let json = match pool.as_ref() {
+            Some(p) => match get_sync_status_json(p).await {
+                Ok(json) => json,
+                Err(_) => {
+                    return write_sync_error_response(
+                        socket,
+                        500,
+                        "Internal Server Error",
+                        "INTERNAL_ERROR",
+                        "Database error",
+                    )
+                    .await;
+                }
+            },
+            None => {
+                return write_sync_error_response(
+                    socket,
+                    503,
+                    "Service Unavailable",
+                    "SERVICE_UNAVAILABLE",
+                    "Database not available",
+                )
+                .await;
+            }
+        };
+        return write_json_response(socket, 200, "OK", json.as_bytes()).await;
+    }
 
     let is_get = method == "GET";
     let is_head = method == "HEAD";
@@ -285,6 +327,127 @@ async fn handle_conn(socket: &mut tokio::net::TcpStream, base_dir: &Path) -> std
             }
         }
     }
+}
+
+#[derive(Serialize)]
+struct SyncStatusResponse {
+    ok: bool,
+    #[serde(rename = "callActionsSync")]
+    call_actions_sync: CallActionsSync,
+}
+
+#[derive(Serialize)]
+struct CallActionsSync {
+    #[serde(rename = "lastUpdatedAt")]
+    last_updated_at: Option<String>,
+    #[serde(rename = "ruleCount")]
+    rule_count: i64,
+    #[serde(rename = "elapsedMinutes")]
+    elapsed_minutes: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct SyncErrorResponse {
+    error: SyncErrorBody,
+}
+
+#[derive(Serialize)]
+struct SyncErrorBody {
+    code: &'static str,
+    message: &'static str,
+}
+
+async fn get_sync_status_json(pool: &PgPool) -> Result<String, std::io::Error> {
+    let last_updated_at: Option<DateTime<Utc>> = tokio::time::timeout(
+        config::timeouts().recording_io,
+        sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+            "SELECT COALESCE(
+                (SELECT MAX(updated_at) FROM call_action_rules),
+                (SELECT updated_at FROM system_settings WHERE id = 1)
+             )",
+        )
+        .fetch_one(pool),
+    )
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "sync status query timeout: last_updated_at",
+        )
+    })?
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    let rule_count: i64 = tokio::time::timeout(
+        config::timeouts().recording_io,
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*)::bigint
+             FROM call_action_rules
+             WHERE is_active = TRUE",
+        )
+        .fetch_one(pool),
+    )
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "sync status query timeout: rule_count",
+        )
+    })?
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    let elapsed_minutes = last_updated_at.map(|ts| {
+        let elapsed = (Utc::now() - ts).num_minutes();
+        if elapsed < 0 {
+            0
+        } else {
+            elapsed
+        }
+    });
+
+    let response = SyncStatusResponse {
+        ok: true,
+        call_actions_sync: CallActionsSync {
+            last_updated_at: last_updated_at.map(|value| value.to_rfc3339()),
+            rule_count,
+            elapsed_minutes,
+        },
+    };
+
+    serde_json::to_string(&response).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+}
+
+async fn write_json_response(
+    socket: &mut tokio::net::TcpStream,
+    status: u16,
+    reason: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let headers = [("Content-Type", "application/json".to_string())];
+    write_response_with_headers(
+        socket,
+        status,
+        reason,
+        &headers,
+        body,
+        body.len() as u64,
+        true,
+    )
+    .await
+}
+
+async fn write_sync_error_response(
+    socket: &mut tokio::net::TcpStream,
+    status: u16,
+    reason: &str,
+    code: &'static str,
+    message: &'static str,
+) -> std::io::Result<()> {
+    let response = SyncErrorResponse {
+        error: SyncErrorBody { code, message },
+    };
+    let json = serde_json::to_vec(&response)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    write_json_response(socket, status, reason, &json).await
 }
 
 fn sanitize_path(p: &str) -> PathBuf {

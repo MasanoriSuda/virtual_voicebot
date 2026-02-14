@@ -15,6 +15,7 @@ import Link from "next/link"
 import { WeeklyTrendChart } from "./charts/weekly-trend-chart"
 import { KpiCards } from "./dashboard/kpi-cards"
 import { HourlyChart } from "./dashboard/hourly-chart"
+import { CallActionsSyncWidget } from "./CallActionsSyncWidget"
 
 const liveCallsData = [
   {
@@ -50,6 +51,9 @@ export function DashboardContent() {
 
       {/* KPI Cards */}
       <KpiCards />
+
+      {/* Call Actions Sync Status */}
+      <CallActionsSyncWidget />
 
       {/* Charts Section */}
       <div className="grid gap-6 lg:grid-cols-2">
