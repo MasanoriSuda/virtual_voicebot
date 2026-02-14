@@ -12,6 +12,7 @@ use crate::shared::ports::routing_port::{
 #[derive(Debug, Clone)]
 pub struct ActionConfig {
     pub action_code: String,
+    pub caller_category: String,
     pub ivr_flow_id: Option<Uuid>,
     pub recording_enabled: bool,
     pub announce_enabled: bool,
@@ -26,6 +27,7 @@ impl ActionConfig {
     pub fn default_vr() -> Self {
         Self {
             action_code: "VR".to_string(),
+            caller_category: "unknown".to_string(),
             ivr_flow_id: None,
             recording_enabled: true,
             announce_enabled: false,
@@ -40,6 +42,7 @@ impl ActionConfig {
     pub fn default_bz() -> Self {
         Self {
             action_code: "BZ".to_string(),
+            caller_category: "unknown".to_string(),
             ivr_flow_id: None,
             recording_enabled: false,
             announce_enabled: false,
@@ -79,6 +82,7 @@ impl From<ActionConfigDto> for ActionConfig {
         let announcement_id = dto.welcome_announcement_id.or(dto.announcement_id);
         Self {
             action_code: dto.action_code,
+            caller_category: "unknown".to_string(),
             ivr_flow_id: dto.ivr_flow_id,
             recording_enabled: dto.recording_enabled,
             announce_enabled: dto.announce_enabled,
@@ -225,6 +229,8 @@ impl RuleEvaluator {
             return Ok(None);
         };
         let action = to_action_config_from_registered(row);
+        let mut action = action;
+        action.caller_category = "registered".to_string();
         info!(
             "[RuleEvaluator] call_id={} stage=1 action_code={}",
             call_id, action.action_code
@@ -248,7 +254,8 @@ impl RuleEvaluator {
         };
 
         let dto: ActionConfigDto = serde_json::from_value(row.action_config)?;
-        let action: ActionConfig = dto.into();
+        let mut action: ActionConfig = dto.into();
+        action.caller_category = "registered".to_string();
         info!(
             "[RuleEvaluator] call_id={} stage=2 rule_id={} action_code={}",
             call_id, row.id, action.action_code
@@ -297,7 +304,8 @@ impl RuleEvaluator {
             return Ok(None);
         };
         let rule_id = row.id;
-        let action = to_action_config_from_routing_rule(row);
+        let mut action = to_action_config_from_routing_rule(row);
+        action.caller_category = category.as_str().to_string();
         info!(
             "[RuleEvaluator] call_id={} stage=3 rule_id={} action_code={}",
             call_id, rule_id, action.action_code
@@ -306,21 +314,27 @@ impl RuleEvaluator {
     }
 
     async fn get_default_action(&self, call_id: &str) -> Result<ActionConfig, RoutingError> {
-        self.get_action_from_settings_or_fallback(
-            "defaultAction",
-            ActionConfig::default_vr(),
-            call_id,
-        )
-        .await
+        let mut action = self
+            .get_action_from_settings_or_fallback(
+                "defaultAction",
+                ActionConfig::default_vr(),
+                call_id,
+            )
+            .await?;
+        action.caller_category = "unknown".to_string();
+        Ok(action)
     }
 
     async fn get_anonymous_action(&self, call_id: &str) -> Result<ActionConfig, RoutingError> {
-        self.get_action_from_settings_or_fallback(
-            "anonymousAction",
-            ActionConfig::default_bz(),
-            call_id,
-        )
-        .await
+        let mut action = self
+            .get_action_from_settings_or_fallback(
+                "anonymousAction",
+                ActionConfig::default_bz(),
+                call_id,
+            )
+            .await?;
+        action.caller_category = "anonymous".to_string();
+        Ok(action)
     }
 
     async fn get_action_from_settings_or_fallback(
@@ -397,6 +411,7 @@ fn normalize_phone_number(phone_number: &str) -> Result<String, RoutingError> {
 fn to_action_config_from_registered(row: RegisteredNumberRow) -> ActionConfig {
     ActionConfig {
         action_code: row.action_code,
+        caller_category: "registered".to_string(),
         ivr_flow_id: row.ivr_flow_id,
         recording_enabled: row.recording_enabled,
         announce_enabled: row.announce_enabled,
@@ -411,6 +426,7 @@ fn to_action_config_from_registered(row: RegisteredNumberRow) -> ActionConfig {
 fn to_action_config_from_routing_rule(row: RoutingRuleRow) -> ActionConfig {
     ActionConfig {
         action_code: row.action_code,
+        caller_category: "unknown".to_string(),
         ivr_flow_id: row.ivr_flow_id,
         recording_enabled: true,
         announce_enabled: true,

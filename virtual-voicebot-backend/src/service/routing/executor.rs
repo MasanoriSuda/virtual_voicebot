@@ -22,20 +22,46 @@ impl ActionExecutor {
             "[ActionExecutor] call_id={} action_code={} recording_enabled={} announce_enabled={}",
             call_id, action.action_code, action.recording_enabled, action.announce_enabled
         );
+        let action_code = action.action_code.trim().to_ascii_uppercase();
+        if action.caller_category != "unknown" || session.caller_category_is_unknown() {
+            session.set_caller_category(action.caller_category.as_str());
+        }
         session.reset_action_modes();
-        match action.action_code.as_str() {
-            "VR" => self.execute_vr(action, call_id, session).await,
-            "VB" => self.execute_vb(action, call_id, session).await,
-            "BZ" => self.execute_bz(call_id, session).await,
-            "NR" => self.execute_nr(call_id, session).await,
-            "AN" => self.execute_an(action, call_id, session).await,
-            "VM" => self.execute_vm(action, call_id, session).await,
-            "IV" => self.execute_iv(action, call_id, session).await,
+        match action_code.as_str() {
+            "VR" => {
+                session.register_action_for_call_log("VR");
+                self.execute_vr(action, call_id, session).await
+            }
+            "VB" => {
+                session.register_action_for_call_log("VB");
+                self.execute_vb(action, call_id, session).await
+            }
+            "BZ" => {
+                session.register_action_for_call_log("BZ");
+                self.execute_bz(call_id, session).await
+            }
+            "NR" => {
+                session.register_action_for_call_log("NR");
+                self.execute_nr(call_id, session).await
+            }
+            "AN" => {
+                session.register_action_for_call_log("AN");
+                self.execute_an(action, call_id, session).await
+            }
+            "VM" => {
+                session.register_action_for_call_log("VM");
+                self.execute_vm(action, call_id, session).await
+            }
+            "IV" => {
+                session.register_action_for_call_log("IV");
+                self.execute_iv(action, call_id, session).await
+            }
             unknown => {
                 warn!(
                     "[ActionExecutor] call_id={} unknown ActionCode: {}, fallback=VR",
                     call_id, unknown
                 );
+                session.register_action_for_call_log("VR");
                 self.execute_vr(action, call_id, session).await
             }
         }

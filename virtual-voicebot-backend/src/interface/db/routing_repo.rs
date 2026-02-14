@@ -262,7 +262,8 @@ impl RoutingPort for RoutingRepoImpl {
         let dtmf_key = dtmf_key.to_string();
         Box::pin(async move {
             let row = sqlx::query(
-                "SELECT dest.id AS destination_node_id,
+                "SELECT transition.id AS transition_id,
+                        dest.id AS destination_node_id,
                         dest.action_code,
                         dest.audio_file_url,
                         dest.tts_text
@@ -292,7 +293,8 @@ impl RoutingPort for RoutingRepoImpl {
         let pool = self.pool.clone();
         Box::pin(async move {
             let row = sqlx::query(
-                "SELECT dest.id AS destination_node_id,
+                "SELECT transition.id AS transition_id,
+                        dest.id AS destination_node_id,
                         dest.action_code,
                         dest.audio_file_url,
                         dest.tts_text
@@ -320,7 +322,8 @@ impl RoutingPort for RoutingRepoImpl {
         let pool = self.pool.clone();
         Box::pin(async move {
             let row = sqlx::query(
-                "SELECT dest.id AS destination_node_id,
+                "SELECT transition.id AS transition_id,
+                        dest.id AS destination_node_id,
                         dest.action_code,
                         dest.audio_file_url,
                         dest.tts_text
@@ -349,6 +352,7 @@ fn map_destination_row(
         return Ok(None);
     };
     Ok(Some(IvrDestinationRow {
+        transition_id: row.try_get("transition_id").map_err(map_read_err)?,
         node_id: row.try_get("destination_node_id").map_err(map_read_err)?,
         action_code: row.try_get("action_code").map_err(map_read_err)?,
         audio_file_url: row.try_get("audio_file_url").map_err(map_read_err)?,

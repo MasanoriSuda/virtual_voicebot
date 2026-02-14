@@ -1,4 +1,9 @@
-import { readSyncSnapshot, type StoredCallLog, type StoredRecording } from "@/lib/db/sync"
+import {
+  readSyncSnapshot,
+  type StoredCallLog,
+  type StoredIvrSessionEvent,
+  type StoredRecording,
+} from "@/lib/db/sync"
 
 export type CallDirection = "inbound" | "outbound" | "missed"
 
@@ -90,6 +95,18 @@ export async function queryCallByAnyId(id: string): Promise<QueryCallWithRecordi
     ...callLog,
     recording: recording ?? null,
   }
+}
+
+export async function queryIvrSessionEvents(callLogId: string): Promise<StoredIvrSessionEvent[]> {
+  const { ivrSessionEvents } = await readSyncSnapshot()
+  return ivrSessionEvents
+    .filter((item) => item.callLogId === callLogId)
+    .sort((a, b) => {
+      if (a.sequence !== b.sequence) {
+        return a.sequence - b.sequence
+      }
+      return Date.parse(a.occurredAt) - Date.parse(b.occurredAt)
+    })
 }
 
 export async function queryActiveCallCount(): Promise<number> {

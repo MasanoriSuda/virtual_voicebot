@@ -29,6 +29,12 @@ export interface StoredCallLog {
   endedAt: string | null
   durationSec: number | null
   endReason: string
+  callDisposition: string
+  finalAction: string | null
+  transferStatus: string
+  transferStartedAt: string | null
+  transferAnsweredAt: string | null
+  transferEndedAt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -52,9 +58,26 @@ export interface StoredRecording {
   transcriptJson: unknown | null
 }
 
+export interface StoredIvrSessionEvent {
+  id: string
+  callLogId: string
+  sequence: number
+  eventType: string
+  occurredAt: string
+  nodeId: string | null
+  dtmfKey: string | null
+  transitionId: string | null
+  exitAction: string | null
+  exitReason: string | null
+  metadata: Record<string, unknown> | null
+  createdAt: string
+  updatedAt: string
+}
+
 interface SyncDatabase {
   callLogs: Record<string, StoredCallLog>
   recordings: Record<string, StoredRecording>
+  ivrSessionEvents: Record<string, StoredIvrSessionEvent>
   updatedAt: string
 }
 
@@ -73,6 +96,7 @@ function emptyDb(): SyncDatabase {
   return {
     callLogs: {},
     recordings: {},
+    ivrSessionEvents: {},
     updatedAt: new Date(0).toISOString(),
   }
 }
@@ -89,6 +113,7 @@ async function readDb(): Promise<SyncDatabase> {
     return {
       callLogs: parsed.callLogs ?? {},
       recordings: parsed.recordings ?? {},
+      ivrSessionEvents: parsed.ivrSessionEvents ?? {},
       updatedAt: parsed.updatedAt ?? new Date(0).toISOString(),
     }
   } catch (error) {
@@ -103,6 +128,7 @@ async function readDb(): Promise<SyncDatabase> {
 export interface SyncSnapshot {
   callLogs: StoredCallLog[]
   recordings: StoredRecording[]
+  ivrSessionEvents: StoredIvrSessionEvent[]
   updatedAt: string
 }
 
@@ -182,6 +208,14 @@ function normalizeCallLog(entityId: string, payload: unknown, nowIso: string): S
     endedAt: asString(input, ["endedAt", "ended_at"], null),
     durationSec: asNumber(input, ["durationSec", "duration_sec"], null),
     endReason: asString(input, ["endReason", "end_reason"], "normal") ?? "normal",
+    callDisposition:
+      asString(input, ["callDisposition", "call_disposition"], "allowed") ?? "allowed",
+    finalAction: asString(input, ["finalAction", "final_action"], null),
+    transferStatus:
+      asString(input, ["transferStatus", "transfer_status"], "no_transfer") ?? "no_transfer",
+    transferStartedAt: asString(input, ["transferStartedAt", "transfer_started_at"], null),
+    transferAnsweredAt: asString(input, ["transferAnsweredAt", "transfer_answered_at"], null),
+    transferEndedAt: asString(input, ["transferEndedAt", "transfer_ended_at"], null),
     createdAt: asIsoDate(input, ["createdAt", "created_at"], nowIso),
     updatedAt: nowIso,
   }
@@ -212,6 +246,36 @@ function normalizeRecording(entityId: string, payload: unknown, nowIso: string):
   }
 }
 
+function normalizeIvrSessionEvent(
+  entityId: string,
+  payload: unknown,
+  nowIso: string,
+): StoredIvrSessionEvent | null {
+  const input = isRecord(payload) ? payload : {}
+  const id = asString(input, ["id"], entityId) ?? entityId
+  const callLogId = asString(input, ["callLogId", "call_log_id"], null)?.trim() ?? ""
+  if (callLogId === "" || !UUID_RE.test(callLogId)) {
+    return null
+  }
+  const metadataRaw = input.metadata
+  const metadata = isRecord(metadataRaw) ? metadataRaw : null
+  return {
+    id,
+    callLogId,
+    sequence: asNumber(input, ["sequence"], 0) ?? 0,
+    eventType: asString(input, ["eventType", "event_type"], "node_enter") ?? "node_enter",
+    occurredAt: asIsoDate(input, ["occurredAt", "occurred_at", "createdAt", "created_at"], nowIso),
+    nodeId: asString(input, ["nodeId", "node_id"], null),
+    dtmfKey: asString(input, ["dtmfKey", "dtmf_key"], null),
+    transitionId: asString(input, ["transitionId", "transition_id"], null),
+    exitAction: asString(input, ["exitAction", "exit_action"], null),
+    exitReason: asString(input, ["exitReason", "exit_reason"], null),
+    metadata,
+    createdAt: asIsoDate(input, ["createdAt", "created_at"], nowIso),
+    updatedAt: nowIso,
+  }
+}
+
 function assertUuid(value: string, field: string) {
   if (!UUID_RE.test(value)) {
     throw new Error(`${field} must be UUID`)
@@ -228,6 +292,7 @@ export async function applySyncEntries(entries: SyncIngestEntry[]): Promise<{
     const next: SyncDatabase = {
       callLogs: { ...db.callLogs },
       recordings: { ...db.recordings },
+      ivrSessionEvents: { ...db.ivrSessionEvents },
       updatedAt: nowIso,
     }
 
@@ -244,6 +309,24 @@ export async function applySyncEntries(entries: SyncIngestEntry[]): Promise<{
         case "recording":
           next.recordings[entry.entityId] = normalizeRecording(entry.entityId, entry.payload, nowIso)
           processed += 1
+          break
+        case "ivr_session_event":
+          {
+            const normalized = normalizeIvrSessionEvent(
+              entry.entityId,
+              entry.payload,
+              nowIso,
+            )
+            if (!normalized) {
+              console.warn(
+                `[sync] skipped ivr_session_event ${entry.entityId}: missing or invalid callLogId`,
+              )
+              skipped += 1
+              break
+            }
+            next.ivrSessionEvents[entry.entityId] = normalized
+            processed += 1
+          }
           break
         default:
           skipped += 1
@@ -299,6 +382,7 @@ export async function readSyncSnapshot(): Promise<SyncSnapshot> {
   return {
     callLogs: Object.values(db.callLogs),
     recordings: Object.values(db.recordings),
+    ivrSessionEvents: Object.values(db.ivrSessionEvents),
     updatedAt: db.updatedAt,
   }
 }

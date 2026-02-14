@@ -74,12 +74,25 @@ export function CallHistoryContent({ initialCalls }: CallHistoryContentProps) {
   }
 
   const handleExportCSV = () => {
-    const headers = ["日時", "方向", "発信者", "着信先", "通話時間", "ステータス"]
+    const headers = [
+      "日時",
+      "方向",
+      "発信者",
+      "着信先",
+      "着信応答",
+      "実行アクション",
+      "転送状況",
+      "通話時間",
+      "ステータス",
+    ]
     const rows = sortedCalls.map((call) => [
       formatDateTime(call.startedAt),
       directionLabel(call.direction),
       `${call.fromName} ${call.from}`,
       call.to,
+      dispositionLabel(call.callDisposition),
+      finalActionLabel(call.finalAction),
+      transferStatusLabel(call.transferStatus),
       formatDuration(call.durationSec),
       statusLabel(call.status),
     ])
@@ -179,12 +192,16 @@ function toRecord(call: Call): CallRecord {
   return {
     id: call.id,
     callId: call.externalCallId,
+    actionCode: call.actionCode,
     from: call.callerNumber ?? "非通知",
     fromName: categoryLabel(call.callerCategory),
     to: "未設定",
     startedAt: call.startedAt,
     endedAt: call.endedAt ?? null,
     status,
+    callDisposition: call.callDisposition,
+    finalAction: call.finalAction,
+    transferStatus: call.transferStatus,
     durationSec: call.durationSec ?? 0,
     summary: "",
     recordingUrl: null,
@@ -220,6 +237,60 @@ function categoryLabel(category: Call["callerCategory"]): string {
       return "匿名"
     default:
       return "未登録"
+  }
+}
+
+function dispositionLabel(disposition: Call["callDisposition"]): string {
+  switch (disposition) {
+    case "allowed":
+      return "許可"
+    case "denied":
+      return "拒否"
+    case "no_answer":
+      return "無応答"
+    default:
+      return "-"
+  }
+}
+
+function finalActionLabel(action: Call["finalAction"]): string {
+  if (!action) return "-"
+  switch (action) {
+    case "normal_call":
+      return "通常着信"
+    case "voicebot":
+      return "ボイスボット"
+    case "ivr":
+      return "IVR"
+    case "voicemail":
+      return "留守番電話"
+    case "announcement":
+      return "アナウンス"
+    case "busy":
+      return "ビジー"
+    case "rejected":
+      return "着信拒否"
+    case "announcement_deny":
+      return "アナウンス拒否"
+    default:
+      return action
+  }
+}
+
+function transferStatusLabel(status: Call["transferStatus"]): string {
+  switch (status) {
+    case "no_transfer":
+      return "転送なし"
+    case "none":
+      return "-"
+    case "trying":
+      return "転送試行中"
+    case "answered":
+      return "転送成立"
+    case "failed":
+      return "転送失敗"
+    default:
+      return "-"
   }
 }
 

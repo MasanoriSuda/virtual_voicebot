@@ -39,6 +39,7 @@ pub struct IvrMenuRow {
 
 #[derive(Clone, Debug)]
 pub struct IvrDestinationRow {
+    pub transition_id: Uuid,
     pub node_id: Uuid,
     pub action_code: String,
     pub audio_file_url: Option<String>,

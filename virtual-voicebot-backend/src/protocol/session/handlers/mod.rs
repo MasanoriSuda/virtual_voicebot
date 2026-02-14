@@ -59,6 +59,7 @@ impl SessionCoordinator {
                 self.outbound_sent_183 = false;
                 self.invite_rejected = false;
                 self.reset_action_modes();
+                self.reset_call_log_tracking();
                 self.stop_ring_delay();
 
                 let caller_id =
@@ -95,6 +96,7 @@ impl SessionCoordinator {
                         self.call_id
                     );
                     self.pending_answer = None;
+                    self.send_ingest("ended").await;
                     return false;
                 }
 
@@ -104,6 +106,7 @@ impl SessionCoordinator {
                         self.call_id
                     );
                     self.pending_answer = None;
+                    self.send_ingest("ended").await;
                     return false;
                 }
 
@@ -231,6 +234,7 @@ impl SessionCoordinator {
                 if !advance_state {
                     return false;
                 }
+                self.ensure_call_log_id();
                 self.started_at = Some(Instant::now());
                 self.started_wall = Some(std::time::SystemTime::now());
                 if let Err(e) = self.recording.start_main() {
@@ -336,6 +340,7 @@ impl SessionCoordinator {
                 self.cancel_playback();
                 self.stop_ivr_timeout();
                 self.ivr_state = IvrState::B2buaMode;
+                self.mark_transfer_answered();
                 self.b_leg = Some(b_leg);
                 self.recording.ensure_b_leg();
                 if self.recording.is_started() {
@@ -372,6 +377,7 @@ impl SessionCoordinator {
                 warn!("[session {}] transfer failed: {}", self.call_id, reason);
                 self.transfer_cancel = None;
                 self.stop_transfer_announce();
+                self.mark_transfer_failed();
                 if self.outbound_mode {
                     let code = status.unwrap_or(503);
                     let _ = self.session_out_tx.try_send((
@@ -409,6 +415,7 @@ impl SessionCoordinator {
                 self.stop_keepalive_timer();
                 self.stop_session_timer();
                 self.stop_ivr_timeout();
+                self.mark_transfer_ended();
                 self.send_bye_to_a_leg();
                 self.stop_recorders();
                 self.send_ingest("ended").await;
@@ -480,6 +487,7 @@ impl SessionCoordinator {
                     "[session {}] CANCEL received, terminating early",
                     self.call_id
                 );
+                let already_rejected = self.invite_rejected;
                 self.invite_rejected = true;
                 self.stop_ring_delay();
                 self.cancel_transfer();
@@ -488,6 +496,7 @@ impl SessionCoordinator {
                 self.stop_keepalive_timer();
                 self.stop_session_timer();
                 self.stop_ivr_timeout();
+                self.mark_transfer_ended();
                 self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
@@ -500,6 +509,9 @@ impl SessionCoordinator {
                     },
                 ));
                 self.stop_recorders();
+                if !already_rejected {
+                    self.send_ingest("ended").await;
+                }
                 self.send_call_ended(EndReason::Cancel);
             }
             (_, SessionControlIn::SipBye) => {
@@ -510,6 +522,7 @@ impl SessionCoordinator {
                 self.stop_keepalive_timer();
                 self.stop_session_timer();
                 self.stop_ivr_timeout();
+                self.mark_transfer_ended();
                 self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
@@ -541,6 +554,7 @@ impl SessionCoordinator {
                 self.stop_keepalive_timer();
                 self.stop_session_timer();
                 self.stop_ivr_timeout();
+                self.mark_transfer_ended();
                 self.stop_recorders();
                 self.send_ingest("ended").await;
                 self.rtp.stop(self.call_id.as_str());
@@ -602,6 +616,7 @@ impl SessionCoordinator {
                 self.stop_keepalive_timer();
                 self.stop_session_timer();
                 self.stop_ivr_timeout();
+                self.mark_transfer_ended();
                 self.stop_recorders();
                 self.send_ingest("ended").await;
                 let _ = self
@@ -621,6 +636,7 @@ impl SessionCoordinator {
                 self.stop_keepalive_timer();
                 self.stop_session_timer();
                 self.stop_ivr_timeout();
+                self.mark_transfer_ended();
                 self.stop_recorders();
                 self.send_ingest("failed").await;
                 self.rtp.stop(self.call_id.as_str());
@@ -768,6 +784,7 @@ impl SessionCoordinator {
                         }
                         info!("[session {}] initiating transfer to B-leg", self.call_id);
                         self.ivr_state = IvrState::Transferring;
+                        self.mark_transfer_trying();
                         if let Err(e) = self.start_playback(&[super::TRANSFER_WAV_PATH]).await {
                             warn!(
                                 "[session {}] failed to play transfer wav: {:?}",
@@ -851,6 +868,7 @@ impl SessionCoordinator {
         self.cancel_playback();
         self.stop_ivr_timeout();
         self.ivr_state = IvrState::Transferring;
+        self.mark_transfer_trying();
         self.transfer_cancel = Some(b2bua::spawn_transfer(
             self.call_id.clone(),
             self.control_tx.clone(),
@@ -947,6 +965,14 @@ impl SessionCoordinator {
             normalize_timeout_sec(menu.timeout_sec),
             self.ivr_max_retries
         );
+        self.record_ivr_event(
+            "node_enter",
+            Some(menu.root_node_id),
+            None,
+            None,
+            None,
+            None,
+        );
 
         if let Err(err) = self.start_playback(&[menu_path.as_str()]).await {
             warn!(
@@ -981,6 +1007,7 @@ impl SessionCoordinator {
     }
 
     async fn handle_db_ivr_dtmf(&mut self, digit: char) {
+        self.record_ivr_event("dtmf_input", None, Some(digit), None, None, None);
         let Some(keypad_node_id) = self.ivr_keypad_node_id else {
             warn!(
                 "[session {}] DB IVR keypad node missing while handling DTMF '{}'",
@@ -1022,6 +1049,12 @@ impl SessionCoordinator {
     }
 
     async fn handle_db_ivr_retry(&mut self, input_type: &'static str) {
+        let event_type = if input_type == "TIMEOUT" {
+            "timeout"
+        } else {
+            "invalid_input"
+        };
+        self.record_ivr_event(event_type, self.ivr_keypad_node_id, None, None, None, None);
         self.ivr_retry_count = self.ivr_retry_count.saturating_add(1);
         if self.ivr_retry_count <= self.ivr_max_retries {
             info!(
@@ -1081,6 +1114,14 @@ impl SessionCoordinator {
         &mut self,
         destination: crate::shared::ports::routing_port::IvrDestinationRow,
     ) {
+        self.record_ivr_event(
+            "transition",
+            None,
+            None,
+            Some(destination.transition_id),
+            None,
+            None,
+        );
         let action_code = destination.action_code.trim().to_ascii_uppercase();
         let metadata = parse_ivr_destination_metadata(
             self.call_id.as_str(),
@@ -1105,6 +1146,14 @@ impl SessionCoordinator {
         info!(
             "[session {}] executing IVR destination node_id={} action_code={}",
             self.call_id, destination.node_id, action_code
+        );
+        self.record_ivr_event(
+            "node_enter",
+            Some(destination.node_id),
+            None,
+            None,
+            None,
+            None,
         );
         if let Err(err) = ActionExecutor::new()
             .execute(&action, call_id.as_str(), self)
@@ -1156,10 +1205,26 @@ impl SessionCoordinator {
                 }
             }
             "VR" => {
+                self.record_ivr_event(
+                    "exit",
+                    None,
+                    None,
+                    None,
+                    Some("VR"),
+                    Some("transfer_initiated"),
+                );
                 self.set_transfer_after_answer_pending(false);
                 self.start_b2bua_transfer("ivr_vr");
             }
             "VB" => {
+                self.record_ivr_event(
+                    "exit",
+                    None,
+                    None,
+                    None,
+                    Some("VB"),
+                    Some("voicebot_started"),
+                );
                 let intro_path = if action.include_announcement.unwrap_or(false) {
                     action
                         .announcement_audio_file_url
@@ -1173,6 +1238,19 @@ impl SessionCoordinator {
                 self.transition_to_voicebot_mode(intro_path).await;
             }
             "AN" | "VM" => {
+                let exit_reason = if action_code == "AN" {
+                    "announcement_started"
+                } else {
+                    "voicemail_started"
+                };
+                self.record_ivr_event(
+                    "exit",
+                    None,
+                    None,
+                    None,
+                    Some(action_code.as_str()),
+                    Some(exit_reason),
+                );
                 self.play_announcement_for_current_mode(action_code.as_str())
                     .await;
             }

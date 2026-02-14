@@ -1,7 +1,7 @@
-import type { Call, CallDetail, Utterance } from "./types"
+import type { Call, CallDetail, IvrSessionEvent, Utterance } from "./types"
 import { mockCallPresentationById, mockCalls } from "./mock-data"
-import { queryCallByAnyId, queryCalls, type CallDirection } from "./db/queries"
-import type { StoredCallLog, StoredRecording } from "./db/sync"
+import { queryCallByAnyId, queryCalls, queryIvrSessionEvents, type CallDirection } from "./db/queries"
+import type { StoredCallLog, StoredIvrSessionEvent, StoredRecording } from "./db/sync"
 
 export interface CallFilters {
   dateRange?: {
@@ -67,6 +67,28 @@ function mapStoredCallToCall(callLog: StoredCallLog): Call {
     endedAt: callLog.endedAt ? asISOString(callLog.endedAt) : null,
     durationSec: callLog.durationSec,
     endReason: (callLog.endReason as Call["endReason"]) ?? "normal",
+    callDisposition: (callLog.callDisposition as Call["callDisposition"]) ?? "allowed",
+    finalAction: (callLog.finalAction as Call["finalAction"]) ?? null,
+    transferStatus: (callLog.transferStatus as Call["transferStatus"]) ?? "no_transfer",
+    transferStartedAt: callLog.transferStartedAt ? asISOString(callLog.transferStartedAt) : null,
+    transferAnsweredAt: callLog.transferAnsweredAt ? asISOString(callLog.transferAnsweredAt) : null,
+    transferEndedAt: callLog.transferEndedAt ? asISOString(callLog.transferEndedAt) : null,
+  }
+}
+
+function mapStoredIvrEvent(event: StoredIvrSessionEvent): IvrSessionEvent {
+  return {
+    id: event.id,
+    callLogId: event.callLogId,
+    sequence: event.sequence,
+    eventType: event.eventType as IvrSessionEvent["eventType"],
+    occurredAt: asISOString(event.occurredAt),
+    nodeId: event.nodeId,
+    dtmfKey: event.dtmfKey,
+    transitionId: event.transitionId,
+    exitAction: event.exitAction,
+    exitReason: event.exitReason,
+    metadata: event.metadata,
   }
 }
 
@@ -238,4 +260,16 @@ export async function getCallUtterances(callId: string): Promise<Utterance[]> {
 export async function getRecordingUrl(callId: string): Promise<string | null> {
   const detail = await getCallDetail(callId)
   return detail?.recordingUrl ?? null
+}
+
+export async function getIvrSessionEvents(callId: string): Promise<IvrSessionEvent[]> {
+  if (USE_MOCK) {
+    return []
+  }
+  const row = await queryCallByAnyId(callId)
+  if (!row) {
+    return []
+  }
+  const events = await queryIvrSessionEvents(row.id)
+  return events.map(mapStoredIvrEvent)
 }

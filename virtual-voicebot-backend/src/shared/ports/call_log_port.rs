@@ -2,6 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -31,7 +32,28 @@ pub struct EndedCallLog {
     pub answered_at: Option<DateTime<Utc>>,
     pub end_reason: String,
     pub status: String,
+    pub call_disposition: String,
+    pub final_action: Option<String>,
+    pub transfer_status: String,
+    pub transfer_started_at: Option<DateTime<Utc>>,
+    pub transfer_answered_at: Option<DateTime<Utc>>,
+    pub transfer_ended_at: Option<DateTime<Utc>>,
+    pub ivr_events: Vec<EndedIvrSessionEvent>,
     pub recording: Option<EndedRecording>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EndedIvrSessionEvent {
+    pub id: Uuid,
+    pub sequence: i32,
+    pub event_type: String,
+    pub occurred_at: DateTime<Utc>,
+    pub node_id: Option<Uuid>,
+    pub dtmf_key: Option<String>,
+    pub transition_id: Option<Uuid>,
+    pub exit_action: Option<String>,
+    pub exit_reason: Option<String>,
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Error)]

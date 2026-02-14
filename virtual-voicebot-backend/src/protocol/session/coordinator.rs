@@ -22,7 +22,9 @@ use crate::protocol::session::timers::SessionTimers;
 use crate::protocol::sip::{parse_name_addr, parse_uri};
 use crate::shared::config::SessionRuntimeConfig;
 use crate::shared::ports::app::AppEventTx;
-use crate::shared::ports::call_log_port::{CallLogPort, EndedCallLog, EndedRecording};
+use crate::shared::ports::call_log_port::{
+    CallLogPort, EndedCallLog, EndedIvrSessionEvent, EndedRecording,
+};
 use crate::shared::ports::ingest::IngestPort;
 use crate::shared::ports::routing_port::RoutingPort;
 use crate::shared::ports::storage::StoragePort;
@@ -129,6 +131,18 @@ pub struct SessionCoordinator {
     ivr_retry_count: u32,
     ivr_max_retries: u32,
     ivr_timeout_override: Option<Duration>,
+    call_log_id: Option<Uuid>,
+    initial_action_code: Option<String>,
+    caller_category: String,
+    call_disposition: String,
+    final_action: Option<String>,
+    transfer_status: String,
+    transfer_started_at: Option<DateTime<Utc>>,
+    transfer_answered_at: Option<DateTime<Utc>>,
+    transfer_ended_at: Option<DateTime<Utc>>,
+    ivr_event_sequence: i32,
+    ivr_events: Vec<EndedIvrSessionEvent>,
+    ingest_persisted: bool,
     session_expires: Option<Duration>,
     session_refresher: Option<SessionRefresher>,
 }
@@ -215,6 +229,18 @@ impl SessionCoordinator {
             ivr_retry_count: 0,
             ivr_max_retries: 0,
             ivr_timeout_override: None,
+            call_log_id: None,
+            initial_action_code: None,
+            caller_category: "unknown".to_string(),
+            call_disposition: "allowed".to_string(),
+            final_action: None,
+            transfer_status: "no_transfer".to_string(),
+            transfer_started_at: None,
+            transfer_answered_at: None,
+            transfer_ended_at: None,
+            ivr_event_sequence: 0,
+            ivr_events: Vec::new(),
+            ingest_persisted: false,
             session_expires: None,
             session_refresher: None,
         };
@@ -345,6 +371,111 @@ impl SessionCoordinator {
         self.ivr_state = ivr_state;
     }
 
+    pub(crate) fn set_caller_category(&mut self, category: &str) {
+        self.caller_category = normalize_caller_category(category).to_string();
+    }
+
+    pub(crate) fn caller_category_is_unknown(&self) -> bool {
+        self.caller_category == "unknown"
+    }
+
+    pub(crate) fn register_action_for_call_log(&mut self, action_code: &str) {
+        let normalized = normalize_action_code(action_code);
+        if self.initial_action_code.is_none() {
+            self.initial_action_code = Some(normalized.clone());
+        }
+        self.call_disposition = disposition_from_action_code(&normalized).to_string();
+        self.final_action = final_action_from_action_code(&normalized).map(str::to_string);
+        if matches!(normalized.as_str(), "IV" | "VR") && self.transfer_status == "no_transfer" {
+            self.transfer_status = "none".to_string();
+        }
+    }
+
+    pub(crate) fn mark_transfer_trying(&mut self) {
+        if self.transfer_started_at.is_none() {
+            self.transfer_started_at = Some(Utc::now());
+        }
+        self.transfer_status = "trying".to_string();
+    }
+
+    pub(crate) fn mark_transfer_answered(&mut self) {
+        if self.transfer_started_at.is_none() {
+            self.transfer_started_at = Some(Utc::now());
+        }
+        if self.transfer_answered_at.is_none() {
+            self.transfer_answered_at = Some(Utc::now());
+        }
+        self.transfer_status = "answered".to_string();
+    }
+
+    pub(crate) fn mark_transfer_failed(&mut self) {
+        if self.transfer_started_at.is_none() {
+            self.transfer_started_at = Some(Utc::now());
+        }
+        if self.transfer_ended_at.is_none() {
+            self.transfer_ended_at = Some(Utc::now());
+        }
+        self.transfer_status = "failed".to_string();
+    }
+
+    pub(crate) fn mark_transfer_ended(&mut self) {
+        if self.transfer_started_at.is_some() && self.transfer_ended_at.is_none() {
+            self.transfer_ended_at = Some(Utc::now());
+        }
+    }
+
+    pub(crate) fn reset_call_log_tracking(&mut self) {
+        self.call_log_id = None;
+        self.initial_action_code = None;
+        self.caller_category = "unknown".to_string();
+        self.call_disposition = "allowed".to_string();
+        self.final_action = None;
+        self.transfer_status = "no_transfer".to_string();
+        self.transfer_started_at = None;
+        self.transfer_answered_at = None;
+        self.transfer_ended_at = None;
+        self.ivr_event_sequence = 0;
+        self.ivr_events.clear();
+        self.ingest_persisted = false;
+    }
+
+    pub(crate) fn ensure_call_log_id(&mut self) -> Uuid {
+        if let Some(existing) = self.call_log_id {
+            return existing;
+        }
+        let generated = Uuid::now_v7();
+        self.call_log_id = Some(generated);
+        generated
+    }
+
+    pub(crate) fn record_ivr_event(
+        &mut self,
+        event_type: &str,
+        node_id: Option<Uuid>,
+        dtmf_key: Option<char>,
+        transition_id: Option<Uuid>,
+        exit_action: Option<&str>,
+        exit_reason: Option<&str>,
+    ) {
+        let call_log_id = self.ensure_call_log_id();
+        let sequence = self.ivr_event_sequence;
+        self.ivr_event_sequence = self.ivr_event_sequence.saturating_add(1);
+        self.ivr_events.push(EndedIvrSessionEvent {
+            id: Uuid::now_v7(),
+            sequence,
+            event_type: event_type.to_string(),
+            occurred_at: Utc::now(),
+            node_id,
+            dtmf_key: dtmf_key.map(|value| value.to_string()),
+            transition_id,
+            exit_action: exit_action.map(str::to_string),
+            exit_reason: exit_reason.map(str::to_string),
+            metadata: Some(serde_json::json!({
+                "callLogId": call_log_id.to_string(),
+            })),
+        });
+    }
+
     pub(crate) async fn send_sip_error(&mut self, code: u16, reason: &str) -> Result<(), Error> {
         self.session_out_tx.try_send((
             self.call_id.clone(),
@@ -425,6 +556,9 @@ impl SessionCoordinator {
     }
 
     async fn send_ingest(&mut self, status: &str) {
+        if self.ingest_persisted {
+            return;
+        }
         let (call_status, end_reason) = match status {
             "ended" => ("ended", "normal"),
             "failed" | "error" => ("error", "error"),
@@ -444,8 +578,38 @@ impl SessionCoordinator {
         let duration_sec = self
             .started_at
             .map(|s| s.elapsed().as_secs().min(i32::MAX as u64) as i32);
-        let call_log_id = Uuid::now_v7();
+        let call_log_id = self.ensure_call_log_id();
         let caller_number = extract_e164_caller_number(self.from_uri.as_str());
+        let action_code = self
+            .initial_action_code
+            .as_deref()
+            .map(normalize_action_code)
+            .unwrap_or_else(|| "IV".to_string());
+        if action_code == "IV"
+            && !self
+                .ivr_events
+                .iter()
+                .any(|event| event.event_type == "exit")
+        {
+            let exit_reason = match self.transfer_status.as_str() {
+                "trying" => "caller_disconnected_during_transfer_try",
+                "answered" => "transfer_completed",
+                "failed" => "transfer_failed",
+                _ => "caller_disconnected_in_ivr",
+            };
+            self.record_ivr_event("exit", None, None, None, Some("IV"), Some(exit_reason));
+        }
+        let mut transfer_status = self.transfer_status.clone();
+        if transfer_status == "trying" {
+            transfer_status = "failed".to_string();
+            if self.transfer_ended_at.is_none() {
+                self.transfer_ended_at = Some(ended_at);
+            }
+        }
+        if transfer_status == "answered" && self.transfer_ended_at.is_none() {
+            self.transfer_ended_at = Some(ended_at);
+        }
+        let ivr_events = std::mem::take(&mut self.ivr_events);
 
         let recording_path = self.recording.mixed_file_path();
         let recording = match tokio::fs::metadata(&recording_path).await {
@@ -479,12 +643,19 @@ impl SessionCoordinator {
             external_call_id: call_log_id.to_string(),
             sip_call_id: self.call_id.to_string(),
             caller_number,
-            caller_category: "unknown".to_string(),
-            action_code: "IV".to_string(),
+            caller_category: self.caller_category.clone(),
+            action_code,
             ivr_flow_id: self.ivr_flow_id,
             answered_at: None,
             end_reason: end_reason.to_string(),
             status: call_status.to_string(),
+            call_disposition: self.call_disposition.clone(),
+            final_action: self.final_action.clone(),
+            transfer_status,
+            transfer_started_at: self.transfer_started_at,
+            transfer_answered_at: self.transfer_answered_at,
+            transfer_ended_at: self.transfer_ended_at,
+            ivr_events,
             recording,
         };
 
@@ -494,7 +665,9 @@ impl SessionCoordinator {
                 self.call_id,
                 err
             );
+            return;
         }
+        self.ingest_persisted = true;
     }
 }
 
@@ -530,6 +703,42 @@ fn map_audio_file_url_to_local_path(audio_file_url: String) -> String {
     }
 
     url_path.to_string()
+}
+
+fn normalize_action_code(action_code: &str) -> String {
+    action_code.trim().to_ascii_uppercase()
+}
+
+fn normalize_caller_category(category: &str) -> &'static str {
+    match category.trim().to_ascii_lowercase().as_str() {
+        "spam" => "spam",
+        "registered" => "registered",
+        "anonymous" => "anonymous",
+        _ => "unknown",
+    }
+}
+
+fn disposition_from_action_code(action_code: &str) -> &'static str {
+    match action_code {
+        "BZ" | "RJ" => "denied",
+        "NR" => "no_answer",
+        _ => "allowed",
+    }
+}
+
+fn final_action_from_action_code(action_code: &str) -> Option<&'static str> {
+    match action_code {
+        "VR" => Some("normal_call"),
+        "VM" => Some("voicemail"),
+        "VB" => Some("voicebot"),
+        "IV" => Some("ivr"),
+        "AN" => Some("announcement"),
+        "BZ" => Some("busy"),
+        "RJ" => Some("rejected"),
+        "AR" => Some("announcement_deny"),
+        "NR" => None,
+        _ => None,
+    }
 }
 
 fn extract_e164_caller_number(value: &str) -> Option<String> {
@@ -709,6 +918,18 @@ mod tests {
             ivr_retry_count: 0,
             ivr_max_retries: 0,
             ivr_timeout_override: None,
+            call_log_id: None,
+            initial_action_code: None,
+            caller_category: "unknown".to_string(),
+            call_disposition: "allowed".to_string(),
+            final_action: None,
+            transfer_status: "no_transfer".to_string(),
+            transfer_started_at: None,
+            transfer_answered_at: None,
+            transfer_ended_at: None,
+            ivr_event_sequence: 0,
+            ivr_events: Vec::new(),
+            ingest_persisted: false,
             session_expires: None,
             session_refresher: None,
         };
@@ -789,5 +1010,39 @@ mod tests {
     fn relative_audio_announcement_url_is_mapped_to_frontend_public_file() {
         let mapped = super::map_audio_file_url_to_local_path("/audio/announcements/xyz.wav".into());
         assert!(mapped.ends_with("virtual-voicebot-frontend/public/audio/announcements/xyz.wav"));
+    }
+
+    #[test]
+    fn disposition_mapping_treats_ar_as_allowed() {
+        assert_eq!(super::disposition_from_action_code("AR"), "allowed");
+    }
+
+    #[test]
+    fn disposition_mapping_for_denied_and_no_answer_actions() {
+        assert_eq!(super::disposition_from_action_code("BZ"), "denied");
+        assert_eq!(super::disposition_from_action_code("RJ"), "denied");
+        assert_eq!(super::disposition_from_action_code("NR"), "no_answer");
+    }
+
+    #[test]
+    fn final_action_mapping_treats_ar_as_announcement_deny() {
+        assert_eq!(
+            super::final_action_from_action_code("AR"),
+            Some("announcement_deny")
+        );
+    }
+
+    #[tokio::test]
+    async fn record_ivr_event_initializes_call_log_id_and_buffers_event() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        assert!(session.call_log_id.is_none());
+        assert!(session.ivr_events.is_empty());
+
+        session.record_ivr_event("node_enter", None, None, None, None, None);
+
+        assert!(session.call_log_id.is_some());
+        assert_eq!(session.ivr_events.len(), 1);
+        assert_eq!(session.ivr_events[0].sequence, 0);
+        assert_eq!(session.ivr_events[0].event_type, "node_enter");
     }
 }
