@@ -75,13 +75,26 @@ pub trait RoutingPort: Send + Sync {
         keypad_node_id: Uuid,
         dtmf_key: &str,
     ) -> RoutingFuture<Option<IvrDestinationRow>>;
+    fn find_ivr_dtmf_destination_by_flow(
+        &self,
+        flow_id: Uuid,
+        dtmf_key: &str,
+    ) -> RoutingFuture<Option<IvrDestinationRow>>;
     fn find_ivr_timeout_destination(
         &self,
         keypad_node_id: Uuid,
     ) -> RoutingFuture<Option<IvrDestinationRow>>;
+    fn find_ivr_timeout_destination_by_flow(
+        &self,
+        flow_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>>;
     fn find_ivr_invalid_destination(
         &self,
         keypad_node_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>>;
+    fn find_ivr_invalid_destination_by_flow(
+        &self,
+        flow_id: Uuid,
     ) -> RoutingFuture<Option<IvrDestinationRow>>;
 }
 
@@ -145,6 +158,14 @@ impl RoutingPort for NoopRoutingPort {
         Box::pin(async { Ok(None) })
     }
 
+    fn find_ivr_dtmf_destination_by_flow(
+        &self,
+        _flow_id: Uuid,
+        _dtmf_key: &str,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn find_ivr_timeout_destination(
         &self,
         _keypad_node_id: Uuid,
@@ -152,9 +173,23 @@ impl RoutingPort for NoopRoutingPort {
         Box::pin(async { Ok(None) })
     }
 
+    fn find_ivr_timeout_destination_by_flow(
+        &self,
+        _flow_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn find_ivr_invalid_destination(
         &self,
         _keypad_node_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn find_ivr_invalid_destination_by_flow(
+        &self,
+        _flow_id: Uuid,
     ) -> RoutingFuture<Option<IvrDestinationRow>> {
         Box::pin(async { Ok(None) })
     }

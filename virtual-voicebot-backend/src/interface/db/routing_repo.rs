@@ -286,6 +286,42 @@ impl RoutingPort for RoutingRepoImpl {
         })
     }
 
+    fn find_ivr_dtmf_destination_by_flow(
+        &self,
+        flow_id: Uuid,
+        dtmf_key: &str,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
+        let pool = self.pool.clone();
+        let dtmf_key = dtmf_key.to_string();
+        Box::pin(async move {
+            let row = sqlx::query(
+                "SELECT transition.id AS transition_id,
+                        dest.id AS destination_node_id,
+                        dest.action_code,
+                        dest.audio_file_url,
+                        dest.tts_text
+                 FROM ivr_transitions transition
+                 JOIN ivr_nodes from_node
+                   ON from_node.id = transition.from_node_id
+                 JOIN ivr_nodes dest
+                   ON dest.id = transition.to_node_id
+                 WHERE from_node.flow_id = $1
+                   AND from_node.node_type = 'KEYPAD'
+                   AND transition.input_type = 'DTMF'
+                   AND transition.dtmf_key = $2
+                 ORDER BY transition.created_at ASC, transition.id ASC
+                 LIMIT 1",
+            )
+            .bind(flow_id)
+            .bind(dtmf_key)
+            .fetch_optional(&pool)
+            .await
+            .map_err(map_read_err)?;
+
+            map_destination_row(row)
+        })
+    }
+
     fn find_ivr_timeout_destination(
         &self,
         keypad_node_id: Uuid,
@@ -315,6 +351,38 @@ impl RoutingPort for RoutingRepoImpl {
         })
     }
 
+    fn find_ivr_timeout_destination_by_flow(
+        &self,
+        flow_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let row = sqlx::query(
+                "SELECT transition.id AS transition_id,
+                        dest.id AS destination_node_id,
+                        dest.action_code,
+                        dest.audio_file_url,
+                        dest.tts_text
+                 FROM ivr_transitions transition
+                 JOIN ivr_nodes from_node
+                   ON from_node.id = transition.from_node_id
+                 JOIN ivr_nodes dest
+                   ON dest.id = transition.to_node_id
+                 WHERE from_node.flow_id = $1
+                   AND from_node.node_type = 'KEYPAD'
+                   AND transition.input_type = 'TIMEOUT'
+                 ORDER BY transition.created_at ASC, transition.id ASC
+                 LIMIT 1",
+            )
+            .bind(flow_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(map_read_err)?;
+
+            map_destination_row(row)
+        })
+    }
+
     fn find_ivr_invalid_destination(
         &self,
         keypad_node_id: Uuid,
@@ -336,6 +404,38 @@ impl RoutingPort for RoutingRepoImpl {
                  LIMIT 1",
             )
             .bind(keypad_node_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(map_read_err)?;
+
+            map_destination_row(row)
+        })
+    }
+
+    fn find_ivr_invalid_destination_by_flow(
+        &self,
+        flow_id: Uuid,
+    ) -> RoutingFuture<Option<IvrDestinationRow>> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let row = sqlx::query(
+                "SELECT transition.id AS transition_id,
+                        dest.id AS destination_node_id,
+                        dest.action_code,
+                        dest.audio_file_url,
+                        dest.tts_text
+                 FROM ivr_transitions transition
+                 JOIN ivr_nodes from_node
+                   ON from_node.id = transition.from_node_id
+                 JOIN ivr_nodes dest
+                   ON dest.id = transition.to_node_id
+                 WHERE from_node.flow_id = $1
+                   AND from_node.node_type = 'KEYPAD'
+                   AND transition.input_type = 'INVALID'
+                 ORDER BY transition.created_at ASC, transition.id ASC
+                 LIMIT 1",
+            )
+            .bind(flow_id)
             .fetch_optional(&pool)
             .await
             .map_err(map_read_err)?;
