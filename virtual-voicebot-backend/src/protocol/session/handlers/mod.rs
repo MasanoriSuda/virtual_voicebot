@@ -460,7 +460,19 @@ impl SessionCoordinator {
                     }
                 }
             }
-            (SessState::Established, SessionControlIn::SipReInvite { session_timer, .. }) => {
+            (_, SessionControlIn::SipReInvite { session_timer, .. }) => {
+                info!(
+                    "[session {}] SipReInvite received state={:?}",
+                    self.call_id,
+                    self.state_machine.state()
+                );
+                if self.state_machine.state() != SessState::Established {
+                    info!(
+                        "[session {}] re-INVITE received in non-established state={:?}, sending 200 defensively",
+                        self.call_id,
+                        self.state_machine.state()
+                    );
+                }
                 if let Some(timer) = session_timer {
                     self.update_session_expires(timer);
                 }
@@ -472,9 +484,21 @@ impl SessionCoordinator {
                         answer
                     }
                 };
-                let _ = self
+                if let Err(err) = self
                     .session_out_tx
-                    .send((self.call_id.clone(), SessionOut::SipSend200 { answer }));
+                    .send((self.call_id.clone(), SessionOut::SipSend200 { answer }))
+                    .await
+                {
+                    warn!(
+                        "[session {}] failed to emit SipSend200 for re-INVITE: {:?}",
+                        self.call_id, err
+                    );
+                } else {
+                    info!(
+                        "[session {}] SipSend200 emitted for re-INVITE",
+                        self.call_id
+                    );
+                }
             }
             (SessState::Established, SessionControlIn::MediaTimerTick) => {
                 self.recording.flush_tick();
@@ -515,6 +539,7 @@ impl SessionCoordinator {
                 self.send_call_ended(EndReason::Cancel);
             }
             (_, SessionControlIn::SipBye) => {
+                info!("[session {}] A-leg BYE received", self.call_id);
                 self.stop_ring_delay();
                 self.cancel_transfer();
                 self.shutdown_b_leg(true).await;
@@ -527,9 +552,17 @@ impl SessionCoordinator {
                 let _ = self
                     .session_out_tx
                     .try_send((self.call_id.clone(), SessionOut::RtpStopTx));
-                let _ = self
+                if let Err(e) = self
                     .session_out_tx
-                    .try_send((self.call_id.clone(), SessionOut::SipSendBye200));
+                    .try_send((self.call_id.clone(), SessionOut::SipSendBye200))
+                {
+                    warn!(
+                        "[session {}] failed to send BYE 200 OK: {:?}",
+                        self.call_id, e
+                    );
+                } else {
+                    info!("[session {}] BYE 200 OK sent to A-leg", self.call_id);
+                }
                 self.stop_recorders();
                 self.send_ingest("ended").await;
                 self.send_call_ended(EndReason::Bye);

@@ -70,16 +70,32 @@ pub fn send(peer: TransportPeer, payload: Vec<u8>) -> bool {
     let Some(tx) = tx else {
         return false;
     };
-    tx.try_send(SipTransportRequest {
+    match tx.try_send(SipTransportRequest {
         peer,
         src_port: sip_port,
         payload,
-    })
-    .is_ok()
+    }) {
+        Ok(()) => true,
+        Err(err) => {
+            log::warn!(
+                "[b2bua bridge] failed to send SIP message: peer={:?} err={:?}",
+                peer,
+                err
+            );
+            false
+        }
+    }
 }
 
 pub fn dispatch_message(peer: TransportPeer, message: &SipMessage) -> bool {
     let Some(call_id) = message_call_id(message) else {
+        if let SipMessage::Response(resp) = message {
+            log::warn!(
+                "[sip] response without Call-ID skipped for b2bua dispatch status={} peer={:?}",
+                resp.status_code,
+                peer
+            );
+        }
         return false;
     };
     let sender = {
@@ -87,6 +103,13 @@ pub fn dispatch_message(peer: TransportPeer, message: &SipMessage) -> bool {
         bridge.sessions.get(call_id).cloned()
     };
     let Some(sender) = sender else {
+        if call_id.starts_with("b2bua-") {
+            log::warn!(
+                "[sip] b2bua message has no active session call_id={} peer={:?}",
+                call_id,
+                peer
+            );
+        }
         return false;
     };
     if let Err(err) = sender.try_send(B2buaSipMessage {

@@ -37,6 +37,7 @@ pub struct BLeg {
     from_header: String,
     to_header: String,
     remote_uri: String,
+    route_set: Vec<String>,
     cseq: u32,
     via_host: String,
     via_port: u16,
@@ -55,9 +56,21 @@ impl BLeg {
             .header("From", self.from_header.clone())
             .header("To", self.to_header.clone())
             .header("Call-ID", self.call_id.clone())
-            .header("CSeq", format!("{} BYE", self.cseq))
+            .header("CSeq", format!("{} BYE", self.cseq));
+        let req = self
+            .route_set
+            .iter()
+            .fold(req, |builder, route| builder.header("Route", route.clone()))
             .build();
+        info!(
+            "[b2bua {}] sending BYE to {} (CSeq: {})",
+            self.call_id, self.sip_peer, self.cseq
+        );
         send_b2bua_payload(TransportPeer::Udp(self.sip_peer), req.to_bytes())?;
+        info!(
+            "[b2bua {}] BYE enqueued successfully to {}",
+            self.call_id, self.sip_peer
+        );
         Ok(())
     }
 
@@ -141,7 +154,7 @@ async fn run_transfer(
     a_call_id: CallId,
     control_tx: mpsc::Sender<SessionControlIn>,
     media_tx: mpsc::Sender<SessionMediaIn>,
-    mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    cancel_rx: tokio::sync::oneshot::Receiver<()>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> Result<Option<BLeg>> {
     let target_uri = runtime_cfg.transfer_target_uri.clone();
@@ -274,6 +287,7 @@ async fn run_transfer(
                 if extract_tag(&to_header).is_none() {
                     return Err(anyhow!("missing To tag in 200 OK"));
                 }
+                let route_set = collect_record_route_values(&resp.headers);
 
                 let remote_uri = header_value(&resp.headers, "Contact")
                     .map(extract_contact_uri)
@@ -287,15 +301,17 @@ async fn run_transfer(
                     parse_offer_sdp(&resp.body).ok_or_else(|| anyhow!("missing SDP in 200 OK"))?;
                 let remote_rtp_addr = resolve_rtp_addr(&remote_sdp)?;
 
-                let ack = SipRequestBuilder::new(SipMethod::Ack, remote_uri.clone())
-                    .header("Via", build_via(via_host.as_str(), sip_port))
-                    .header("Max-Forwards", "70")
-                    .header("From", from_header.clone())
-                    .header("To", to_header.clone())
-                    .header("Call-ID", b_call_id.clone())
-                    .header("CSeq", format!("{cseq} ACK"))
-                    .build();
-                send_b2bua_payload(TransportPeer::Udp(sip_peer), ack.to_bytes())?;
+                send_invite_ack(
+                    TransportPeer::Udp(sip_peer),
+                    remote_uri.as_str(),
+                    from_header.as_str(),
+                    to_header.as_str(),
+                    b_call_id.as_str(),
+                    cseq,
+                    via_host.as_str(),
+                    sip_port,
+                    route_set.as_slice(),
+                )?;
 
                 if cancel_requested {
                     let bye_cseq = cseq.saturating_add(1).max(2);
@@ -311,12 +327,22 @@ async fn run_transfer(
                     return Ok(None);
                 }
 
+                let ack_ctx = InviteAckContext {
+                    request_uri: remote_uri.clone(),
+                    from_header: from_header.clone(),
+                    to_header: to_header.clone(),
+                    call_id: b_call_id.clone(),
+                    via_host: via_host.clone(),
+                    via_port: sip_port,
+                    route_set: route_set.clone(),
+                };
                 let shutdown = Arc::new(AtomicBool::new(false));
                 let shutdown_notify = Arc::new(Notify::new());
                 spawn_sip_listener(
                     a_call_id.clone(),
                     b_call_id.clone(),
                     sip_rx,
+                    ack_ctx,
                     control_tx.clone(),
                     shutdown.clone(),
                     shutdown_notify.clone(),
@@ -337,6 +363,7 @@ async fn run_transfer(
                     from_header,
                     to_header,
                     remote_uri,
+                    route_set,
                     cseq: 1,
                     via_host,
                     via_port: sip_port,
@@ -411,12 +438,23 @@ impl Drop for RtpListenerGuard {
     }
 }
 
+#[derive(Debug, Clone)]
+struct InviteAckContext {
+    request_uri: String,
+    from_header: String,
+    to_header: String,
+    call_id: String,
+    via_host: String,
+    via_port: u16,
+    route_set: Vec<String>,
+}
+
 async fn run_outbound(
     a_call_id: CallId,
     number: String,
     control_tx: mpsc::Sender<SessionControlIn>,
     media_tx: mpsc::Sender<SessionMediaIn>,
-    mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    cancel_rx: tokio::sync::oneshot::Receiver<()>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> Result<Option<BLeg>> {
     let registrar = runtime_cfg
@@ -660,6 +698,7 @@ async fn run_outbound(
                 if extract_tag(&to_header).is_none() {
                     return Err(anyhow!("missing To tag in 200 OK"));
                 }
+                let route_set = collect_record_route_values(&resp.headers);
 
                 let remote_uri = header_value(&resp.headers, "Contact")
                     .map(extract_contact_uri)
@@ -669,15 +708,17 @@ async fn run_outbound(
                     parse_offer_sdp(&resp.body).ok_or_else(|| anyhow!("missing SDP in 200 OK"))?;
                 let remote_rtp_addr = resolve_rtp_addr(&remote_sdp)?;
 
-                let ack = SipRequestBuilder::new(SipMethod::Ack, remote_uri.clone())
-                    .header("Via", build_via(via_host.as_str(), sip_port))
-                    .header("Max-Forwards", "70")
-                    .header("From", from_header.clone())
-                    .header("To", to_header.clone())
-                    .header("Call-ID", call_id.clone())
-                    .header("CSeq", format!("{} ACK", cseq))
-                    .build();
-                send_b2bua_payload(TransportPeer::Udp(sip_peer), ack.to_bytes())?;
+                send_invite_ack(
+                    TransportPeer::Udp(sip_peer),
+                    remote_uri.as_str(),
+                    from_header.as_str(),
+                    to_header.as_str(),
+                    call_id.as_str(),
+                    cseq,
+                    via_host.as_str(),
+                    sip_port,
+                    route_set.as_slice(),
+                )?;
 
                 if cancel_requested {
                     let bye_cseq = cseq.saturating_add(1).max(2);
@@ -693,10 +734,20 @@ async fn run_outbound(
                     return Ok(None);
                 }
 
+                let ack_ctx = InviteAckContext {
+                    request_uri: remote_uri.clone(),
+                    from_header: from_header.clone(),
+                    to_header: to_header.clone(),
+                    call_id: call_id.clone(),
+                    via_host: via_host.clone(),
+                    via_port: sip_port,
+                    route_set: route_set.clone(),
+                };
                 spawn_sip_listener(
                     a_call_id.clone(),
                     call_id.clone(),
                     sip_rx,
+                    ack_ctx,
                     control_tx.clone(),
                     shutdown.clone(),
                     shutdown_notify.clone(),
@@ -711,6 +762,7 @@ async fn run_outbound(
                     from_header,
                     to_header,
                     remote_uri,
+                    route_set,
                     cseq,
                     via_host,
                     via_port: sip_port,
@@ -729,6 +781,7 @@ fn spawn_sip_listener(
     a_call_id: CallId,
     b_call_id: String,
     mut sip_rx: mpsc::Receiver<B2buaSipMessage>,
+    ack_ctx: InviteAckContext,
     control_tx: mpsc::Sender<SessionControlIn>,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
@@ -752,6 +805,13 @@ fn spawn_sip_listener(
                             if !request_matches_call_id(&req, &b_call_id) {
                                 continue;
                             }
+                            info!(
+                                "[b2bua {}] in-dialog request method={:?} call_id={} cseq={}",
+                                a_call_id,
+                                req.method,
+                                b_call_id,
+                                req.header_value("CSeq").unwrap_or("-")
+                            );
                             if matches!(req.method, SipMethod::Bye) {
                                 if let Some(resp) = response_simple_from_request(&req, 200, "OK") {
                                     let _ = send_b2bua_payload(peer, resp.to_bytes());
@@ -759,9 +819,94 @@ fn spawn_sip_listener(
                                 let _ = control_tx.try_send(SessionControlIn::BLegBye);
                                 break;
                             }
+                            if matches!(req.method, SipMethod::Ack) {
+                                info!(
+                                    "[b2bua {}] ACK received on B-leg call_id={} cseq={}",
+                                    a_call_id,
+                                    b_call_id,
+                                    req.header_value("CSeq").unwrap_or("-")
+                                );
+                                // ACK to 2xx/non-2xx final responses: no response required.
+                                continue;
+                            }
+                            if matches!(req.method, SipMethod::Invite) {
+                                warn!(
+                                    "[b2bua {}] unsupported in-dialog INVITE on B-leg, responding 488",
+                                    a_call_id
+                                );
+                                if let Some(resp) =
+                                    response_simple_from_request(&req, 488, "Not Acceptable Here")
+                                {
+                                    let _ = send_b2bua_payload(peer, resp.to_bytes());
+                                }
+                                continue;
+                            }
+
+                            warn!(
+                                "[b2bua {}] unsupported in-dialog request method={:?}, responding 501",
+                                a_call_id, req.method
+                            );
+                            if let Some(resp) =
+                                response_simple_from_request(&req, 501, "Not Implemented")
+                            {
+                                let _ = send_b2bua_payload(peer, resp.to_bytes());
+                            }
                         }
-                        SipMessage::Response(_) => {
-                            // ignore
+                        SipMessage::Response(resp) => {
+                            if !response_matches_call_id(&resp, &b_call_id) {
+                                continue;
+                            }
+                            let Some(cseq_value) = header_value(&resp.headers, "CSeq") else {
+                                continue;
+                            };
+                            let Ok(cseq) = parse_cseq_header(cseq_value) else {
+                                continue;
+                            };
+                            info!(
+                                "[b2bua {}] in-dialog response status={} call_id={} cseq={} {}",
+                                a_call_id,
+                                resp.status_code,
+                                b_call_id,
+                                cseq.num,
+                                cseq.method
+                            );
+                            if !(200..300).contains(&resp.status_code)
+                                || !cseq.method.eq_ignore_ascii_case("INVITE")
+                            {
+                                continue;
+                            }
+
+                            let to_header = header_value(&resp.headers, "To")
+                                .unwrap_or(ack_ctx.to_header.as_str());
+                            match send_invite_ack(
+                                peer,
+                                ack_ctx.request_uri.as_str(),
+                                ack_ctx.from_header.as_str(),
+                                to_header,
+                                ack_ctx.call_id.as_str(),
+                                cseq.num,
+                                ack_ctx.via_host.as_str(),
+                                ack_ctx.via_port,
+                                ack_ctx.route_set.as_slice(),
+                            ) {
+                                Ok(()) => {
+                                    info!(
+                                        "[b2bua {}] ACKed retransmitted {} for INVITE (cseq={})",
+                                        a_call_id,
+                                        resp.status_code,
+                                        cseq.num
+                                    );
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        "[b2bua {}] failed to ACK retransmitted {} for INVITE (cseq={}): {}",
+                                        a_call_id,
+                                        resp.status_code,
+                                        cseq.num,
+                                        err
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -822,6 +967,32 @@ fn send_b2bua_payload(peer: TransportPeer, payload: Vec<u8>) -> Result<()> {
     } else {
         Err(anyhow!("b2bua transport not initialized"))
     }
+}
+
+fn send_invite_ack(
+    peer: TransportPeer,
+    request_uri: &str,
+    from_header: &str,
+    to_header: &str,
+    call_id: &str,
+    cseq: u32,
+    via_host: &str,
+    via_port: u16,
+    route_set: &[String],
+) -> Result<()> {
+    let via_header = build_via(via_host, via_port);
+    let ack = SipRequestBuilder::new(SipMethod::Ack, request_uri.to_string())
+        .header("Via", via_header)
+        .header("Max-Forwards", "70")
+        .header("From", from_header.to_string())
+        .header("To", to_header.to_string())
+        .header("Call-ID", call_id.to_string())
+        .header("CSeq", format!("{cseq} ACK"));
+    let ack = route_set
+        .iter()
+        .fold(ack, |builder, route| builder.header("Route", route.clone()))
+        .build();
+    send_b2bua_payload(peer, ack.to_bytes())
 }
 
 fn send_non2xx_ack(
@@ -1094,6 +1265,16 @@ fn request_matches_call_id(req: &SipRequest, call_id: &str) -> bool {
     req.header_value("Call-ID")
         .map(|value| value == call_id)
         .unwrap_or(false)
+}
+
+fn collect_record_route_values(headers: &[SipHeader]) -> Vec<String> {
+    let mut routes: Vec<String> = headers
+        .iter()
+        .filter(|header| header.name.eq_ignore_ascii_case("Record-Route"))
+        .map(|header| header.value.clone())
+        .collect();
+    routes.reverse();
+    routes
 }
 
 fn extract_tag(value: &str) -> Option<String> {
