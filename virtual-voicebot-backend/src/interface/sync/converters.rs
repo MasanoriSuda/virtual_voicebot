@@ -159,9 +159,11 @@ async fn convert_caller_groups(
     if !unique_phone_numbers.is_empty() {
         sqlx::query(
             "UPDATE registered_numbers
-             SET group_id = NULL, group_name = NULL, updated_at = NOW()
+             SET deleted_at = NOW(),
+                 group_id = NULL,
+                 group_name = NULL,
+                 updated_at = NOW()
              WHERE phone_number != ALL($1)
-               AND group_id IS NOT NULL
                AND deleted_at IS NULL",
         )
         .bind(&unique_phone_numbers)
@@ -170,9 +172,11 @@ async fn convert_caller_groups(
     } else {
         sqlx::query(
             "UPDATE registered_numbers
-             SET group_id = NULL, group_name = NULL, updated_at = NOW()
-             WHERE group_id IS NOT NULL
-               AND deleted_at IS NULL",
+             SET deleted_at = NOW(),
+                 group_id = NULL,
+                 group_name = NULL,
+                 updated_at = NOW()
+             WHERE deleted_at IS NULL",
         )
         .execute(&mut **tx)
         .await?;
@@ -184,6 +188,49 @@ async fn convert_caller_groups(
             if normalized.is_empty() {
                 continue;
             }
+
+            let update_active = sqlx::query(
+                "UPDATE registered_numbers
+                 SET group_id = $2,
+                     group_name = $3,
+                     deleted_at = NULL,
+                     updated_at = NOW()
+                 WHERE phone_number = $1
+                   AND deleted_at IS NULL",
+            )
+            .bind(&normalized)
+            .bind(group.id)
+            .bind(group.name.clone())
+            .execute(&mut **tx)
+            .await?;
+            if update_active.rows_affected() > 0 {
+                continue;
+            }
+
+            let revive_deleted = sqlx::query(
+                "UPDATE registered_numbers
+                 SET group_id = $2,
+                     group_name = $3,
+                     deleted_at = NULL,
+                     updated_at = NOW()
+                 WHERE id = (
+                     SELECT id
+                     FROM registered_numbers
+                     WHERE phone_number = $1
+                       AND deleted_at IS NOT NULL
+                     ORDER BY updated_at DESC
+                     LIMIT 1
+                 )",
+            )
+            .bind(&normalized)
+            .bind(group.id)
+            .bind(group.name.clone())
+            .execute(&mut **tx)
+            .await?;
+            if revive_deleted.rows_affected() > 0 {
+                continue;
+            }
+
             sqlx::query(
                 "INSERT INTO registered_numbers
                     (id, phone_number, group_id, group_name, category, action_code, recording_enabled, announce_enabled, created_at, updated_at)
@@ -594,9 +641,18 @@ fn build_destination_metadata(destination: &IvrActionDestination) -> Option<Stri
 }
 
 fn normalize_phone_number(raw: &str) -> String {
-    raw.chars()
+    let cleaned: String = raw
+        .chars()
         .filter(|ch| !matches!(ch, '-' | ' ' | '\t' | '\n' | '\r' | '(' | ')' | '（' | '）'))
-        .collect()
+        .collect();
+
+    if cleaned.starts_with('+') {
+        cleaned
+    } else if let Some(domestic) = cleaned.strip_prefix('0') {
+        format!("+81{}", domestic)
+    } else {
+        cleaned
+    }
 }
 
 fn normalize_action_type(raw: &str) -> &'static str {
@@ -665,6 +721,12 @@ mod tests {
     fn phone_number_normalization_removes_delimiters() {
         let normalized = normalize_phone_number(" +81 (90)-1234 5678 ");
         assert_eq!(normalized, "+819012345678");
+    }
+
+    #[test]
+    fn phone_number_normalization_converts_domestic_to_e164() {
+        let normalized = normalize_phone_number("080-1234-5678");
+        assert_eq!(normalized, "+818012345678");
     }
 
     #[test]

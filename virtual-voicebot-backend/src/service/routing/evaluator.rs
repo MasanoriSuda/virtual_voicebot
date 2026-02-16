@@ -113,6 +113,12 @@ impl CallerCategory {
     }
 }
 
+enum CallerGroupMatch {
+    Matched(ActionConfig),
+    NoGroup,
+    NoActiveRule { group_id: Uuid },
+}
+
 #[derive(Debug, Error)]
 pub enum RoutingError {
     #[error("invalid phone number: {0}")]
@@ -192,20 +198,31 @@ impl RuleEvaluator {
             call_id
         );
 
-        if let Some(action) = self
+        match self
             .match_caller_group(&normalized_caller_id, call_id)
             .await?
         {
-            info!(
-                "[RuleEvaluator] call_id={} hit stage=2 source=call_action_rules",
-                call_id
-            );
-            return Ok(action);
+            CallerGroupMatch::Matched(action) => {
+                info!(
+                    "[RuleEvaluator] call_id={} hit stage=2 source=call_action_rules",
+                    call_id
+                );
+                return Ok(action);
+            }
+            CallerGroupMatch::NoGroup => {
+                info!(
+                    "[RuleEvaluator] call_id={} miss stage=2 source=call_action_rules",
+                    call_id
+                );
+            }
+            CallerGroupMatch::NoActiveRule { group_id } => {
+                info!(
+                    "[RuleEvaluator] call_id={} stage=2 group_id={} has no active rule, fallback to defaultAction",
+                    call_id, group_id
+                );
+                return self.get_default_action(call_id).await;
+            }
         }
-        info!(
-            "[RuleEvaluator] call_id={} miss stage=2 source=call_action_rules",
-            call_id
-        );
 
         let category = self.classify_caller(&normalized_caller_id, call_id).await?;
         if matches!(category, CallerCategory::Unknown) {
@@ -246,6 +263,15 @@ impl RuleEvaluator {
         let Some(row) = row else {
             return Ok(None);
         };
+
+        if let Some(group_id) = row.group_id {
+            info!(
+                "[RuleEvaluator] call_id={} stage=1 group_id found, defer to stage=2 phone_number={} group_id={}",
+                call_id, caller_id, group_id
+            );
+            return Ok(None);
+        }
+
         let action = to_action_config_from_registered(row);
         let mut action = action;
         action.caller_category = "registered".to_string();
@@ -260,15 +286,15 @@ impl RuleEvaluator {
         &self,
         caller_id: &str,
         call_id: &str,
-    ) -> Result<Option<ActionConfig>, RoutingError> {
+    ) -> Result<CallerGroupMatch, RoutingError> {
         let group_id = self.routing_port.find_caller_group(caller_id).await?;
         let Some(group_id) = group_id else {
-            return Ok(None);
+            return Ok(CallerGroupMatch::NoGroup);
         };
 
         let row = self.routing_port.find_call_action_rule(group_id).await?;
         let Some(row) = row else {
-            return Ok(None);
+            return Ok(CallerGroupMatch::NoActiveRule { group_id });
         };
 
         let dto: ActionConfigDto = serde_json::from_value(row.action_config)?;
@@ -278,7 +304,7 @@ impl RuleEvaluator {
             "[RuleEvaluator] call_id={} stage=2 rule_id={} action_code={}",
             call_id, row.id, action.action_code
         );
-        Ok(Some(action))
+        Ok(CallerGroupMatch::Matched(action))
     }
 
     async fn classify_caller(
@@ -660,6 +686,266 @@ mod tests {
         }
     }
 
+    struct GroupPriorityRoutingPort {
+        group_id: Uuid,
+        noop: NoopRoutingPort,
+    }
+
+    impl GroupPriorityRoutingPort {
+        fn new(group_id: Uuid) -> Self {
+            Self {
+                group_id,
+                noop: NoopRoutingPort::new(),
+            }
+        }
+    }
+
+    impl RoutingPort for GroupPriorityRoutingPort {
+        fn find_registered_number(
+            &self,
+            _phone_number: &str,
+        ) -> RoutingFuture<Option<RegisteredNumberRow>> {
+            let row = RegisteredNumberRow {
+                action_code: "VR".to_string(),
+                ivr_flow_id: None,
+                recording_enabled: true,
+                announce_enabled: true,
+                announcement_id: None,
+                group_id: Some(self.group_id),
+            };
+            Box::pin(async move { Ok(Some(row)) })
+        }
+
+        fn find_caller_group(&self, _phone_number: &str) -> RoutingFuture<Option<Uuid>> {
+            let group_id = self.group_id;
+            Box::pin(async move { Ok(Some(group_id)) })
+        }
+
+        fn find_call_action_rule(
+            &self,
+            _group_id: Uuid,
+        ) -> RoutingFuture<Option<CallActionRuleRow>> {
+            let row = CallActionRuleRow {
+                id: Uuid::now_v7(),
+                action_config: json!({
+                    "actionCode": "BZ"
+                }),
+            };
+            Box::pin(async move { Ok(Some(row)) })
+        }
+
+        fn is_spam(&self, phone_number: &str) -> RoutingFuture<bool> {
+            self.noop.is_spam(phone_number)
+        }
+
+        fn is_registered(&self, phone_number: &str) -> RoutingFuture<bool> {
+            self.noop.is_registered(phone_number)
+        }
+
+        fn find_routing_rule(&self, category: &str) -> RoutingFuture<Option<RoutingRuleRow>> {
+            self.noop.find_routing_rule(category)
+        }
+
+        fn get_system_settings_extra(&self) -> RoutingFuture<Option<serde_json::Value>> {
+            self.noop.get_system_settings_extra()
+        }
+
+        fn find_announcement_audio_file_url(
+            &self,
+            announcement_id: Uuid,
+        ) -> RoutingFuture<Option<String>> {
+            self.noop.find_announcement_audio_file_url(announcement_id)
+        }
+
+        fn find_ivr_menu(&self, flow_id: Uuid) -> RoutingFuture<Option<IvrMenuRow>> {
+            self.noop.find_ivr_menu(flow_id)
+        }
+
+        fn find_ivr_dtmf_destination(
+            &self,
+            keypad_node_id: Uuid,
+            dtmf_key: &str,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop
+                .find_ivr_dtmf_destination(keypad_node_id, dtmf_key)
+        }
+
+        fn find_ivr_dtmf_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+            dtmf_key: &str,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop
+                .find_ivr_dtmf_destination_by_flow(flow_id, dtmf_key)
+        }
+
+        fn find_ivr_timeout_destination(
+            &self,
+            keypad_node_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_timeout_destination(keypad_node_id)
+        }
+
+        fn find_ivr_timeout_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_timeout_destination_by_flow(flow_id)
+        }
+
+        fn find_ivr_invalid_destination(
+            &self,
+            keypad_node_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_invalid_destination(keypad_node_id)
+        }
+
+        fn find_ivr_invalid_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_invalid_destination_by_flow(flow_id)
+        }
+    }
+
+    struct GroupWithoutActiveRulePort {
+        group_id: Uuid,
+        default_action_announcement_id: Uuid,
+        noop: NoopRoutingPort,
+    }
+
+    impl GroupWithoutActiveRulePort {
+        fn new(group_id: Uuid, default_action_announcement_id: Uuid) -> Self {
+            Self {
+                group_id,
+                default_action_announcement_id,
+                noop: NoopRoutingPort::new(),
+            }
+        }
+    }
+
+    impl RoutingPort for GroupWithoutActiveRulePort {
+        fn find_registered_number(
+            &self,
+            _phone_number: &str,
+        ) -> RoutingFuture<Option<RegisteredNumberRow>> {
+            let row = RegisteredNumberRow {
+                action_code: "VR".to_string(),
+                ivr_flow_id: None,
+                recording_enabled: true,
+                announce_enabled: true,
+                announcement_id: None,
+                group_id: Some(self.group_id),
+            };
+            Box::pin(async move { Ok(Some(row)) })
+        }
+
+        fn find_caller_group(&self, _phone_number: &str) -> RoutingFuture<Option<Uuid>> {
+            let group_id = self.group_id;
+            Box::pin(async move { Ok(Some(group_id)) })
+        }
+
+        fn find_call_action_rule(
+            &self,
+            _group_id: Uuid,
+        ) -> RoutingFuture<Option<CallActionRuleRow>> {
+            Box::pin(async move { Ok(None) })
+        }
+
+        fn is_spam(&self, phone_number: &str) -> RoutingFuture<bool> {
+            self.noop.is_spam(phone_number)
+        }
+
+        fn is_registered(&self, phone_number: &str) -> RoutingFuture<bool> {
+            self.noop.is_registered(phone_number)
+        }
+
+        fn find_routing_rule(&self, category: &str) -> RoutingFuture<Option<RoutingRuleRow>> {
+            let row = if category == "registered" {
+                Some(RoutingRuleRow {
+                    id: Uuid::now_v7(),
+                    action_code: "VR".to_string(),
+                    ivr_flow_id: None,
+                    announcement_id: None,
+                })
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(row) })
+        }
+
+        fn get_system_settings_extra(&self) -> RoutingFuture<Option<serde_json::Value>> {
+            let announcement_id = self.default_action_announcement_id;
+            let value = json!({
+                "defaultAction": {
+                    "actionType": "deny",
+                    "actionConfig": {
+                        "actionCode": "AN",
+                        "announcementId": announcement_id,
+                    }
+                }
+            });
+            Box::pin(async move { Ok(Some(value)) })
+        }
+
+        fn find_announcement_audio_file_url(
+            &self,
+            announcement_id: Uuid,
+        ) -> RoutingFuture<Option<String>> {
+            self.noop.find_announcement_audio_file_url(announcement_id)
+        }
+
+        fn find_ivr_menu(&self, flow_id: Uuid) -> RoutingFuture<Option<IvrMenuRow>> {
+            self.noop.find_ivr_menu(flow_id)
+        }
+
+        fn find_ivr_dtmf_destination(
+            &self,
+            keypad_node_id: Uuid,
+            dtmf_key: &str,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop
+                .find_ivr_dtmf_destination(keypad_node_id, dtmf_key)
+        }
+
+        fn find_ivr_dtmf_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+            dtmf_key: &str,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop
+                .find_ivr_dtmf_destination_by_flow(flow_id, dtmf_key)
+        }
+
+        fn find_ivr_timeout_destination(
+            &self,
+            keypad_node_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_timeout_destination(keypad_node_id)
+        }
+
+        fn find_ivr_timeout_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_timeout_destination_by_flow(flow_id)
+        }
+
+        fn find_ivr_invalid_destination(
+            &self,
+            keypad_node_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_invalid_destination(keypad_node_id)
+        }
+
+        fn find_ivr_invalid_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_invalid_destination_by_flow(flow_id)
+        }
+    }
+
     #[tokio::test]
     async fn evaluate_prefers_default_action_over_unknown_routing_rule() {
         let announcement_id = Uuid::now_v7();
@@ -669,6 +955,39 @@ mod tests {
             .evaluate("+81568686236", "call-unknown")
             .await
             .expect("unknown should use defaultAction");
+
+        assert_eq!(action.action_code, "AN");
+        assert_eq!(action.caller_category, "unknown");
+        assert_eq!(action.announcement_id, Some(announcement_id));
+    }
+
+    #[tokio::test]
+    async fn evaluate_prefers_caller_group_rule_when_registered_number_has_group() {
+        let group_id = Uuid::now_v7();
+        let evaluator = RuleEvaluator::new(Arc::new(GroupPriorityRoutingPort::new(group_id)));
+
+        let action = evaluator
+            .evaluate("+819012345678", "call-group-priority")
+            .await
+            .expect("group rule should be evaluated before registered number action");
+
+        assert_eq!(action.action_code, "BZ");
+        assert_eq!(action.caller_category, "registered");
+    }
+
+    #[tokio::test]
+    async fn evaluate_falls_back_to_default_action_when_group_has_no_active_rule() {
+        let group_id = Uuid::now_v7();
+        let announcement_id = Uuid::now_v7();
+        let evaluator = RuleEvaluator::new(Arc::new(GroupWithoutActiveRulePort::new(
+            group_id,
+            announcement_id,
+        )));
+
+        let action = evaluator
+            .evaluate("+819012345678", "call-group-disabled")
+            .await
+            .expect("missing active group rule should fallback to defaultAction");
 
         assert_eq!(action.action_code, "AN");
         assert_eq!(action.caller_category, "unknown");

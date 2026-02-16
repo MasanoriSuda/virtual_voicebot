@@ -6,13 +6,12 @@
       "callerGroupId": "4fe4a030-aedd-41d4-9e55-1e85973b1b78",
       "actionType": "allow",
       "actionConfig": {
-        "actionCode": "IV",
-        "ivrFlowId": "8f2daa6a-4c96-472f-8c1f-0276ed102e7a",
-        "includeAnnouncement": false
+        "actionCode": "VM",
+        "announcementId": "f6b67055-827e-49bb-ac62-a82d57228376"
       },
-      "isActive": true,
+      "isActive": false,
       "createdAt": "2026-02-16T11:04:51.991Z",
-      "updatedAt": "2026-02-16T11:05:06.480Z"
+      "updatedAt": "2026-02-16T15:11:14.642Z"
     }
   ],
   "anonymousAction": {
