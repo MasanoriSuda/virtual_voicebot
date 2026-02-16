@@ -107,12 +107,15 @@ pub fn spawn_transfer(
             }
             Err(err) => {
                 let reason_str = err.to_string();
-                send_control_event_with_retry(&control_tx, "B2buaFailed", || {
-                    SessionControlIn::B2buaFailed {
+                send_control_event_with_retry(
+                    &control_tx,
+                    a_call_id.as_str(),
+                    "B2buaFailed",
+                    || SessionControlIn::B2buaFailed {
                         reason: reason_str.clone(),
                         status: None,
-                    }
-                })
+                    },
+                )
                 .await;
             }
         }
@@ -148,12 +151,15 @@ pub fn spawn_outbound(
             Err(err) => {
                 let reason_str = err.to_string();
                 let status_code = err.downcast_ref::<OutboundError>().map(|e| e.status);
-                send_control_event_with_retry(&control_tx, "B2buaFailed", || {
-                    SessionControlIn::B2buaFailed {
+                send_control_event_with_retry(
+                    &control_tx,
+                    a_call_id.as_str(),
+                    "B2buaFailed",
+                    || SessionControlIn::B2buaFailed {
                         reason: reason_str.clone(),
                         status: status_code,
-                    }
-                })
+                    },
+                )
                 .await;
             }
         }
@@ -163,6 +169,7 @@ pub fn spawn_outbound(
 
 async fn send_control_event_with_retry<F>(
     tx: &mpsc::Sender<SessionControlIn>,
+    call_id: &str,
     event_name: &str,
     mut make_event: F,
 ) where
@@ -174,7 +181,8 @@ async fn send_control_event_with_retry<F>(
             Err(mpsc::error::TrySendError::Full(_)) => {
                 if attempt + 1 < CONTROL_EVENT_RETRY_ATTEMPTS {
                     warn!(
-                        "[b2bua] {} event channel full, retrying ({}/{})",
+                        "[b2bua {}] {} event channel full, retrying ({}/{})",
+                        call_id,
                         event_name,
                         attempt + 1,
                         CONTROL_EVENT_RETRY_ATTEMPTS
@@ -182,13 +190,13 @@ async fn send_control_event_with_retry<F>(
                     sleep(CONTROL_EVENT_RETRY_DELAY).await;
                 } else {
                     error!(
-                        "[b2bua] failed to send {} event after {} retries",
-                        event_name, CONTROL_EVENT_RETRY_ATTEMPTS
+                        "[b2bua {}] failed to send {} event after {} retries",
+                        call_id, event_name, CONTROL_EVENT_RETRY_ATTEMPTS
                     );
                 }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                error!("[b2bua] {} event channel closed", event_name);
+                error!("[b2bua {}] {} event channel closed", call_id, event_name);
                 return;
             }
         }
@@ -861,9 +869,12 @@ fn spawn_sip_listener(
                                 if let Some(resp) = response_simple_from_request(&req, 200, "OK") {
                                     let _ = send_b2bua_payload(peer, resp.to_bytes());
                                 }
-                                send_control_event_with_retry(&control_tx, "BLegBye", || {
-                                    SessionControlIn::BLegBye
-                                })
+                                send_control_event_with_retry(
+                                    &control_tx,
+                                    a_call_id.as_str(),
+                                    "BLegBye",
+                                    || SessionControlIn::BLegBye,
+                                )
                                 .await;
                                 break;
                             }
@@ -1485,7 +1496,10 @@ mod tests {
 
         let sender = tx.clone();
         let retry_task = tokio::spawn(async move {
-            send_control_event_with_retry(&sender, "BLegBye", || SessionControlIn::BLegBye).await;
+            send_control_event_with_retry(&sender, "test-call", "BLegBye", || {
+                SessionControlIn::BLegBye
+            })
+            .await;
         });
 
         let drained = timeout(Duration::from_millis(50), rx.recv())
@@ -1507,7 +1521,8 @@ mod tests {
         drop(rx);
 
         let start = std::time::Instant::now();
-        send_control_event_with_retry(&tx, "BLegBye", || SessionControlIn::BLegBye).await;
+        send_control_event_with_retry(&tx, "test-call", "BLegBye", || SessionControlIn::BLegBye)
+            .await;
         assert!(start.elapsed() < Duration::from_millis(50));
     }
 }
