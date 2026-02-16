@@ -3528,6 +3528,29 @@
       "transferEndedAt": "2026-02-16T16:46:06.122701253+00:00",
       "createdAt": "2026-02-16T16:46:09.721Z",
       "updatedAt": "2026-02-16T16:46:09.721Z"
+    },
+    "019c68b7-d24a-77b0-a5a3-4c291a9a9e51": {
+      "id": "019c68b7-d24a-77b0-a5a3-4c291a9a9e51",
+      "externalCallId": "019c68b7-d24a-77b0-a5a3-4c291a9a9e51",
+      "sipCallId": "oqpU_fGNecEUSy7lQR2E1w..",
+      "callerNumber": "+819028894539",
+      "callerCategory": "registered",
+      "actionCode": "VR",
+      "ivrFlowId": null,
+      "status": "ended",
+      "startedAt": "2026-02-16T23:10:03.338Z",
+      "answeredAt": null,
+      "endedAt": "2026-02-16T23:10:18.147896675+00:00",
+      "durationSec": 14,
+      "endReason": "normal",
+      "callDisposition": "allowed",
+      "finalAction": "normal_call",
+      "transferStatus": "failed",
+      "transferStartedAt": "2026-02-16T23:10:08.716583039+00:00",
+      "transferAnsweredAt": null,
+      "transferEndedAt": "2026-02-16T23:10:18.147322117+00:00",
+      "createdAt": "2026-02-16T23:10:22.123Z",
+      "updatedAt": "2026-02-16T23:10:22.123Z"
     }
   },
   "recordings": {
@@ -5686,6 +5709,24 @@
       "endedAt": "2026-02-16T16:46:06.123257178+00:00",
       "createdAt": "2026-02-16T16:46:09.742Z",
       "updatedAt": "2026-02-16T16:46:09.768Z",
+      "summaryText": null,
+      "transcriptJson": null
+    },
+    "019c68b8-0c24-7670-94b8-ccd34af66e77": {
+      "id": "019c68b8-0c24-7670-94b8-ccd34af66e77",
+      "callLogId": "019c68b7-d24a-77b0-a5a3-4c291a9a9e51",
+      "recordingType": "full_call",
+      "sequenceNumber": 1,
+      "filePath": "storage/recordings/019c68b7-d24a-77b0-a5a3-4c291a9a9e51/mixed.wav",
+      "s3Url": "http://localhost:3000/storage/recordings/019c68b7-d24a-77b0-a5a3-4c291a9a9e51/mixed.wav",
+      "uploadStatus": "uploaded",
+      "durationSec": 14,
+      "format": "wav",
+      "fileSizeBytes": 473644,
+      "startedAt": "2026-02-16T23:10:03.338Z",
+      "endedAt": "2026-02-16T23:10:18.147896675+00:00",
+      "createdAt": "2026-02-16T23:10:22.135Z",
+      "updatedAt": "2026-02-16T23:10:22.226Z",
       "summaryText": null,
       "transcriptJson": null
     }
@@ -8531,5 +8572,5 @@
       "updatedAt": "2026-02-16T16:31:58.721Z"
     }
   },
-  "updatedAt": "2026-02-16T16:46:09.768Z"
+  "updatedAt": "2026-02-16T23:10:22.226Z"
 }

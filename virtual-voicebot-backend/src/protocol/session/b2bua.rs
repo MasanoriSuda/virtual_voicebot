@@ -20,7 +20,9 @@ use crate::protocol::sip::auth_cache::{self, DigestAuthChallenge, DigestAuthHead
 use crate::protocol::sip::b2bua_bridge::{self, B2buaRegistration, B2buaSipMessage};
 use crate::protocol::sip::builder::response_simple_from_request;
 use crate::protocol::sip::message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
-use crate::protocol::sip::{parse_cseq_header, parse_offer_sdp, parse_uri, SipRequestBuilder};
+use crate::protocol::sip::{
+    parse_cseq_header, parse_name_addr, parse_offer_sdp, parse_uri, SipRequestBuilder,
+};
 use crate::protocol::transport::TransportPeer;
 use crate::shared::config::{RegistrarConfig, RegistrarTransport, SessionRuntimeConfig};
 use crate::shared::utils::mask_pii;
@@ -84,6 +86,7 @@ impl BLeg {
 
 pub fn spawn_transfer(
     a_call_id: CallId,
+    caller_uri: String,
     control_tx: mpsc::Sender<SessionControlIn>,
     media_tx: mpsc::Sender<SessionMediaIn>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
@@ -92,6 +95,7 @@ pub fn spawn_transfer(
     tokio::spawn(async move {
         match run_transfer(
             a_call_id.clone(),
+            caller_uri,
             control_tx.clone(),
             media_tx.clone(),
             cancel_rx,
@@ -125,6 +129,7 @@ pub fn spawn_transfer(
 
 pub fn spawn_outbound(
     a_call_id: CallId,
+    caller_uri: String,
     number: String,
     control_tx: mpsc::Sender<SessionControlIn>,
     media_tx: mpsc::Sender<SessionMediaIn>,
@@ -134,6 +139,7 @@ pub fn spawn_outbound(
     tokio::spawn(async move {
         match run_outbound(
             a_call_id.clone(),
+            caller_uri,
             number,
             control_tx.clone(),
             media_tx.clone(),
@@ -203,8 +209,73 @@ async fn send_control_event_with_retry<F>(
     }
 }
 
+fn extract_caller_user(value: &str) -> Option<String> {
+    if let Ok(name_addr) = parse_name_addr(value) {
+        if name_addr.uri.scheme.eq_ignore_ascii_case("tel") && !name_addr.uri.host.trim().is_empty()
+        {
+            return Some(name_addr.uri.host);
+        }
+        if let Some(user) = name_addr.uri.user {
+            return Some(user);
+        }
+    }
+
+    let trimmed = value.trim();
+    let addr = if let Some(start) = trimmed.find('<') {
+        if let Some(end) = trimmed[start + 1..].find('>') {
+            &trimmed[start + 1..start + 1 + end]
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    };
+    let addr = addr.split(';').next().unwrap_or(addr).trim();
+    let uri = parse_uri(addr).ok()?;
+    if uri.scheme.eq_ignore_ascii_case("tel") && !uri.host.trim().is_empty() {
+        return Some(uri.host);
+    }
+    uri.user
+}
+
+fn resolve_caller_user(caller_uri: &str, call_id: &str) -> String {
+    match extract_caller_user(caller_uri) {
+        Some(user) if !user.is_empty() && !user.eq_ignore_ascii_case("anonymous") => user,
+        _ => {
+            warn!(
+                "[b2bua {}] Invalid or anonymous caller_uri: {}, using anonymous",
+                call_id,
+                mask_pii(caller_uri)
+            );
+            "anonymous".to_string()
+        }
+    }
+}
+
+fn build_transfer_from_header(
+    caller_user: &str,
+    advertised_ip: &str,
+    sip_port: u16,
+    tag: &str,
+) -> String {
+    if caller_user.eq_ignore_ascii_case("anonymous") {
+        format!("<sip:anonymous@anonymous.invalid>;tag={tag}")
+    } else {
+        format!("<sip:{caller_user}@{advertised_ip}:{sip_port}>;tag={tag}")
+    }
+}
+
+fn build_outbound_from_header(caller_user: &str, registrar_domain: &str, tag: &str) -> String {
+    if caller_user.eq_ignore_ascii_case("anonymous") {
+        format!("<sip:anonymous@anonymous.invalid>;tag={tag}")
+    } else {
+        format!("<sip:{caller_user}@{registrar_domain}>;tag={tag}")
+    }
+}
+
 async fn run_transfer(
     a_call_id: CallId,
+    caller_uri: String,
     control_tx: mpsc::Sender<SessionControlIn>,
     media_tx: mpsc::Sender<SessionMediaIn>,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
@@ -217,9 +288,12 @@ async fn run_transfer(
     let via_host = runtime_cfg.advertised_ip.clone();
     let via = build_via(via_host.as_str(), sip_port);
     let local_tag = generate_tag();
-    let from_header = format!(
-        "<sip:rustbot@{}:{}>;tag={}",
-        runtime_cfg.advertised_ip, sip_port, local_tag
+    let caller_user = resolve_caller_user(caller_uri.as_str(), a_call_id.as_str());
+    let from_header = build_transfer_from_header(
+        caller_user.as_str(),
+        runtime_cfg.advertised_ip.as_str(),
+        sip_port,
+        local_tag.as_str(),
     );
     let to_header = format!("<{}>", target_uri);
     let b_call_id = format!("b2bua-{}-{}", a_call_id, rand::thread_rng().gen::<u32>());
@@ -504,6 +578,7 @@ struct InviteAckContext {
 
 async fn run_outbound(
     a_call_id: CallId,
+    caller_uri: String,
     number: String,
     control_tx: mpsc::Sender<SessionControlIn>,
     media_tx: mpsc::Sender<SessionMediaIn>,
@@ -531,11 +606,12 @@ async fn run_outbound(
     let sip_peer = registrar.addr;
 
     let sip_port = runtime_cfg.sip_port;
-    let from_header = format!(
-        "<sip:{}@{}>;tag={}",
-        registrar.user,
-        registrar.domain,
-        generate_tag()
+    let local_tag = generate_tag();
+    let caller_user = resolve_caller_user(caller_uri.as_str(), a_call_id.as_str());
+    let from_header = build_outbound_from_header(
+        caller_user.as_str(),
+        registrar.domain.as_str(),
+        local_tag.as_str(),
     );
     let to_header = format!("<{}>", request_uri);
     let call_id = format!("outbound-{}-{}", a_call_id, rand::thread_rng().gen::<u32>());
@@ -1524,5 +1600,59 @@ mod tests {
         send_control_event_with_retry(&tx, "test-call", "BLegBye", || SessionControlIn::BLegBye)
             .await;
         assert!(start.elapsed() < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn extract_caller_user_supports_name_addr() {
+        let caller_uri = "\"Caller\" <sip:+819012345678@example.com>";
+        assert_eq!(
+            extract_caller_user(caller_uri).as_deref(),
+            Some("+819012345678")
+        );
+    }
+
+    #[test]
+    fn extract_caller_user_supports_tel_uri() {
+        let caller_uri = "tel:+819012345678";
+        assert_eq!(
+            extract_caller_user(caller_uri).as_deref(),
+            Some("+819012345678")
+        );
+    }
+
+    #[test]
+    fn resolve_caller_user_falls_back_to_anonymous() {
+        assert_eq!(
+            resolve_caller_user("invalid-uri-format", "test-call"),
+            "anonymous"
+        );
+        assert_eq!(
+            resolve_caller_user("sip:anonymous@anonymous.invalid", "test-call"),
+            "anonymous"
+        );
+    }
+
+    #[test]
+    fn build_transfer_from_header_formats_expected() {
+        assert_eq!(
+            build_transfer_from_header("+819012345678", "192.168.1.100", 5060, "b2bua123"),
+            "<sip:+819012345678@192.168.1.100:5060>;tag=b2bua123"
+        );
+        assert_eq!(
+            build_transfer_from_header("anonymous", "192.168.1.100", 5060, "b2bua123"),
+            "<sip:anonymous@anonymous.invalid>;tag=b2bua123"
+        );
+    }
+
+    #[test]
+    fn build_outbound_from_header_formats_expected() {
+        assert_eq!(
+            build_outbound_from_header("+819012345678", "sip.example.com", "b2bua123"),
+            "<sip:+819012345678@sip.example.com>;tag=b2bua123"
+        );
+        assert_eq!(
+            build_outbound_from_header("anonymous", "sip.example.com", "b2bua123"),
+            "<sip:anonymous@anonymous.invalid>;tag=b2bua123"
+        );
     }
 }
