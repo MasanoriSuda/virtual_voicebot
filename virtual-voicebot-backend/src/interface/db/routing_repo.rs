@@ -26,7 +26,7 @@ impl RoutingPort for RoutingRepoImpl {
         let phone_number = phone_number.to_string();
         Box::pin(async move {
             let row = sqlx::query(
-                "SELECT action_code, ivr_flow_id, recording_enabled, announce_enabled
+                "SELECT action_code, ivr_flow_id, recording_enabled, announce_enabled, group_id
                  FROM registered_numbers
                  WHERE phone_number = $1 AND deleted_at IS NULL
                  LIMIT 1",
@@ -46,6 +46,7 @@ impl RoutingPort for RoutingRepoImpl {
                 recording_enabled: row.try_get("recording_enabled").map_err(map_read_err)?,
                 announce_enabled: row.try_get("announce_enabled").map_err(map_read_err)?,
                 announcement_id: None,
+                group_id: row.try_get("group_id").map_err(map_read_err)?,
             }))
         })
     }

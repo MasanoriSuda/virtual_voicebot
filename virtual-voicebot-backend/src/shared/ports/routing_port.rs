@@ -12,6 +12,7 @@ pub struct RegisteredNumberRow {
     pub recording_enabled: bool,
     pub announce_enabled: bool,
     pub announcement_id: Option<Uuid>,
+    pub group_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug)]
