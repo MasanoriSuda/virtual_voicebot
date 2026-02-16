@@ -139,6 +139,7 @@ impl SessionCoordinator {
                             if let Some(number) = target {
                                 self.transfer_cancel = Some(b2bua::spawn_outbound(
                                     self.call_id.clone(),
+                                    self.from_uri.clone(),
                                     number,
                                     self.control_tx.clone(),
                                     self.media_tx.clone(),
@@ -832,6 +833,7 @@ impl SessionCoordinator {
                         self.start_transfer_announce();
                         self.transfer_cancel = Some(b2bua::spawn_transfer(
                             self.call_id.clone(),
+                            self.from_uri.clone(),
                             self.control_tx.clone(),
                             self.media_tx.clone(),
                             self.runtime_cfg.clone(),
@@ -909,6 +911,7 @@ impl SessionCoordinator {
         self.mark_transfer_trying();
         self.transfer_cancel = Some(b2bua::spawn_transfer(
             self.call_id.clone(),
+            self.from_uri.clone(),
             self.control_tx.clone(),
             self.media_tx.clone(),
             self.runtime_cfg.clone(),
