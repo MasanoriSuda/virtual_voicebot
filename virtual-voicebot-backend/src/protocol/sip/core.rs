@@ -542,11 +542,17 @@ fn spawn_register_task(
                     };
                     match (peer, payload) {
                         (Some(peer), Some(payload)) => {
-                            let _ = transport_tx.try_send(SipTransportRequest {
+                            if let Err(err) = transport_tx.try_send(SipTransportRequest {
                                 peer,
                                 src_port,
                                 payload,
-                            });
+                            }) {
+                                log::error!(
+                                    "[sip register] failed to enqueue refresh request peer={:?} err={:?}",
+                                    peer,
+                                    err
+                                );
+                            }
                         }
                         (None, Some(_)) => {
                             log::warn!("[sip register] no transport for refresh");
@@ -1390,19 +1396,33 @@ impl SipCore {
                 if start.elapsed() >= max_duration {
                     log::warn!("[sip 100rel] PRACK timeout call_id={}", call_id);
                     if let Some(resp) = timeout_resp {
-                        let _ = transport_tx.try_send(SipTransportRequest {
+                        if let Err(err) = transport_tx.try_send(SipTransportRequest {
                             peer,
                             src_port,
                             payload: resp,
-                        });
+                        }) {
+                            log::error!(
+                                "[sip 100rel] failed to enqueue timeout response call_id={} peer={:?} err={:?}",
+                                call_id,
+                                peer,
+                                err
+                            );
+                        }
                     }
                     break;
                 }
-                let _ = transport_tx.try_send(SipTransportRequest {
+                if let Err(err) = transport_tx.try_send(SipTransportRequest {
                     peer,
                     src_port,
                     payload: payload.clone(),
-                });
+                }) {
+                    log::error!(
+                        "[sip 100rel] failed to enqueue provisional retransmit call_id={} peer={:?} err={:?}",
+                        call_id,
+                        peer,
+                        err
+                    );
+                }
                 interval = std::cmp::min(interval * 2, Duration::from_secs(4));
             }
             stop.store(true, Ordering::SeqCst);
@@ -1450,11 +1470,18 @@ impl SipCore {
                     log::warn!("[sip] 2xx retransmit timeout (no ACK) call_id={}", call_id);
                     break;
                 }
-                let _ = transport_tx.try_send(SipTransportRequest {
+                if let Err(err) = transport_tx.try_send(SipTransportRequest {
                     peer,
                     src_port,
                     payload: payload.clone(),
-                });
+                }) {
+                    log::error!(
+                        "[sip] failed to enqueue 2xx retransmit call_id={} peer={:?} err={:?}",
+                        call_id,
+                        peer,
+                        err
+                    );
+                }
                 interval = std::cmp::min(interval * 2, Duration::from_secs(4));
             }
             stop.store(true, Ordering::SeqCst);
@@ -1714,34 +1741,65 @@ impl SipCore {
         }
     }
 
+    fn extract_call_id_from_payload(payload: &[u8]) -> Option<&str> {
+        for raw_line in payload.split(|b| *b == b'\n') {
+            let Ok(line) = std::str::from_utf8(raw_line) else {
+                continue;
+            };
+            let line = line.trim_end_matches('\r');
+            if line.is_empty() {
+                break;
+            }
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            if name.eq_ignore_ascii_case("Call-ID") {
+                return Some(value.trim());
+            }
+        }
+        None
+    }
+
     fn send_payload(&self, peer: TransportPeer, payload: Vec<u8>) {
+        let call_id = Self::extract_call_id_from_payload(&payload)
+            .unwrap_or("-")
+            .to_string();
         if let Some(first_line) = payload
             .split(|b| *b == b'\n')
             .next()
             .and_then(|line| std::str::from_utf8(line).ok())
         {
             log::info!(
-                "[sip ->] {}:{} -> {:?} {}",
+                "[sip ->] {}:{} -> {:?} call_id={} {}",
                 self.cfg.advertised_ip,
                 self.cfg.sip_port,
                 peer,
+                call_id.as_str(),
                 first_line.trim()
             );
         } else {
             log::info!(
-                "[sip ->] {}:{} -> {:?} len={}",
+                "[sip ->] {}:{} -> {:?} call_id={} len={}",
                 self.cfg.advertised_ip,
                 self.cfg.sip_port,
                 peer,
+                call_id.as_str(),
                 payload.len()
             );
         }
 
-        let _ = self.transport_tx.try_send(SipTransportRequest {
+        if let Err(err) = self.transport_tx.try_send(SipTransportRequest {
             peer,
             src_port: self.cfg.sip_port,
             payload,
-        });
+        }) {
+            log::error!(
+                "[sip ->] failed to enqueue transport payload call_id={} peer={:?} err={:?}",
+                call_id.as_str(),
+                peer,
+                err
+            );
+        }
     }
 
     fn prune_expired(&mut self) -> Vec<SipEvent> {
@@ -1836,6 +1894,22 @@ mod tests {
             Some(InviteTxAction::Retransmit(retransmit)) => assert_eq!(retransmit, bytes),
             _ => panic!("expected retransmit"),
         }
+    }
+
+    #[test]
+    fn extract_call_id_from_payload_finds_header_value() {
+        let payload = b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/UDP 127.0.0.1:5060\r\nCall-ID: call-123\r\nCSeq: 1 INVITE\r\n\r\n";
+        assert_eq!(
+            SipCore::extract_call_id_from_payload(payload),
+            Some("call-123")
+        );
+    }
+
+    #[test]
+    fn extract_call_id_from_payload_returns_none_without_header() {
+        let payload =
+            b"SIP/2.0 200 OK\r\nVia: SIP/2.0/UDP 127.0.0.1:5060\r\nCSeq: 1 INVITE\r\n\r\n";
+        assert_eq!(SipCore::extract_call_id_from_payload(payload), None);
     }
 
     #[test]

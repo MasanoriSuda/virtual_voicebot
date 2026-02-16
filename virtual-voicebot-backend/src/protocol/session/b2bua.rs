@@ -5,12 +5,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use log::{info, warn};
+use log::{error, info, warn};
 use rand::Rng;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::sync::Notify;
-use tokio::time::sleep;
+use tokio::time::{sleep, Duration};
 
 use crate::protocol::rtp::codec::{codec_from_pt, decode_to_mulaw};
 use crate::protocol::rtp::parser::parse_rtp_packet;
@@ -27,6 +27,8 @@ use crate::shared::utils::mask_pii;
 
 const RTP_BUFFER_SIZE: usize = 2048;
 const DEFAULT_SIP_PORT: u16 = 5060;
+const CONTROL_EVENT_RETRY_ATTEMPTS: usize = 3;
+const CONTROL_EVENT_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Debug)]
 pub struct BLeg {
@@ -104,10 +106,17 @@ pub fn spawn_transfer(
                 info!("[b2bua {}] transfer cancelled", a_call_id);
             }
             Err(err) => {
-                let _ = control_tx.try_send(SessionControlIn::B2buaFailed {
-                    reason: err.to_string(),
-                    status: None,
-                });
+                let reason_str = err.to_string();
+                send_control_event_with_retry(
+                    &control_tx,
+                    a_call_id.as_str(),
+                    "B2buaFailed",
+                    || SessionControlIn::B2buaFailed {
+                        reason: reason_str.clone(),
+                        status: None,
+                    },
+                )
+                .await;
             }
         }
     });
@@ -140,14 +149,58 @@ pub fn spawn_outbound(
                 info!("[b2bua {}] outbound cancelled", a_call_id);
             }
             Err(err) => {
-                let _ = control_tx.try_send(SessionControlIn::B2buaFailed {
-                    reason: err.to_string(),
-                    status: err.downcast_ref::<OutboundError>().map(|e| e.status),
-                });
+                let reason_str = err.to_string();
+                let status_code = err.downcast_ref::<OutboundError>().map(|e| e.status);
+                send_control_event_with_retry(
+                    &control_tx,
+                    a_call_id.as_str(),
+                    "B2buaFailed",
+                    || SessionControlIn::B2buaFailed {
+                        reason: reason_str.clone(),
+                        status: status_code,
+                    },
+                )
+                .await;
             }
         }
     });
     cancel_tx
+}
+
+async fn send_control_event_with_retry<F>(
+    tx: &mpsc::Sender<SessionControlIn>,
+    call_id: &str,
+    event_name: &str,
+    mut make_event: F,
+) where
+    F: FnMut() -> SessionControlIn,
+{
+    for attempt in 0..CONTROL_EVENT_RETRY_ATTEMPTS {
+        match tx.try_send(make_event()) {
+            Ok(()) => return,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                if attempt + 1 < CONTROL_EVENT_RETRY_ATTEMPTS {
+                    warn!(
+                        "[b2bua {}] {} event channel full, retrying ({}/{})",
+                        call_id,
+                        event_name,
+                        attempt + 1,
+                        CONTROL_EVENT_RETRY_ATTEMPTS
+                    );
+                    sleep(CONTROL_EVENT_RETRY_DELAY).await;
+                } else {
+                    error!(
+                        "[b2bua {}] failed to send {} event after {} retries",
+                        call_id, event_name, CONTROL_EVENT_RETRY_ATTEMPTS
+                    );
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                error!("[b2bua {}] {} event channel closed", call_id, event_name);
+                return;
+            }
+        }
+    }
 }
 
 async fn run_transfer(
@@ -816,7 +869,13 @@ fn spawn_sip_listener(
                                 if let Some(resp) = response_simple_from_request(&req, 200, "OK") {
                                     let _ = send_b2bua_payload(peer, resp.to_bytes());
                                 }
-                                let _ = control_tx.try_send(SessionControlIn::BLegBye);
+                                send_control_event_with_retry(
+                                    &control_tx,
+                                    a_call_id.as_str(),
+                                    "BLegBye",
+                                    || SessionControlIn::BLegBye,
+                                )
+                                .await;
                                 break;
                             }
                             if matches!(req.method, SipMethod::Ack) {
@@ -1422,4 +1481,48 @@ fn format_response_dump(resp: &SipResponse) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{timeout, Duration};
+
+    #[tokio::test]
+    async fn send_control_event_with_retry_delivers_when_channel_is_released() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(SessionControlIn::TransferAnnounce)
+            .expect("fill channel");
+
+        let sender = tx.clone();
+        let retry_task = tokio::spawn(async move {
+            send_control_event_with_retry(&sender, "test-call", "BLegBye", || {
+                SessionControlIn::BLegBye
+            })
+            .await;
+        });
+
+        let drained = timeout(Duration::from_millis(50), rx.recv())
+            .await
+            .expect("drain timeout");
+        assert!(matches!(drained, Some(SessionControlIn::TransferAnnounce)));
+
+        let delivered = timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("delivery timeout");
+        assert!(matches!(delivered, Some(SessionControlIn::BLegBye)));
+
+        retry_task.await.expect("retry task completed");
+    }
+
+    #[tokio::test]
+    async fn send_control_event_with_retry_returns_when_channel_closed() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+
+        let start = std::time::Instant::now();
+        send_control_event_with_retry(&tx, "test-call", "BLegBye", || SessionControlIn::BLegBye)
+            .await;
+        assert!(start.elapsed() < Duration::from_millis(50));
+    }
 }

@@ -375,8 +375,7 @@ impl SessionCoordinator {
             }
             (_, SessionControlIn::B2buaFailed { reason, status }) => {
                 warn!("[session {}] transfer failed: {}", self.call_id, reason);
-                self.transfer_cancel = None;
-                self.stop_transfer_announce();
+                self.cancel_transfer();
                 self.mark_transfer_failed();
                 if self.outbound_mode {
                     let code = status.unwrap_or(503);
@@ -390,21 +389,27 @@ impl SessionCoordinator {
                     self.outbound_mode = false;
                     self.invite_rejected = true;
                 } else {
-                    self.ivr_state = IvrState::IvrMenuWaiting;
-                    self.b_leg = None;
-                    if let Err(e) = self
-                        .start_playback(&[
-                            super::TRANSFER_FAIL_WAV_PATH,
-                            super::IVR_INTRO_AGAIN_WAV_PATH,
-                        ])
-                        .await
-                    {
-                        warn!(
-                            "[session {}] failed to play transfer fail flow: {:?}",
-                            self.call_id, e
-                        );
-                        self.reset_ivr_timeout();
+                    info!(
+                        "[session {}] transfer failed in IVR mode, ending call",
+                        self.call_id
+                    );
+                    if self.b_leg.is_some() {
+                        self.shutdown_b_leg(false).await;
                     }
+                    self.cancel_playback();
+                    self.stop_keepalive_timer();
+                    self.stop_session_timer();
+                    self.stop_ivr_timeout();
+                    self.mark_transfer_ended();
+                    self.send_bye_to_a_leg();
+                    self.stop_recorders();
+                    self.send_ingest("ended").await;
+                    self.rtp.stop(self.call_id.as_str());
+                    let _ = self
+                        .session_out_tx
+                        .send((self.call_id.clone(), SessionOut::RtpStopTx))
+                        .await;
+                    self.send_call_ended(EndReason::Error);
                 }
             }
             (_, SessionControlIn::BLegBye) => {
@@ -1408,7 +1413,9 @@ mod tests {
     use crate::protocol::session::capture::AudioCapture;
     use crate::protocol::session::state_machine::SessionStateMachine;
     use crate::protocol::session::timers::SessionTimers;
-    use crate::protocol::session::types::{CallId, IvrState, MediaConfig, Sdp};
+    use crate::protocol::session::types::{
+        CallId, IvrState, MediaConfig, Sdp, SessState, SessionControlIn, SessionOut,
+    };
     use crate::shared::config::SessionRuntimeConfig;
     use crate::shared::ports::app::app_event_channel;
     use crate::shared::ports::call_log_port::{CallLogPort, EndedCallLog};
@@ -1614,8 +1621,10 @@ mod tests {
         }
     }
 
-    fn build_test_session(routing_port: Arc<dyn RoutingPort>) -> SessionCoordinator {
-        let (session_out_tx, _session_out_rx) = mpsc::channel(32);
+    fn build_test_session(
+        routing_port: Arc<dyn RoutingPort>,
+    ) -> (SessionCoordinator, mpsc::Receiver<(CallId, SessionOut)>) {
+        let (session_out_tx, session_out_rx) = mpsc::channel(32);
         let (app_tx, _app_rx) = app_event_channel(16);
         let (control_tx, _control_rx) =
             mpsc::channel(super::super::SESSION_CONTROL_CHANNEL_CAPACITY);
@@ -1623,7 +1632,7 @@ mod tests {
         let base_cfg = crate::shared::config::Config::from_env().expect("config loads");
         let runtime_cfg = Arc::new(SessionRuntimeConfig::from_env(&base_cfg));
 
-        SessionCoordinator {
+        let session = SessionCoordinator {
             state_machine: SessionStateMachine::new(),
             call_id: CallId::new("test-call".to_string()).expect("valid test call id"),
             from_uri: "sip:from@example.com".to_string(),
@@ -1700,7 +1709,8 @@ mod tests {
             ingest_persisted: false,
             session_expires: None,
             session_refresher: None,
-        }
+        };
+        (session, session_out_rx)
     }
 
     fn voicebot_destination() -> IvrDestinationRow {
@@ -1760,7 +1770,7 @@ mod tests {
             None,
             None,
         ));
-        let mut session = build_test_session(routing_port);
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
         session.ivr_flow_id = Some(flow_id);
         session.ivr_keypad_node_id = Some(keypad_node_id);
 
@@ -1781,7 +1791,7 @@ mod tests {
             Some(voicebot_destination()),
             None,
         ));
-        let mut session = build_test_session(routing_port);
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
         session.ivr_flow_id = Some(flow_id);
         session.ivr_max_retries = 0;
 
@@ -1802,7 +1812,7 @@ mod tests {
             None,
             Some(voicebot_destination()),
         ));
-        let mut session = build_test_session(routing_port);
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
         session.ivr_flow_id = Some(flow_id);
         session.ivr_max_retries = 0;
 
@@ -1811,5 +1821,73 @@ mod tests {
         let guard = state.lock().expect("routing state lock");
         assert_eq!(guard.old_invalid_calls, 0);
         assert_eq!(guard.by_flow_invalid, vec![flow_id]);
+    }
+
+    #[tokio::test]
+    async fn b2bua_failed_in_ivr_mode_sends_bye_and_rtp_stop() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx) = build_test_session(routing_port);
+        session.outbound_mode = false;
+        session.ivr_state = IvrState::Transferring;
+
+        let _ = session
+            .handle_control_event(
+                SessState::Established,
+                SessionControlIn::B2buaFailed {
+                    reason: "transfer failed status 486".to_string(),
+                    status: None,
+                },
+            )
+            .await;
+
+        let mut saw_bye = false;
+        let mut saw_rtp_stop = false;
+        while let Ok((_call_id, out)) = session_out_rx.try_recv() {
+            match out {
+                SessionOut::SipSendBye => saw_bye = true,
+                SessionOut::RtpStopTx => saw_rtp_stop = true,
+                _ => {}
+            }
+        }
+
+        assert!(saw_bye, "IVR mode B2buaFailed should send SipSendBye");
+        assert!(saw_rtp_stop, "IVR mode B2buaFailed should send RtpStopTx");
+    }
+
+    #[tokio::test]
+    async fn b2bua_failed_in_outbound_mode_keeps_error_response_behavior() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx) = build_test_session(routing_port);
+        session.outbound_mode = true;
+
+        let _ = session
+            .handle_control_event(
+                SessState::Established,
+                SessionControlIn::B2buaFailed {
+                    reason: "connection refused".to_string(),
+                    status: Some(503),
+                },
+            )
+            .await;
+
+        let mut saw_error = false;
+        let mut saw_bye = false;
+        while let Ok((_call_id, out)) = session_out_rx.try_recv() {
+            match out {
+                SessionOut::SipSendError { code, .. } if code == 503 => saw_error = true,
+                SessionOut::SipSendBye => saw_bye = true,
+                _ => {}
+            }
+        }
+
+        assert!(saw_error, "outbound mode should keep SipSendError behavior");
+        assert!(
+            !saw_bye,
+            "outbound mode should not send SipSendBye on B2buaFailed"
+        );
+        assert!(
+            session.invite_rejected,
+            "outbound mode should mark invite_rejected"
+        );
     }
 }

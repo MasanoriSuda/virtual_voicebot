@@ -6,12 +6,14 @@
       "callerGroupId": "4fe4a030-aedd-41d4-9e55-1e85973b1b78",
       "actionType": "allow",
       "actionConfig": {
-        "actionCode": "VM",
-        "announcementId": "f6b67055-827e-49bb-ac62-a82d57228376"
+        "actionCode": "VR",
+        "recordingEnabled": true,
+        "announceEnabled": true,
+        "announcementId": "e7165a92-2c90-4985-bc73-66dd751462c8"
       },
-      "isActive": false,
+      "isActive": true,
       "createdAt": "2026-02-16T11:04:51.991Z",
-      "updatedAt": "2026-02-16T15:11:14.642Z"
+      "updatedAt": "2026-02-16T16:32:00.885Z"
     }
   ],
   "anonymousAction": {
