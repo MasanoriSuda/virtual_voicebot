@@ -20,6 +20,7 @@ use crate::protocol::session::b2bua;
 use crate::protocol::session::capture::AudioCapture;
 use crate::protocol::session::timers::SessionTimers;
 use crate::protocol::sip::{parse_name_addr, parse_uri};
+use crate::service::routing::normalize_phone_number_e164;
 use crate::shared::config::SessionRuntimeConfig;
 use crate::shared::ports::app::AppEventTx;
 use crate::shared::ports::call_log_port::{
@@ -744,11 +745,7 @@ fn final_action_from_action_code(action_code: &str) -> Option<&'static str> {
 
 fn extract_e164_caller_number(value: &str) -> Option<String> {
     let candidate = extract_user_from_to(value)?;
-    if is_e164(candidate.as_str()) {
-        Some(candidate)
-    } else {
-        None
-    }
+    normalize_phone_number_e164(candidate.as_str()).ok()
 }
 
 fn extract_user_from_to(value: &str) -> Option<String> {
@@ -781,24 +778,6 @@ fn extract_user_from_to(value: &str) -> Option<String> {
         }
     }
     uri.user
-}
-
-fn is_e164(value: &str) -> bool {
-    if !value.starts_with('+') {
-        return false;
-    }
-    let digits = &value[1..];
-    if digits.len() < 2 || digits.len() > 15 {
-        return false;
-    }
-    let mut chars = digits.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !('1'..='9').contains(&first) {
-        return false;
-    }
-    chars.all(|c| c.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -1105,5 +1084,23 @@ mod tests {
         let guard = state.lock().expect("state lock should be available");
         assert_eq!(guard.attempts, 2);
         assert_eq!(guard.ivr_event_counts, vec![1, 1]);
+    }
+
+    #[test]
+    fn extract_e164_caller_number_normalizes_domestic_number() {
+        let caller = super::extract_e164_caller_number("sip:09028894539@example.com");
+        assert_eq!(caller, Some("+819028894539".to_string()));
+    }
+
+    #[test]
+    fn extract_e164_caller_number_keeps_e164_number() {
+        let caller = super::extract_e164_caller_number("sip:+819028894539@example.com");
+        assert_eq!(caller, Some("+819028894539".to_string()));
+    }
+
+    #[test]
+    fn extract_e164_caller_number_returns_none_for_invalid_input() {
+        let caller = super::extract_e164_caller_number("sip:abc@example.com");
+        assert_eq!(caller, None);
     }
 }
