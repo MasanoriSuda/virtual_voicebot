@@ -542,11 +542,17 @@ fn spawn_register_task(
                     };
                     match (peer, payload) {
                         (Some(peer), Some(payload)) => {
-                            let _ = transport_tx.try_send(SipTransportRequest {
+                            if let Err(err) = transport_tx.try_send(SipTransportRequest {
                                 peer,
                                 src_port,
                                 payload,
-                            });
+                            }) {
+                                log::error!(
+                                    "[sip register] failed to enqueue refresh request peer={:?} err={:?}",
+                                    peer,
+                                    err
+                                );
+                            }
                         }
                         (None, Some(_)) => {
                             log::warn!("[sip register] no transport for refresh");
@@ -1390,19 +1396,33 @@ impl SipCore {
                 if start.elapsed() >= max_duration {
                     log::warn!("[sip 100rel] PRACK timeout call_id={}", call_id);
                     if let Some(resp) = timeout_resp {
-                        let _ = transport_tx.try_send(SipTransportRequest {
+                        if let Err(err) = transport_tx.try_send(SipTransportRequest {
                             peer,
                             src_port,
                             payload: resp,
-                        });
+                        }) {
+                            log::error!(
+                                "[sip 100rel] failed to enqueue timeout response call_id={} peer={:?} err={:?}",
+                                call_id,
+                                peer,
+                                err
+                            );
+                        }
                     }
                     break;
                 }
-                let _ = transport_tx.try_send(SipTransportRequest {
+                if let Err(err) = transport_tx.try_send(SipTransportRequest {
                     peer,
                     src_port,
                     payload: payload.clone(),
-                });
+                }) {
+                    log::error!(
+                        "[sip 100rel] failed to enqueue provisional retransmit call_id={} peer={:?} err={:?}",
+                        call_id,
+                        peer,
+                        err
+                    );
+                }
                 interval = std::cmp::min(interval * 2, Duration::from_secs(4));
             }
             stop.store(true, Ordering::SeqCst);
@@ -1450,11 +1470,18 @@ impl SipCore {
                     log::warn!("[sip] 2xx retransmit timeout (no ACK) call_id={}", call_id);
                     break;
                 }
-                let _ = transport_tx.try_send(SipTransportRequest {
+                if let Err(err) = transport_tx.try_send(SipTransportRequest {
                     peer,
                     src_port,
                     payload: payload.clone(),
-                });
+                }) {
+                    log::error!(
+                        "[sip] failed to enqueue 2xx retransmit call_id={} peer={:?} err={:?}",
+                        call_id,
+                        peer,
+                        err
+                    );
+                }
                 interval = std::cmp::min(interval * 2, Duration::from_secs(4));
             }
             stop.store(true, Ordering::SeqCst);
@@ -1737,11 +1764,17 @@ impl SipCore {
             );
         }
 
-        let _ = self.transport_tx.try_send(SipTransportRequest {
+        if let Err(err) = self.transport_tx.try_send(SipTransportRequest {
             peer,
             src_port: self.cfg.sip_port,
             payload,
-        });
+        }) {
+            log::error!(
+                "[sip ->] failed to enqueue transport payload peer={:?} err={:?}",
+                peer,
+                err
+            );
+        }
     }
 
     fn prune_expired(&mut self) -> Vec<SipEvent> {

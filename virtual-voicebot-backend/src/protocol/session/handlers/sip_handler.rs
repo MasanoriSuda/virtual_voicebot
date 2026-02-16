@@ -77,15 +77,23 @@ impl SessionCoordinator {
     }
 
     pub(crate) fn send_bye_to_a_leg(&self) {
-        if let Err(err) = self
+        match self
             .session_out_tx
             .try_send((self.call_id.clone(), SessionOut::SipSendBye))
         {
-            log::warn!(
-                "[session {}] dropped SipSendBye (channel full): {:?}",
-                self.call_id,
-                err
-            );
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                log::error!(
+                    "[session {}] failed to enqueue SipSendBye: session_out channel full",
+                    self.call_id
+                );
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                log::error!(
+                    "[session {}] failed to enqueue SipSendBye: session_out channel closed",
+                    self.call_id
+                );
+            }
         }
     }
 }
