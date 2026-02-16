@@ -152,6 +152,23 @@
       "source": "tts",
       "createdAt": "2026-02-13T15:59:44.524Z",
       "updatedAt": "2026-02-13T15:59:44.524Z"
+    },
+    "0e502d65-78bc-4252-ae18-378f92a1c517": {
+      "id": "0e502d65-78bc-4252-ae18-378f92a1c517",
+      "name": "四国めたんアナウンス応答",
+      "description": null,
+      "announcementType": "custom",
+      "isActive": true,
+      "folderId": "folder-greetings",
+      "audioFileUrl": "/audio/announcements/0e502d65-78bc-4252-ae18-378f92a1c517.wav",
+      "ttsText": "おでんわありがとうございます、ただいまぎょうむじかんがいです、さいどおかけなおしください。",
+      "speakerId": 2,
+      "speakerName": "四国めたん - ノーマル",
+      "durationSec": 5.888,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-16T02:51:35.224Z",
+      "updatedAt": "2026-02-16T02:51:35.224Z"
     }
   },
   "folders": {
@@ -192,5 +209,5 @@
       "updatedAt": "2026-02-07T17:48:30.883Z"
     }
   },
-  "updatedAt": "2026-02-13T15:59:44.524Z"
+  "updatedAt": "2026-02-16T02:51:35.224Z"
 }

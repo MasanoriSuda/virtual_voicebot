@@ -1,18 +1,33 @@
 {
-  "rules": [],
+  "rules": [
+    {
+      "id": "baa2a9fd-85a8-41f4-8efb-d421bb9dbe22",
+      "name": "ルール 1",
+      "callerGroupId": "4fe4a030-aedd-41d4-9e55-1e85973b1b78",
+      "actionType": "allow",
+      "actionConfig": {
+        "actionCode": "IV",
+        "ivrFlowId": "8f2daa6a-4c96-472f-8c1f-0276ed102e7a",
+        "includeAnnouncement": false
+      },
+      "isActive": true,
+      "createdAt": "2026-02-16T11:04:51.991Z",
+      "updatedAt": "2026-02-16T11:05:06.480Z"
+    }
+  ],
   "anonymousAction": {
-    "actionType": "allow",
+    "actionType": "deny",
     "actionConfig": {
-      "actionCode": "VR",
-      "recordingEnabled": false,
-      "announceEnabled": false,
-      "announcementId": null
+      "actionCode": "AN",
+      "announcementId": "dca2a704-23c6-45fe-a16a-2c059bab0e45"
     }
   },
   "defaultAction": {
-    "actionType": "deny",
+    "actionType": "allow",
     "actionConfig": {
-      "actionCode": "BZ"
+      "actionCode": "IV",
+      "ivrFlowId": "8f2daa6a-4c96-472f-8c1f-0276ed102e7a",
+      "includeAnnouncement": false
     }
   }
 }

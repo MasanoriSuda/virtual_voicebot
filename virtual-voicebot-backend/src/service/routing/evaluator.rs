@@ -5,6 +5,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use uuid::Uuid;
 
+use super::normalize_phone_number_e164;
 use crate::shared::ports::routing_port::{
     RegisteredNumberRow, RoutingPort, RoutingPortError, RoutingRuleRow,
 };
@@ -161,7 +162,16 @@ impl RuleEvaluator {
             return self.get_anonymous_action(call_id).await;
         }
 
-        let normalized_caller_id = normalize_phone_number(caller_id)?;
+        let normalized_caller_id = match normalize_phone_number_e164(caller_id) {
+            Ok(normalized) => normalized,
+            Err(err) => {
+                warn!(
+                    "[RuleEvaluator] call_id={} phone normalization failed: {}, fallback to defaultAction",
+                    call_id, err
+                );
+                return self.get_default_action(call_id).await;
+            }
+        };
         info!(
             "[RuleEvaluator] call_id={} normalized caller={} -> {}",
             call_id, caller_id, normalized_caller_id
@@ -198,6 +208,14 @@ impl RuleEvaluator {
         );
 
         let category = self.classify_caller(&normalized_caller_id, call_id).await?;
+        if matches!(category, CallerCategory::Unknown) {
+            info!(
+                "[RuleEvaluator] call_id={} category=unknown uses defaultAction",
+                call_id
+            );
+            return self.get_default_action(call_id).await;
+        }
+
         if let Some(action) = self.match_routing_rule(category, call_id).await? {
             info!(
                 "[RuleEvaluator] call_id={} hit stage=3 source=routing_rules category={}",
@@ -394,20 +412,6 @@ fn is_anonymous(caller_id: &str) -> bool {
         || trimmed.eq_ignore_ascii_case("withheld")
 }
 
-fn normalize_phone_number(phone_number: &str) -> Result<String, RoutingError> {
-    let cleaned: String = phone_number
-        .chars()
-        .filter(|ch| !matches!(ch, '-' | ' ' | '\t' | '\n' | '\r' | '(' | ')'))
-        .collect();
-    if !(cleaned.starts_with('+') && (8..=16).contains(&cleaned.len())) {
-        return Err(RoutingError::InvalidPhoneNumber(phone_number.to_string()));
-    }
-    if !cleaned[1..].chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(RoutingError::InvalidPhoneNumber(phone_number.to_string()));
-    }
-    Ok(cleaned)
-}
-
 fn to_action_config_from_registered(row: RegisteredNumberRow) -> ActionConfig {
     ActionConfig {
         action_code: row.action_code,
@@ -440,7 +444,13 @@ fn to_action_config_from_routing_rule(row: RoutingRuleRow) -> ActionConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionConfig, ActionConfigDto};
+    use std::sync::Arc;
+
+    use super::{ActionConfig, ActionConfigDto, RuleEvaluator};
+    use crate::shared::ports::routing_port::{
+        CallActionRuleRow, IvrDestinationRow, IvrMenuRow, NoopRoutingPort, RegisteredNumberRow,
+        RoutingFuture, RoutingPort, RoutingRuleRow,
+    };
     use serde_json::json;
     use uuid::Uuid;
 
@@ -509,5 +519,159 @@ mod tests {
         let config: ActionConfig = dto.into();
         assert_eq!(config.action_code, "VR");
         assert_eq!(config.include_announcement, Some(true));
+    }
+
+    #[tokio::test]
+    async fn evaluate_returns_default_action_when_normalization_fails() {
+        let evaluator = RuleEvaluator::new(Arc::new(NoopRoutingPort::new()));
+        let action = evaluator
+            .evaluate("abc", "call-123")
+            .await
+            .expect("normalization failure should fallback to default action");
+
+        assert_eq!(action.action_code, "VR");
+        assert_eq!(action.caller_category, "unknown");
+    }
+
+    struct UnknownRoutingRulePort {
+        default_action_announcement_id: Uuid,
+        noop: NoopRoutingPort,
+    }
+
+    impl UnknownRoutingRulePort {
+        fn new(default_action_announcement_id: Uuid) -> Self {
+            Self {
+                default_action_announcement_id,
+                noop: NoopRoutingPort::new(),
+            }
+        }
+    }
+
+    impl RoutingPort for UnknownRoutingRulePort {
+        fn find_registered_number(
+            &self,
+            phone_number: &str,
+        ) -> RoutingFuture<Option<RegisteredNumberRow>> {
+            self.noop.find_registered_number(phone_number)
+        }
+
+        fn find_caller_group(&self, phone_number: &str) -> RoutingFuture<Option<Uuid>> {
+            self.noop.find_caller_group(phone_number)
+        }
+
+        fn find_call_action_rule(
+            &self,
+            group_id: Uuid,
+        ) -> RoutingFuture<Option<CallActionRuleRow>> {
+            self.noop.find_call_action_rule(group_id)
+        }
+
+        fn is_spam(&self, phone_number: &str) -> RoutingFuture<bool> {
+            self.noop.is_spam(phone_number)
+        }
+
+        fn is_registered(&self, phone_number: &str) -> RoutingFuture<bool> {
+            self.noop.is_registered(phone_number)
+        }
+
+        fn find_routing_rule(&self, category: &str) -> RoutingFuture<Option<RoutingRuleRow>> {
+            let row = if category == "unknown" {
+                Some(RoutingRuleRow {
+                    id: Uuid::now_v7(),
+                    action_code: "IV".to_string(),
+                    ivr_flow_id: None,
+                    announcement_id: None,
+                })
+            } else {
+                None
+            };
+            Box::pin(async move { Ok(row) })
+        }
+
+        fn get_system_settings_extra(&self) -> RoutingFuture<Option<serde_json::Value>> {
+            let announcement_id = self.default_action_announcement_id;
+            let value = json!({
+                "defaultAction": {
+                    "actionType": "deny",
+                    "actionConfig": {
+                        "actionCode": "AN",
+                        "announcementId": announcement_id,
+                    }
+                }
+            });
+            Box::pin(async move { Ok(Some(value)) })
+        }
+
+        fn find_announcement_audio_file_url(
+            &self,
+            announcement_id: Uuid,
+        ) -> RoutingFuture<Option<String>> {
+            self.noop.find_announcement_audio_file_url(announcement_id)
+        }
+
+        fn find_ivr_menu(&self, flow_id: Uuid) -> RoutingFuture<Option<IvrMenuRow>> {
+            self.noop.find_ivr_menu(flow_id)
+        }
+
+        fn find_ivr_dtmf_destination(
+            &self,
+            keypad_node_id: Uuid,
+            dtmf_key: &str,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop
+                .find_ivr_dtmf_destination(keypad_node_id, dtmf_key)
+        }
+
+        fn find_ivr_dtmf_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+            dtmf_key: &str,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop
+                .find_ivr_dtmf_destination_by_flow(flow_id, dtmf_key)
+        }
+
+        fn find_ivr_timeout_destination(
+            &self,
+            keypad_node_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_timeout_destination(keypad_node_id)
+        }
+
+        fn find_ivr_timeout_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_timeout_destination_by_flow(flow_id)
+        }
+
+        fn find_ivr_invalid_destination(
+            &self,
+            keypad_node_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_invalid_destination(keypad_node_id)
+        }
+
+        fn find_ivr_invalid_destination_by_flow(
+            &self,
+            flow_id: Uuid,
+        ) -> RoutingFuture<Option<IvrDestinationRow>> {
+            self.noop.find_ivr_invalid_destination_by_flow(flow_id)
+        }
+    }
+
+    #[tokio::test]
+    async fn evaluate_prefers_default_action_over_unknown_routing_rule() {
+        let announcement_id = Uuid::now_v7();
+        let evaluator = RuleEvaluator::new(Arc::new(UnknownRoutingRulePort::new(announcement_id)));
+
+        let action = evaluator
+            .evaluate("+81568686236", "call-unknown")
+            .await
+            .expect("unknown should use defaultAction");
+
+        assert_eq!(action.action_code, "AN");
+        assert_eq!(action.caller_category, "unknown");
+        assert_eq!(action.announcement_id, Some(announcement_id));
     }
 }
