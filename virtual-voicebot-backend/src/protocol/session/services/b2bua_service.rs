@@ -1,4 +1,4 @@
-use log::warn;
+use log::{info, warn};
 use tokio::sync::oneshot;
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -43,13 +43,30 @@ impl SessionCoordinator {
 
     pub(crate) async fn shutdown_b_leg(&mut self, send_bye: bool) {
         if let Some(mut b_leg) = self.b_leg.take() {
+            info!(
+                "[session {}] shutting down B-leg (send_bye={})",
+                self.call_id, send_bye
+            );
             if send_bye {
-                if let Err(e) = b_leg.send_bye().await {
-                    warn!("[session {}] B-leg BYE failed: {:?}", self.call_id, e);
+                match b_leg.send_bye().await {
+                    Ok(()) => {
+                        info!("[session {}] B-leg BYE enqueued successfully", self.call_id);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[session {}] B-leg BYE enqueue failed: {:?}",
+                            self.call_id, e
+                        );
+                    }
                 }
             }
             b_leg.shutdown();
             self.rtp.stop(&b_leg.rtp_key);
+        } else {
+            warn!(
+                "[session {}] shutdown_b_leg called but b_leg is None (send_bye={})",
+                self.call_id, send_bye
+            );
         }
     }
 }

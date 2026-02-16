@@ -299,6 +299,12 @@ async fn main() -> anyhow::Result<()> {
                             offer,
                             session_timer,
                         } => {
+                            log::info!(
+                                "[main] re-INVITE received call_id={} offer={}:{}",
+                                call_id,
+                                offer.ip,
+                                offer.port
+                            );
                             if let Ok(peer_addr) =
                                 format!("{}:{}", offer.ip, offer.port).parse()
                             {
@@ -321,13 +327,32 @@ async fn main() -> anyhow::Result<()> {
                                 );
                             }
                             if let Some(sess_tx) = session_registry.get(&call_id).await {
-                                let _ = sess_tx
+                                if let Err(err) = sess_tx
                                     .control_tx
                                     .send(SessionControlIn::SipReInvite {
                                         offer,
                                         session_timer,
                                     })
-                                    .await;
+                                    .await
+                                {
+                                    log::warn!(
+                                        "[main] failed to forward re-INVITE to session call_id={}: {:?}",
+                                        call_id,
+                                        err
+                                    );
+                                }
+                            } else {
+                                log::warn!(
+                                    "[main] re-INVITE for unknown session call_id={}, sending 481",
+                                    call_id
+                                );
+                                sip_core.handle_sip_command(
+                                    &call_id,
+                                    SipCommand::SendError {
+                                        code: 481,
+                                        reason: "Call/Transaction Does Not Exist".to_string(),
+                                    },
+                                );
                             }
                         }
                         SipEvent::Ack { call_id } => {
@@ -349,6 +374,8 @@ async fn main() -> anyhow::Result<()> {
                             log::info!("[main] BYE for call_id={}", call_id);
                             if let Some(sess_tx) = session_registry.get(&call_id).await {
                                 let _ = sess_tx.control_tx.send(SessionControlIn::SipBye).await;
+                            } else {
+                                log::warn!("[main] received BYE for unknown call_id: {}", call_id);
                             }
                         }
                         SipEvent::SessionRefresh { call_id, timer } => {

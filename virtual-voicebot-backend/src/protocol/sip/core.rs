@@ -161,6 +161,28 @@ fn rack_matches(expected: &RAckHeader, actual: &RAckHeader) -> bool {
         && expected.method.eq_ignore_ascii_case(&actual.method)
 }
 
+fn invite_has_to_tag(req: &SipRequest) -> bool {
+    let Some(to_header) = req.header_value("To") else {
+        return false;
+    };
+    if let Some(params) = to_header.split('>').nth(1) {
+        return params.split(';').any(|param| {
+            param
+                .split('=')
+                .next()
+                .map(|key| key.trim().eq_ignore_ascii_case("tag"))
+                .unwrap_or(false)
+        });
+    }
+    to_header.split(';').skip(1).any(|param| {
+        param
+            .split('=')
+            .next()
+            .map(|key| key.trim().eq_ignore_ascii_case("tag"))
+            .unwrap_or(false)
+    })
+}
+
 fn header_has_token(value: Option<&str>, token: &str) -> bool {
     let Some(value) = value else {
         return false;
@@ -573,12 +595,30 @@ impl SipCore {
 
         let text = match decode_sip_text(&input.data) {
             Ok(t) => t,
-            Err(_) => return vec![SipEvent::Unknown],
+            Err(err) => {
+                log::warn!(
+                    "[sip] dropped non-utf8 packet peer={:?} len={} err={:?}",
+                    input.peer,
+                    input.data.len(),
+                    err
+                );
+                return vec![SipEvent::Unknown];
+            }
         };
 
         let msg = match parse_sip_message(&text) {
             Ok(m) => m,
-            Err(_) => return vec![SipEvent::Unknown],
+            Err(err) => {
+                let first_line = text.lines().next().unwrap_or("<empty>");
+                log::warn!(
+                    "[sip] parse failed peer={:?} len={} first_line={} err={:?}",
+                    input.peer,
+                    input.data.len(),
+                    first_line,
+                    err
+                );
+                return vec![SipEvent::Unknown];
+            }
         };
 
         if b2bua_bridge::dispatch_message(input.peer, &msg) {
@@ -667,7 +707,18 @@ impl SipCore {
             SipMethod::Register => self.handle_non_invite(req, headers, peer, 200, "OK", false),
             SipMethod::Update => self.handle_update(req, headers, peer),
             SipMethod::Prack => self.handle_prack(req, headers, peer),
-            _ => vec![SipEvent::Unknown],
+            _ => {
+                log::warn!(
+                    "[sip] unsupported request method={:?} call_id={} peer={:?}",
+                    req.method,
+                    headers.call_id,
+                    peer
+                );
+                if let Some(resp) = response_simple_from_request(&req, 501, "Not Implemented") {
+                    self.send_payload(peer, resp.to_bytes());
+                }
+                vec![]
+            }
         }
     }
 
@@ -714,6 +765,25 @@ impl SipCore {
                 return vec![];
             }
         }
+        let call_id = resp
+            .headers
+            .iter()
+            .find(|header| header.name.eq_ignore_ascii_case("Call-ID"))
+            .map(|header| header.value.as_str())
+            .unwrap_or("-");
+        let cseq = resp
+            .headers
+            .iter()
+            .find(|header| header.name.eq_ignore_ascii_case("CSeq"))
+            .map(|header| header.value.as_str())
+            .unwrap_or("-");
+        log::warn!(
+            "[sip] unhandled response status={} call_id={} cseq={} peer={:?}",
+            resp.status_code,
+            call_id,
+            cseq,
+            peer
+        );
         vec![SipEvent::Unknown]
     }
 
@@ -767,6 +837,20 @@ impl SipCore {
                 return vec![];
             }
             return self.handle_reinvite(req, headers, peer);
+        }
+
+        // In-dialog INVITE without dialog context must be rejected.
+        if invite_has_to_tag(&req) {
+            log::info!(
+                "[sip invite] in-dialog INVITE without dialog context call_id={}, rejecting with 481",
+                headers.call_id
+            );
+            if let Some(resp) =
+                response_simple_from_request(&req, 481, "Call/Transaction Does Not Exist")
+            {
+                self.send_payload(peer, resp.to_bytes());
+            }
+            return vec![];
         }
 
         if let Some(active) = &self.active_call_id {
@@ -1550,6 +1634,11 @@ impl SipCore {
                         self.send_payload(peer, bytes);
                         self.stop_reliable_provisional(call_id);
                     }
+                } else {
+                    log::warn!(
+                        "[sip 200] missing invite context, cannot respond call_id={}",
+                        call_id
+                    );
                 }
             }
             SipCommand::SendUpdate { expires } => {
@@ -1851,6 +1940,42 @@ mod tests {
             _ => panic!("expected response"),
         };
         assert_eq!(resp.status_code, 486);
+    }
+
+    #[test]
+    fn invite_with_to_tag_without_dialog_returns_481() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut core = SipCore::new(
+            SipConfig {
+                advertised_ip: "127.0.0.1".to_string(),
+                sip_port: 5060,
+                advertised_rtp_port: 4000,
+            },
+            tx,
+        );
+
+        let req = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>;tag=remote")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "2 INVITE")
+            .build();
+        let input = SipInput {
+            peer: dummy_peer(),
+            data: req.to_bytes(),
+        };
+
+        let events = core.handle_input(&input);
+        assert!(events.is_empty());
+
+        let sent = rx.try_recv().expect("481 response");
+        let resp_text = String::from_utf8(sent.payload).expect("utf8 response");
+        let resp = match parse_sip_message(&resp_text).expect("parse response") {
+            SipMessage::Response(resp) => resp,
+            _ => panic!("expected response"),
+        };
+        assert_eq!(resp.status_code, 481);
     }
 
     #[test]
