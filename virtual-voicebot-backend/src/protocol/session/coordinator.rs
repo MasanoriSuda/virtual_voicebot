@@ -384,9 +384,9 @@ impl SessionCoordinator {
         let normalized = normalize_action_code(action_code);
         if self.initial_action_code.is_none() {
             self.initial_action_code = Some(normalized.clone());
+            self.final_action = final_action_from_action_code(&normalized).map(str::to_string);
         }
         self.call_disposition = disposition_from_action_code(&normalized).to_string();
-        self.final_action = final_action_from_action_code(&normalized).map(str::to_string);
         if matches!(normalized.as_str(), "IV" | "VR") && self.transfer_status == "no_transfer" {
             self.transfer_status = "none".to_string();
         }
@@ -722,7 +722,7 @@ fn normalize_caller_category(category: &str) -> &'static str {
 
 fn disposition_from_action_code(action_code: &str) -> &'static str {
     match action_code {
-        "BZ" | "RJ" => "denied",
+        "BZ" | "RJ" | "AN" => "denied",
         "NR" => "no_answer",
         _ => "allowed",
     }
@@ -1031,8 +1031,8 @@ mod tests {
     }
 
     #[test]
-    fn disposition_mapping_treats_ar_as_allowed() {
-        assert_eq!(super::disposition_from_action_code("AR"), "allowed");
+    fn disposition_mapping_treats_an_as_denied() {
+        assert_eq!(super::disposition_from_action_code("AN"), "denied");
     }
 
     #[test]
@@ -1040,6 +1040,14 @@ mod tests {
         assert_eq!(super::disposition_from_action_code("BZ"), "denied");
         assert_eq!(super::disposition_from_action_code("RJ"), "denied");
         assert_eq!(super::disposition_from_action_code("NR"), "no_answer");
+        assert_eq!(super::disposition_from_action_code("VR"), "allowed");
+    }
+
+    #[test]
+    fn disposition_mapping_for_allowed_voice_actions() {
+        assert_eq!(super::disposition_from_action_code("VB"), "allowed");
+        assert_eq!(super::disposition_from_action_code("VM"), "allowed");
+        assert_eq!(super::disposition_from_action_code("IV"), "allowed");
     }
 
     #[test]
@@ -1048,6 +1056,41 @@ mod tests {
             super::final_action_from_action_code("AR"),
             Some("announcement_deny")
         );
+    }
+
+    #[tokio::test]
+    async fn register_action_keeps_ivr_final_action_on_vr_transition() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+
+        session.register_action_for_call_log("IV");
+        session.register_action_for_call_log("VR");
+
+        assert_eq!(session.initial_action_code, Some("IV".to_string()));
+        assert_eq!(session.final_action, Some("ivr".to_string()));
+        assert_eq!(session.call_disposition, "allowed");
+    }
+
+    #[tokio::test]
+    async fn register_action_keeps_ivr_final_action_on_vm_transition() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+
+        session.register_action_for_call_log("IV");
+        session.register_action_for_call_log("VM");
+
+        assert_eq!(session.initial_action_code, Some("IV".to_string()));
+        assert_eq!(session.final_action, Some("ivr".to_string()));
+        assert_eq!(session.call_disposition, "allowed");
+    }
+
+    #[tokio::test]
+    async fn register_action_sets_normal_call_for_initial_vr() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+
+        session.register_action_for_call_log("VR");
+
+        assert_eq!(session.initial_action_code, Some("VR".to_string()));
+        assert_eq!(session.final_action, Some("normal_call".to_string()));
+        assert_eq!(session.call_disposition, "allowed");
     }
 
     #[tokio::test]

@@ -4,16 +4,14 @@
       "id": "baa2a9fd-85a8-41f4-8efb-d421bb9dbe22",
       "name": "ルール 1",
       "callerGroupId": "4fe4a030-aedd-41d4-9e55-1e85973b1b78",
-      "actionType": "allow",
+      "actionType": "deny",
       "actionConfig": {
-        "actionCode": "VR",
-        "recordingEnabled": true,
-        "announceEnabled": true,
-        "announcementId": "e7165a92-2c90-4985-bc73-66dd751462c8"
+        "actionCode": "AN",
+        "announcementId": "55451734-e4c9-424e-ac3c-34c8a9691300"
       },
       "isActive": true,
       "createdAt": "2026-02-16T11:04:51.991Z",
-      "updatedAt": "2026-02-16T16:32:00.885Z"
+      "updatedAt": "2026-02-17T00:25:20.421Z"
     }
   ],
   "anonymousAction": {
