@@ -24,6 +24,8 @@ pub fn init_system_prompt() {
 /// # Examples
 ///
 /// ```
+/// use virtual_voicebot_backend::service::ai::llm::system_prompt;
+///
 /// let prompt = system_prompt();
 /// assert!(!prompt.is_empty());
 /// ```

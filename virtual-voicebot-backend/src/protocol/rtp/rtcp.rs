@@ -76,6 +76,7 @@ pub struct RtcpReportBlock {
 /// # Examples
 ///
 /// ```
+/// use virtual_voicebot_backend::protocol::rtp::rtcp::parse_rtcp_packets;
 /// let empty = parse_rtcp_packets(&[]);
 /// assert!(empty.is_empty());
 /// ```

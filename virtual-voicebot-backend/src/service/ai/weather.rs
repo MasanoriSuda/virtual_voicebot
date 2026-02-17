@@ -107,7 +107,7 @@ fn fallback_summary(report: &WeatherReport) -> String {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```ignore
 /// # use crate::weather::WeatherQuery;
 /// # async fn _example() -> anyhow::Result<()> {
 /// let q = WeatherQuery { location: "Tokyo".into(), date: None };

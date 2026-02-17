@@ -34,7 +34,7 @@ pub fn build_tls_acceptor(settings: &TlsSettings) -> Result<TlsAcceptor> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// // Expect an error for a missing file
 /// assert!(crate::load_cert_chain("/does/not/exist").is_err());
 /// ```

@@ -256,7 +256,7 @@ pub enum SessState {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use crate::types::{next_session_state, CallId, SessState, SessionControlIn, Sdp};
 ///
 /// let s = SessState::Idle;

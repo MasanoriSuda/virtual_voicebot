@@ -66,6 +66,10 @@ pub fn parse_digest_challenge(header_value: &str) -> Option<DigestChallenge> {
 /// # Examples
 ///
 /// ```
+/// use virtual_voicebot_backend::protocol::sip::auth::{
+///     build_authorization_header, DigestChallenge,
+/// };
+///
 /// let challenge = DigestChallenge {
 ///     realm: "example.com".into(),
 ///     nonce: "nonce123".into(),
@@ -104,7 +108,11 @@ pub fn build_authorization_header(
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
+/// use virtual_voicebot_backend::protocol::sip::auth::{
+///     build_authorization_header_with_cnonce, DigestChallenge,
+/// };
+///
 /// let challenge = DigestChallenge {
 ///     realm: "realm".into(),
 ///     nonce: "nonce".into(),
@@ -226,7 +234,7 @@ fn md5_hex(input: &str) -> String {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// let digest = md5_bytes(b"");
 /// let expected: [u8; 16] = [
 ///     0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04,

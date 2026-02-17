@@ -19,7 +19,7 @@ static INIT: Once = Once::new();
 ///
 /// ```
 /// // Initialize the global logger (safe to call multiple times).
-/// my_crate::shared::logging::init();
+/// virtual_voicebot_backend::logging::init();
 /// log::info!("logger initialized");
 /// ```
 pub fn init() {

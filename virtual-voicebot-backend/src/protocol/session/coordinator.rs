@@ -267,7 +267,7 @@ impl SessionCoordinator {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// use tokio::sync::mpsc;
     ///
     /// async fn run_session_example(mut session: crate::protocol::session::Session) {

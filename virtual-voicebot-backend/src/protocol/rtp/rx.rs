@@ -72,6 +72,8 @@ impl RtpReceiver {
     /// # Examples
     ///
     /// ```
+    /// use virtual_voicebot_backend::protocol::rtp::rx::RawRtp;
+    ///
     /// // Create a RawRtp and pass it to an existing RtpReceiver instance.
     /// // The concrete construction of RtpReceiver is omitted for brevity.
     /// let raw = RawRtp { src: "127.0.0.1:5004".parse().unwrap(), dst_port: 5004, data: vec![/* RTP/RTCP bytes */] };

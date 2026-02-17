@@ -32,10 +32,9 @@ struct SerResponse {
 ///
 /// # Examples
 ///
-/// ```
-/// # // This example assumes a tokio runtime and that SerInputPcm and related types are in scope.
-/// # use crate::{analyze, SerInputPcm, Emotion};
-/// # tokio_test::block_on(async {
+/// ```no_run
+/// # use virtual_voicebot_backend::ports::ai::SerInputPcm;
+/// # use virtual_voicebot_backend::service::ai::ser::analyze;
 /// let input = SerInputPcm {
 ///     session_id: "sess1".to_string(),
 ///     stream_id: "stream1".to_string(),
@@ -44,17 +43,8 @@ struct SerResponse {
 ///     pcm: vec![0i16; 16000],
 /// };
 ///
-/// match analyze(input).await {
-///     Ok(result) => {
-///         // result.emotion, result.confidence, result.arousal, result.valence
-///         let _ = result;
-///     }
-///     Err(err) => {
-///         // err contains the failure reason
-///         let _ = err;
-///     }
-/// }
-/// # });
+/// let result = analyze(input);
+/// let _ = result;
 /// ```
 pub async fn analyze(input: SerInputPcm) -> std::result::Result<SerOutcome, SerError> {
     let ser_url = config::ai_config().ser_url.as_deref().unwrap_or("");

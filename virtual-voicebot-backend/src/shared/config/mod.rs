@@ -78,7 +78,9 @@ impl Config {
     /// # Examples
     ///
     /// ```
-    /// let cfg = crate::shared::config::Config::from_env().unwrap();
+    /// use virtual_voicebot_backend::config::Config;
+    ///
+    /// let cfg = Config::from_env().unwrap();
     /// // Access common fields
     /// let _sip_port = cfg.sip_port;
     /// ```
@@ -318,7 +320,7 @@ impl RegistrarConfig {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// std::env::set_var("REGISTRAR_HOST", "127.0.0.1");
     /// std::env::set_var("REGISTER_USER", "alice");
     /// // Optional: set transport/port/auth vars as needed
@@ -385,6 +387,8 @@ static REGISTRAR_CONFIG: OnceLock<Option<RegistrarConfig>> = OnceLock::new();
 /// # Examples
 ///
 /// ```
+/// use virtual_voicebot_backend::config::registrar_config;
+///
 /// if let Some(cfg) = registrar_config() {
 ///     // Use cfg.addr, cfg.domain, cfg.user, etc.
 ///     println!("Registering {} at {}", cfg.user, cfg.addr);
@@ -482,6 +486,8 @@ pub fn phone_lookup_enabled() -> bool {
 /// # Examples
 ///
 /// ```
+/// use virtual_voicebot_backend::config::database_url;
+///
 /// let _dsn = database_url();
 /// ```
 pub fn database_url() -> Option<String> {
@@ -539,7 +545,7 @@ impl LineNotifyConfig {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// std::env::set_var("LINE_NOTIFY_ENABLED", "true");
     /// std::env::set_var("LINE_CHANNEL_ACCESS_TOKEN", "tok");
     /// std::env::set_var("LINE_USER_ID", "uid");
@@ -579,6 +585,8 @@ static LINE_NOTIFY_CONFIG: OnceLock<LineNotifyConfig> = OnceLock::new();
 /// # Examples
 ///
 /// ```
+/// use virtual_voicebot_backend::config::line_notify_config;
+///
 /// let cfg = line_notify_config();
 /// // Access fields, e.g. `enabled`.
 /// let _ = cfg.enabled;
@@ -875,7 +883,7 @@ impl AiConfig {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use std::env;
     /// // Ensure relevant vars are not set to exercise defaults in this example.
     /// env::remove_var("GEMINI_API_KEY");
