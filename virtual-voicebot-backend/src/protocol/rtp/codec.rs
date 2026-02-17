@@ -72,8 +72,7 @@ fn linear16_to_mulaw(sample: i16) -> u8 {
         mask >>= 1;
     }
     let mantissa = ((pcm >> (exponent + 3)) & 0x0F) as u8;
-    let mu = !(sign | ((exponent as u8) << 4) | mantissa);
-    mu
+    !(sign | ((exponent as u8) << 4) | mantissa)
 }
 
 /// Converts an 8-bit A-law encoded value into a 16-bit linear PCM sample.

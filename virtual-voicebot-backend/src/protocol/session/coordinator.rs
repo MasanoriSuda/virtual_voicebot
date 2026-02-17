@@ -149,6 +149,7 @@ pub struct SessionCoordinator {
 }
 
 impl SessionCoordinator {
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         call_id: CallId,
         from_uri: String,
@@ -750,10 +751,9 @@ fn extract_e164_caller_number(value: &str) -> Option<String> {
 
 fn extract_user_from_to(value: &str) -> Option<String> {
     if let Ok(name_addr) = parse_name_addr(value) {
-        if name_addr.uri.scheme.eq_ignore_ascii_case("tel") {
-            if !name_addr.uri.host.trim().is_empty() {
-                return Some(name_addr.uri.host);
-            }
+        if name_addr.uri.scheme.eq_ignore_ascii_case("tel") && !name_addr.uri.host.trim().is_empty()
+        {
+            return Some(name_addr.uri.host);
         }
         if let Some(user) = name_addr.uri.user {
             return Some(user);
@@ -772,10 +772,8 @@ fn extract_user_from_to(value: &str) -> Option<String> {
     };
     let addr = addr.split(';').next().unwrap_or(addr).trim();
     let uri = parse_uri(addr).ok()?;
-    if uri.scheme.eq_ignore_ascii_case("tel") {
-        if !uri.host.trim().is_empty() {
-            return Some(uri.host);
-        }
+    if uri.scheme.eq_ignore_ascii_case("tel") && !uri.host.trim().is_empty() {
+        return Some(uri.host);
     }
     uri.user
 }

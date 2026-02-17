@@ -241,13 +241,13 @@ mod tests {
         let mut loud = 0x00;
         let mut quiet = 0xff;
         for v in 0u8..=255 {
-            if ((mulaw_to_linear16(v) as i32).abs() as u32) >= threshold {
+            if (mulaw_to_linear16(v) as i32).unsigned_abs() >= threshold {
                 loud = v;
                 break;
             }
         }
         for v in 0u8..=255 {
-            if ((mulaw_to_linear16(v) as i32).abs() as u32) < threshold {
+            if (mulaw_to_linear16(v) as i32).unsigned_abs() < threshold {
                 quiet = v;
                 break;
             }

@@ -35,7 +35,6 @@ pub enum RouteAction {
     },
     SystemInfo,
     Transfer {
-        query: String,
         person: String,
     },
 }
@@ -277,7 +276,6 @@ impl Router {
             },
             Intent::SystemInfo => RouteAction::SystemInfo,
             Intent::Transfer => RouteAction::Transfer {
-                query: result.query,
                 person: result.person.unwrap_or_default(),
             },
         }
@@ -350,5 +348,5 @@ impl Router {
 /// assert_eq!(normalize_person("　 Alice Bob "), "AliceBob");
 /// ```
 fn normalize_person(input: &str) -> String {
-    input.trim().replace('　', "").replace(' ', "")
+    input.trim().replace(['　', ' '], "")
 }

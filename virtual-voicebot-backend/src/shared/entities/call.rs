@@ -52,6 +52,26 @@ impl Call {
         &self.state
     }
 
+    pub fn id(&self) -> &CallId {
+        &self.id
+    }
+
+    pub fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+
+    pub fn from(&self) -> &Participant {
+        &self.from
+    }
+
+    pub fn to(&self) -> &Participant {
+        &self.to
+    }
+
+    pub fn recordings(&self) -> &[RecordingRef] {
+        &self.recordings
+    }
+
     pub fn transition(&mut self, to_state: CallState) -> Result<(), CallError> {
         match (&self.state, &to_state) {
             (CallState::Setup, CallState::Ringing) => Ok(()),

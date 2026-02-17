@@ -3,9 +3,7 @@ use crate::protocol::sip::builder::{
     response_final_with_sdp, response_options_from_request, response_provisional_from_request,
     response_simple_from_request,
 };
-use crate::protocol::sip::codec::{
-    parse_cseq_header, parse_sip_message, SipRequestBuilder, SipResponseBuilder,
-};
+use crate::protocol::sip::codec::{parse_cseq_header, parse_sip_message, SipRequestBuilder};
 use crate::protocol::sip::message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
 use crate::protocol::sip::register::RegisterClient;
 use crate::protocol::sip::transaction::{
@@ -188,7 +186,7 @@ fn header_has_token(value: Option<&str>, token: &str) -> bool {
         return false;
     };
     value
-        .split(|c| c == ',' || c == ' ' || c == '\t')
+        .split([',', ' ', '\t'])
         .filter(|part| !part.is_empty())
         .any(|part| part.eq_ignore_ascii_case(token))
 }
@@ -1833,6 +1831,7 @@ impl SipCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::sip::codec::SipResponseBuilder;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use tokio::sync::mpsc;

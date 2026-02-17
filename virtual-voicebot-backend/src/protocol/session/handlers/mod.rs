@@ -313,18 +313,16 @@ impl SessionCoordinator {
                             None
                         };
                         self.transition_to_voicebot_mode(intro_path).await;
-                    } else {
-                        if let Some(ivr_flow_id) = self.ivr_flow_id {
-                            if !self.enter_db_ivr_flow(ivr_flow_id).await {
-                                warn!(
-                                    "[session {}] failed to start DB IVR flow id={}, fallback to legacy IVR menu",
-                                    self.call_id, ivr_flow_id
-                                );
-                                self.start_legacy_ivr_menu().await;
-                            }
-                        } else {
+                    } else if let Some(ivr_flow_id) = self.ivr_flow_id {
+                        if !self.enter_db_ivr_flow(ivr_flow_id).await {
+                            warn!(
+                                "[session {}] failed to start DB IVR flow id={}, fallback to legacy IVR menu",
+                                self.call_id, ivr_flow_id
+                            );
                             self.start_legacy_ivr_menu().await;
                         }
+                    } else {
+                        self.start_legacy_ivr_menu().await;
                     }
                 }
 
@@ -428,14 +426,16 @@ impl SessionCoordinator {
                 self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
-                    .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                    .send((self.call_id.clone(), SessionOut::RtpStopTx))
+                    .await;
                 self.send_call_ended(EndReason::Bye);
             }
             (_, SessionControlIn::B2buaRinging) => {
                 if self.outbound_mode && !self.outbound_sent_180 && !self.outbound_sent_183 {
                     let _ = self
                         .session_out_tx
-                        .send((self.call_id.clone(), SessionOut::SipSend180));
+                        .send((self.call_id.clone(), SessionOut::SipSend180))
+                        .await;
                     self.outbound_sent_180 = true;
                 }
             }
@@ -451,7 +451,8 @@ impl SessionCoordinator {
                     if let Some(answer) = self.local_sdp.clone() {
                         let _ = self
                             .session_out_tx
-                            .send((self.call_id.clone(), SessionOut::SipSend183 { answer }));
+                            .send((self.call_id.clone(), SessionOut::SipSend183 { answer }))
+                            .await;
                         self.outbound_sent_183 = true;
                     }
                 }
@@ -660,10 +661,12 @@ impl SessionCoordinator {
                 self.send_ingest("ended").await;
                 let _ = self
                     .session_out_tx
-                    .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                    .send((self.call_id.clone(), SessionOut::RtpStopTx))
+                    .await;
                 let _ = self
                     .session_out_tx
-                    .send((self.call_id.clone(), SessionOut::AppSessionTimeout));
+                    .send((self.call_id.clone(), SessionOut::AppSessionTimeout))
+                    .await;
                 self.send_call_ended(EndReason::Timeout);
             }
             (_, SessionControlIn::Abort(e)) => {
@@ -681,7 +684,8 @@ impl SessionCoordinator {
                 self.rtp.stop(self.call_id.as_str());
                 let _ = self
                     .session_out_tx
-                    .send((self.call_id.clone(), SessionOut::RtpStopTx));
+                    .send((self.call_id.clone(), SessionOut::RtpStopTx))
+                    .await;
                 self.send_call_ended(EndReason::Error);
             }
             _ => { /* それ以外は無視 or ログ */ }
@@ -1877,7 +1881,7 @@ mod tests {
         let mut saw_bye = false;
         while let Ok((_call_id, out)) = session_out_rx.try_recv() {
             match out {
-                SessionOut::SipSendError { code, .. } if code == 503 => saw_error = true,
+                SessionOut::SipSendError { code: 503, .. } => saw_error = true,
                 SessionOut::SipSendBye => saw_bye = true,
                 _ => {}
             }

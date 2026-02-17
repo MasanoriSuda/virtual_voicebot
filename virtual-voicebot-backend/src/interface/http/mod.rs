@@ -375,7 +375,7 @@ async fn get_sync_status_json(pool: &PgPool) -> Result<String, std::io::Error> {
             "sync status query timeout: last_updated_at",
         )
     })?
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    .map_err(std::io::Error::other)?;
 
     let rule_count: i64 = tokio::time::timeout(
         config::timeouts().recording_io,
@@ -393,7 +393,7 @@ async fn get_sync_status_json(pool: &PgPool) -> Result<String, std::io::Error> {
             "sync status query timeout: rule_count",
         )
     })?
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    .map_err(std::io::Error::other)?;
 
     let elapsed_minutes = last_updated_at.map(|ts| {
         let elapsed = (Utc::now() - ts).num_minutes();
@@ -413,7 +413,7 @@ async fn get_sync_status_json(pool: &PgPool) -> Result<String, std::io::Error> {
         },
     };
 
-    serde_json::to_string(&response).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    serde_json::to_string(&response).map_err(std::io::Error::other)
 }
 
 async fn write_json_response(
@@ -445,17 +445,15 @@ async fn write_sync_error_response(
     let response = SyncErrorResponse {
         error: SyncErrorBody { code, message },
     };
-    let json = serde_json::to_vec(&response)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let json = serde_json::to_vec(&response).map_err(std::io::Error::other)?;
     write_json_response(socket, status, reason, &json).await
 }
 
 fn sanitize_path(p: &str) -> PathBuf {
     let mut clean = PathBuf::new();
     for comp in Path::new(p).components() {
-        match comp {
-            Component::Normal(c) => clean.push(c),
-            _ => {}
+        if let Component::Normal(c) = comp {
+            clean.push(c);
         }
     }
     clean

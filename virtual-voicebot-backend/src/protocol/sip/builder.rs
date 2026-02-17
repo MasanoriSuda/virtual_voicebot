@@ -149,6 +149,7 @@ pub fn build_request(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_register_request(
     request_uri: impl Into<String>,
     via: impl Into<String>,
@@ -376,6 +377,7 @@ impl fmt::Display for SipResponse {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crate::shared::ports::sip::Sdp;

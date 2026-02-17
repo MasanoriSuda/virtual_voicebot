@@ -254,3 +254,9 @@ impl ActionExecutor {
         self.execute_vr(action, call_id, session).await
     }
 }
+
+impl Default for ActionExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
