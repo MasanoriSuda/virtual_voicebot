@@ -20,7 +20,7 @@ interface CallDetailViewProps {
 export function CallDetailView({ call }: CallDetailViewProps) {
   const router = useRouter()
   const { utterances, summary } = useCallStream(call.id, call.utterances, {
-    enabled: call.status === "active",
+    enabled: call.status === "in_call",
   })
   const scrollRef = useRef<HTMLDivElement>(null)
   const utteranceRefs = useRef<Map<number, HTMLDivElement>>(new Map())
@@ -77,21 +77,23 @@ export function CallDetailView({ call }: CallDetailViewProps) {
 
   const getStatusBadge = (status: CallDetail["status"]) => {
     const variants = {
-      active: "default",
-      completed: "secondary",
-      failed: "destructive",
+      ringing: "default",
+      in_call: "default",
+      ended: "secondary",
+      error: "destructive",
     } as const
 
     const labels = {
-      active: "通話中",
-      completed: "完了",
-      failed: "失敗",
+      ringing: "呼出中",
+      in_call: "通話中",
+      ended: "完了",
+      error: "エラー",
     }
 
     return <Badge variant={variants[status]}>{labels[status]}</Badge>
   }
 
-  const displaySummary = summary || call.summary
+  const displaySummary = summary || call.summary || "準備中"
   const hasRecording = !!call.recordingUrl
 
   return (
@@ -129,7 +131,7 @@ export function CallDetailView({ call }: CallDetailViewProps) {
             <div className="space-y-3">
               <AudioPlayer
                 recordingUrl={call.recordingUrl!}
-                durationSec={call.durationSec}
+                durationSec={call.durationSec ?? call.duration}
                 onTimeUpdate={setCurrentTime}
                 onPlayingChange={setIsPlaying}
               />
@@ -145,7 +147,7 @@ export function CallDetailView({ call }: CallDetailViewProps) {
             <Alert>
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>
-                {call.status === "active" ? "通話録音は終了後に利用可能になります" : "音声は準備中です"}
+                {call.status === "in_call" ? "通話録音は終了後に利用可能になります" : "録音準備中です"}
               </AlertDescription>
             </Alert>
           )}

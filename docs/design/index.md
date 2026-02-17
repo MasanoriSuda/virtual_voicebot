@@ -21,7 +21,7 @@
 
 - 各コンポーネント固有の設計書は各サブディレクトリに配置
   - Backend: [virtual-voicebot-backend/docs/design/](../../virtual-voicebot-backend/docs/design/index.md)
-  - Frontend: 本ディレクトリ（v0 プロトタイプベース）
+  - Frontend: [virtual-voicebot-frontend/docs/design/](../../virtual-voicebot-frontend/docs/design/index.md)
 
 ---
 
@@ -30,8 +30,7 @@
 ```
 docs/design/
 ├── index.md           # 本ファイル
-├── basic/             # 基本設計書（BD）
-│   └── BD-001_frontend.md
+├── basic/             # 基本設計書（BD）※ Frontend は移動済み
 └── detail/            # 詳細設計書（DD）※将来
 ```
 
@@ -41,7 +40,7 @@ docs/design/
 
 | ID | 名称 | ステータス | 対応RD | 概要 |
 |----|------|----------|--------|------|
-| [BD-001](basic/BD-001_frontend.md) | Frontend 管理画面 | **Draft** | RD-005 | コンポーネント構成・データフロー・API設計 |
+| [BD-001](../../virtual-voicebot-frontend/docs/design/basic/BD-001_frontend.md) | Frontend 管理画面 | **Draft** | RD-005 | コンポーネント構成・データフロー・API設計 — **移動済み** |
 
 ---
 
@@ -58,7 +57,7 @@ docs/design/
 | コンポーネント | リンク | 概要 |
 |---------------|--------|------|
 | Backend | [design/index.md](../../virtual-voicebot-backend/docs/design/index.md) | SIP/RTP/Session/AI/Recording 等 |
-| Frontend | 本ディレクトリ | 管理画面（Dashboard・発着信履歴等） |
+| Frontend | [design/index.md](../../virtual-voicebot-frontend/docs/design/index.md) | 管理画面（Dashboard・発着信履歴等） |
 
 ---
 

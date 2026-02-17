@@ -7,8 +7,8 @@ use reqwest::StatusCode;
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 
-use virtual_voicebot_backend::http;
-use virtual_voicebot_backend::logging;
+use virtual_voicebot_backend::interface::http;
+use virtual_voicebot_backend::shared::logging;
 
 struct ServerGuard(tokio::task::JoinHandle<()>);
 
@@ -44,7 +44,7 @@ async fn recording_http_e2e() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
-    let handle = http::spawn_recording_server_with_listener(listener, base_dir).await;
+    let handle = http::spawn_recording_server_with_listener(listener, base_dir, None).await;
     let _guard = ServerGuard(handle);
 
     let base_url = format!("http://{}", addr);
@@ -146,6 +146,28 @@ async fn recording_http_e2e() -> Result<(), Box<dyn std::error::Error>> {
     assert!(logs.contains("path=/recordings/THIS_CALL_ID_DOES_NOT_EXIST/mixed.wav"));
     assert!(logs.contains("range=bytes=0-1023"));
     assert!(logs.contains("range=bytes=999999999-1000000000"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn sync_status_without_db_returns_503() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempdir()?;
+    let base_dir = temp.path().join("storage/recordings");
+    fs::create_dir_all(&base_dir)?;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let handle = http::spawn_recording_server_with_listener(listener, base_dir, None).await;
+    let _guard = ServerGuard(handle);
+
+    let url = format!("http://{}/api/sync/status", addr);
+    let res = reqwest::get(url).await?;
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let body: serde_json::Value = res.json().await?;
+    assert_eq!(body["error"]["code"], "SERVICE_UNAVAILABLE");
+    assert_eq!(body["error"]["message"], "Database not available");
 
     Ok(())
 }

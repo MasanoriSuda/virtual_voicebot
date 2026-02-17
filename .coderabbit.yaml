@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "ja-JP"
+
+reviews:
+  review_status: true        # この「Review skipped」等のステータスメッセージを出す/出さない
+  auto_review:
+    enabled: true
+    base_branches:
+      - ".*"                 # ← これが重要：デフォルト以外の base ブランチも対象にする
+    drafts: false            # ドラフトPRはレビューしない（必要なら true）

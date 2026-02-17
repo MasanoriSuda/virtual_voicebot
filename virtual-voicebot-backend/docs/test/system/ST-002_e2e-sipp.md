@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: SIPp E2Eテスト -->
 # sipp を用いた E2E スモークテスト
 
 ## 前提

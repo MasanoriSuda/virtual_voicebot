@@ -1,4 +1,5 @@
-# SIP モジュール詳細設計 (`src/sip`)
+<!-- SOURCE_OF_TRUTH: SIPモジュール詳細設計 -->
+# SIP モジュール詳細設計 (`src/protocol/sip`)
 
 ## 1. 目的・スコープ
 
@@ -9,16 +10,17 @@
   - UAS としての INVITE/ACK/BYE(＋その他リクエスト)の処理
   - RFC 3262 (100rel/PRACK)、RFC 3311 (UPDATE)、RFC 4028 (Session Timers) の **プロトコル部分**
 - 非スコープ:
-  - ダイアログ単位の業務ロジック（通話をどう扱うか）は `session` に委譲
+  - ダイアログ単位の業務ロジック（通話をどう扱うか）は `protocol/session` に委譲
   - AI 対話ロジック、RTP、ASR/LLM/TTS は扱わない
 
 ## 2. 依存関係
 
 - 依存するモジュール:
-  - `transport::packet` : 生の SIP テキスト送受信
-  - `session` : SIP イベントを渡す先（通話セッション管理）
+  - `protocol::transport::packet` : 生の SIP テキスト送受信
+  - `protocol::session` : SIP イベントを渡す先（通話セッション管理）
+  - `shared::entities` : 共通エンティティ（CallId等）
 - 依存されるモジュール:
-  - `session` からレスポンス/リクエスト送信指示を受ける
+  - `protocol::session` からレスポンス/リクエスト送信指示を受ける
 
 ### 優先ルール
 
@@ -89,9 +91,9 @@
 | Completed | 再送リクエスト | Completed | 最終応答を再送 |
 | Completed | Timer J 発火 | Terminated | 終了 |
 
-## 5. session モジュールとのインタフェース
+## 5. protocol/session モジュールとのインタフェース
 
-### 5.1 sip → session（入力イベント）
+### 5.1 protocol/sip → protocol/session（入力イベント）
 
 - `IncomingInvite`
   - フィールド例: Call-ID, From/To, CSeq, SDP, 送信元アドレス 等
@@ -104,7 +106,7 @@
 
 ※ここでは「イベントの名前と意味」だけを書き、具体的な型定義はコード側に任せる。
 
-### 5.2 session → sip（出力アクション）
+### 5.2 protocol/session → protocol/sip（出力アクション）
 
 - `SendProvisionalResponse`
   - 100/180/183 などを送る指示
@@ -129,9 +131,9 @@
   - Timer G/H: ACK 受信で停止。
   - Timer I/J: 発火で Terminated へ遷移し停止。
 - 発火時の通知:
-  - Timer H/J 発火時に `TransactionTimeout(call_id, tx_type, method)` を `sip → session` へ通知（セッション側で通話維持/終了を判断）。
+  - Timer H/J 発火時に `TransactionTimeout(call_id, tx_type, method)` を `protocol/sip → protocol/session` へ通知（セッション側で通話維持/終了を判断）。
 
-### 6.2 送信キュー I/F（sip → transport）
+### 6.2 送信キュー I/F（protocol/sip → protocol/transport）
 - 目的: トランザクションロジックは「構造化メッセージ＋宛先」をキューへ渡すだけとし、テキスト生成と送信は transport に委譲する。
 - キューに載せる情報案:
   - 宛先: 受信元アドレスを逆向きに使うか、明示的な送信先 SocketAddr

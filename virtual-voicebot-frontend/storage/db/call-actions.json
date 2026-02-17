@@ -1,0 +1,32 @@
+{
+  "rules": [
+    {
+      "id": "baa2a9fd-85a8-41f4-8efb-d421bb9dbe22",
+      "name": "ルール 1",
+      "callerGroupId": "4fe4a030-aedd-41d4-9e55-1e85973b1b78",
+      "actionType": "deny",
+      "actionConfig": {
+        "actionCode": "AN",
+        "announcementId": "55451734-e4c9-424e-ac3c-34c8a9691300"
+      },
+      "isActive": true,
+      "createdAt": "2026-02-16T11:04:51.991Z",
+      "updatedAt": "2026-02-17T00:25:20.421Z"
+    }
+  ],
+  "anonymousAction": {
+    "actionType": "deny",
+    "actionConfig": {
+      "actionCode": "AN",
+      "announcementId": "dca2a704-23c6-45fe-a16a-2c059bab0e45"
+    }
+  },
+  "defaultAction": {
+    "actionType": "allow",
+    "actionConfig": {
+      "actionCode": "IV",
+      "ivrFlowId": "8f2daa6a-4c96-472f-8c1f-0276ed102e7a",
+      "includeAnnouncement": false
+    }
+  }
+}

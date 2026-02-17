@@ -107,7 +107,7 @@ transport → sip → session → app（NG）
 
 ### 3.3 新規モジュール追加時
 
-1. [design.md](design.md) のレイヤ図に位置を確認
+1. [BD-001_architecture.md](design/basic/BD-001_architecture.md) のレイヤ図に位置を確認
 2. 依存方向ルールを遵守
 3. イベント定義を追加（該当する正本ファイルに）
 4. ユニットテストを追加
@@ -206,15 +206,17 @@ fn test_parse_invite_empty_body() { ... }  // 境界値
 
 ### 6.3 主要正本一覧
 
-| 正本 | 内容 |
-|------|------|
-| [design.md](design.md) | アーキテクチャ設計 |
-| [sip.md](sip.md) | SIP 詳細設計 |
-| [rtp.md](rtp.md) | RTP 詳細設計 |
-| [session.md](session.md) | Session 詳細設計 |
-| [app.md](app.md) | App 層 I/F |
-| [ai.md](ai.md) | AI 連携 I/F |
-| [tests.md](tests.md) | テスト計画・AC |
+| 正本 | 内容 | ID |
+|------|------|-----|
+| [BD-001_architecture.md](design/basic/BD-001_architecture.md) | システムアーキテクチャ | BD-001 |
+| [BD-002_app-layer.md](design/basic/BD-002_app-layer.md) | App 層設計 | BD-002 |
+| [BD-004_call-routing-db.md](design/basic/BD-004_call-routing-db.md) | 着信ルーティング DB | BD-004 |
+| [DD-003_sip.md](design/detail/DD-003_sip.md) | SIP モジュール | DD-003 |
+| [DD-004_rtp.md](design/detail/DD-004_rtp.md) | RTP モジュール | DD-004 |
+| [DD-005_session.md](design/detail/DD-005_session.md) | Session モジュール | DD-005 |
+| [DD-006_ai.md](design/detail/DD-006_ai.md) | AI 連携 | DD-006 |
+| [DD-007_recording.md](design/detail/DD-007_recording.md) | 録音 | DD-007 |
+| [plan.md](test/plan.md) | テスト計画書 | - |
 
 ---
 
@@ -356,7 +358,7 @@ export RUST_LOG=info
 | ドキュメント | 内容 |
 |-------------|------|
 | [../AGENTS.md](../AGENTS.md) | AI/Codex 向け詳細指示 |
-| [design.md](design.md) | アーキテクチャ設計 |
-| [tests.md](tests.md) | テスト計画・AC |
+| [BD-001_architecture.md](design/basic/BD-001_architecture.md) | システムアーキテクチャ（正本） |
+| [test/plan.md](test/plan.md) | テスト計画書（正本） |
 | [DOCS_POLICY.md](../../docs/DOCS_POLICY.md) | ドキュメントポリシー |
-| [STYLE.md](../../STYLE.md) | プロジェクト共通スタイル |
+| [DOCS_INDEX.md](../../docs/DOCS_INDEX.md) | ドキュメント一覧 |

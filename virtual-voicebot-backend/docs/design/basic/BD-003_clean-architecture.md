@@ -8,8 +8,11 @@
 | ID | BD-003 |
 | ステータス | Approved |
 | 作成日 | 2026-01-31 |
-| 関連Issue | #52, #65 |
+| 改訂日 | 2026-02-06 |
+| バージョン | 3.0 |
+| 関連Issue | #52, #65, #95, #108 |
 | 関連RD | RD-001 |
+| 付録 | [依存関係図](BD-003_dependency-diagram.md) |
 
 ---
 
@@ -28,27 +31,27 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Frameworks & Drivers                         │
-│  (HTTP Server, SIP Stack, RTP Stack, Database, External APIs)   │
-│  - axum, tokio, PostgreSQL, OpenAI/Google/AWS APIs             │
+│                         Interface                                │
+│  (HTTP Server, Health Check, Monitoring, External Sync)         │
+│  - src/interface/ (http, health, monitoring, sync)             │
 └─────────────────────────────────────────────────────────────────┘
                               ↓ depends on
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Interface Adapters                           │
-│  (Controllers, Gateways, Presenters)                            │
-│  - src/adapters/ (ai/, db/, http/, notification/)              │
+│                          Service                                 │
+│  (Application Business Rules / Use Cases)                       │
+│  - src/service/ (ai, call_control, recording)                  │
 └─────────────────────────────────────────────────────────────────┘
                               ↓ depends on
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Application Business Rules                   │
-│  (Use Cases / Application Services)                             │
-│  - src/app/, src/session/ (Coordinator層)                       │
+│                         Protocol                                 │
+│  (SIP, RTP, Session, Transport)                                 │
+│  - src/protocol/ (sip, rtp, session, transport)                │
 └─────────────────────────────────────────────────────────────────┘
                               ↓ depends on
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Enterprise Business Rules                    │
-│  (Entities / Domain Models)                                     │
-│  - src/entities/ (Call, Recording, Participant, etc.)          │
+│                          Shared                                  │
+│  (Entities, Ports, Config, Error, Codec, Media)                 │
+│  - src/shared/ (entities, ports, config, error, codec, media)  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -64,11 +67,13 @@
 
 ```rust
 // ✅ 正しい依存方向
-use crate::entities::Call;        // Use Case → Entity
-use crate::ports::AsrPort;        // Adapter → Port
+use crate::shared::entities::Call;        // Service → Entity (Shared)
+use crate::shared::ports::ai::AsrPort;    // Service → Port (Shared)
+use crate::service::call_control::CallControlService;  // Interface → Service
 
 // ❌ 禁止: 内側から外側への依存
-// use crate::adapters::ai::OpenAiClient;  // Entity 内でこれは禁止
+// use crate::service::ai::AiService;  // Protocol 内でこれは禁止
+// use crate::protocol::sip::SipEngine;  // Shared 内でこれは禁止
 ```
 
 ### 2.3 依存性逆転の実現（Dependency Inversion）
@@ -76,18 +81,18 @@ use crate::ports::AsrPort;        // Adapter → Port
 外側のレイヤーへの依存は **Port（トレイト）** を介して逆転させる。
 
 ```rust
-// src/ports/asr.rs - インターフェース定義（内側）
+// src/shared/ports/ai.rs - インターフェース定義（Shared層）
 pub trait AsrPort: Send + Sync {
     fn transcribe(&self, audio: AudioChunk) -> Result<String, AsrError>;
 }
 
-// src/adapters/ai/openai_asr.rs - 実装（外側）
+// src/service/ai/openai_asr.rs - 実装（Service層）
 pub struct OpenAiAsr { /* ... */ }
 impl AsrPort for OpenAiAsr {
     fn transcribe(&self, audio: AudioChunk) -> Result<String, AsrError> { /* ... */ }
 }
 
-// src/app/dialog.rs - 使用（中間）
+// src/service/call_control/dialog.rs - 使用（Service層）
 pub struct DialogService<A: AsrPort> {
     asr: A,  // 具体型ではなくトレイトに依存
 }
@@ -101,12 +106,12 @@ pub struct DialogService<A: AsrPort> {
 
 | 概念 | 適用 | 配置先 |
 |------|------|--------|
-| **Entity** | Call, Recording | `src/entities/` |
-| **Value Object** | CallId, SessionId, Participant | `src/entities/` |
-| **Aggregate** | Call（ルート）+ Recording | `src/entities/` |
-| **Domain Service** | CallStateTransition | `src/domain/services/` |
-| **Repository** | CallRepository, RecordingRepository | `src/ports/` (trait) + `src/adapters/db/` (impl) |
-| **Domain Event** | CallStarted, CallEnded, RecordingCompleted | `src/domain/events/` |
+| **Entity** | Call, Recording | `src/shared/entities/` |
+| **Value Object** | CallId, SessionId, Participant | `src/shared/entities/` |
+| **Aggregate** | Call（ルート）+ Recording | `src/shared/entities/` |
+| **Domain Service** | CallStateTransition | `src/service/call_control/` |
+| **Repository** | CallRepository, RecordingRepository | `src/shared/ports/` (trait) + `src/service/*/` (impl) |
+| **Domain Event** | CallStarted, CallEnded, RecordingCompleted | `src/shared/events/` |
 
 **Aggregate Root の原則**:
 - Aggregate Root を通じてのみ内部 Entity を操作する
@@ -203,18 +208,18 @@ impl CallStateHandler for SetupState {
 データアクセスは Repository パターンで抽象化する。
 
 ```rust
-// src/ports/repository.rs - インターフェース
+// src/shared/ports/repository.rs - インターフェース
 pub trait CallRepository: Send + Sync {
     fn save(&self, call: &Call) -> Result<(), RepositoryError>;
     fn find_by_id(&self, id: &CallId) -> Result<Option<Call>, RepositoryError>;
     fn find_active(&self) -> Result<Vec<Call>, RepositoryError>;
 }
 
-// src/adapters/db/postgres_call_repository.rs - 実装
+// src/service/call_control/postgres_call_repository.rs - 実装
 pub struct PostgresCallRepository { pool: PgPool }
 impl CallRepository for PostgresCallRepository { /* ... */ }
 
-// src/adapters/db/in_memory_call_repository.rs - テスト用
+// src/shared/test_support/in_memory_call_repository.rs - テスト用
 pub struct InMemoryCallRepository { calls: RwLock<HashMap<CallId, Call>> }
 impl CallRepository for InMemoryCallRepository { /* ... */ }
 ```
@@ -295,55 +300,146 @@ pub trait TtsPort: Send + Sync {
 
 ## 6. ディレクトリ構造
 
-```
+### 6.1 現行構造（v3.0: 3層アーキテクチャ）
+
+```text
 src/
-├── main.rs                      # エントリポイント（DI コンテナ構築）
+├── main.rs                      # エントリポイント（Composition Root）
 │
-├── entities/                    # Enterprise Business Rules (Entity層)
-│   ├── mod.rs
-│   ├── call.rs                  # Call エンティティ（Aggregate Root）
-│   ├── recording.rs             # Recording エンティティ
-│   ├── participant.rs           # Participant 値オブジェクト
-│   └── identifiers.rs           # CallId, SessionId 等
+├── interface/                   # Interface層（外部インターフェース）
+│   ├── http/                    # HTTP API サーバー
+│   │   ├── mod.rs
+│   │   └── recordings.rs        # 録音配信エンドポイント
+│   ├── health/                  # ヘルスチェック
+│   │   └── mod.rs
+│   ├── monitoring/              # メトリクス・トレース
+│   │   └── mod.rs
+│   └── sync/                    # 外部システム同期
+│       └── mod.rs
 │
-├── domain/                      # Domain Services & Events
-│   ├── services/
-│   ├── events/
-│   └── factories/
+├── service/                     # Service層（ビジネスロジック）
+│   ├── ai/                      # AI サービス
+│   │   ├── mod.rs
+│   │   ├── asr.rs               # AsrPort 実装
+│   │   ├── llm.rs               # LlmPort 実装
+│   │   ├── tts.rs               # TtsPort 実装
+│   │   └── intent.rs            # IntentPort 実装
+│   ├── call_control/            # 通話制御サービス（旧 app/）
+│   │   ├── mod.rs
+│   │   ├── dialog.rs            # 対話制御
+│   │   └── router.rs            # イベントルーティング
+│   └── recording/               # 録音サービス
+│       ├── mod.rs
+│       └── storage.rs           # StoragePort 実装
 │
-├── ports/                       # Port 定義（インターフェース）
-│   ├── asr.rs, llm.rs, tts.rs   # AI ポート
-│   ├── repository.rs            # リポジトリポート
-│   └── notification.rs          # 通知ポート
-│
-├── app/                         # Application Business Rules (Use Case層)
-│   ├── dialog_service.rs
-│   ├── recording_service.rs
-│   └── notification_service.rs
-│
-├── session/                     # Session 管理（Application層の一部）
-│   ├── state_machine.rs         # 純粋な状態遷移
-│   ├── session_coordinator.rs   # I/O コーディネータ
-│   └── types.rs
-│
-├── adapters/                    # Interface Adapters
-│   ├── ai/                      # AI サービス実装
-│   ├── db/                      # DB 実装
-│   ├── http/                    # HTTP 実装
-│   └── notification/            # 通知実装
-│
-├── infrastructure/              # Frameworks & Drivers
+├── protocol/                    # Protocol層（プロトコル処理）
 │   ├── sip/                     # SIP プロトコルスタック
+│   │   ├── mod.rs
+│   │   ├── core.rs
+│   │   ├── builder.rs
+│   │   └── transaction.rs
 │   ├── rtp/                     # RTP プロトコルスタック
-│   ├── transport/               # ネットワーク I/O
-│   └── config/                  # 設定管理
+│   │   ├── mod.rs
+│   │   ├── tx.rs
+│   │   ├── rx.rs
+│   │   ├── codec.rs
+│   │   └── dtmf.rs
+│   ├── session/                 # セッション管理
+│   │   ├── mod.rs
+│   │   ├── coordinator.rs       # I/O コーディネータ
+│   │   ├── state_machine.rs     # 状態マシン
+│   │   ├── handlers/            # イベントハンドラ
+│   │   │   ├── sip_handler.rs
+│   │   │   ├── rtp_handler.rs
+│   │   │   └── timer_handler.rs
+│   │   ├── services/            # セッションサービス
+│   │   │   ├── ivr_service.rs
+│   │   │   ├── b2bua_service.rs
+│   │   │   └── playback_service.rs
+│   │   ├── types.rs
+│   │   └── registry.rs          # SessionRegistry
+│   └── transport/               # ネットワーク I/O
+│       ├── mod.rs
+│       ├── packet.rs
+│       └── tls.rs
 │
-├── error/                       # エラー型定義
-│   ├── domain.rs
-│   ├── ai.rs
-│   └── repository.rs
-│
-└── compat/                      # 後方互換（N-1 維持）
+└── shared/                      # Shared層（横断的関心事）
+    ├── entities/                # ドメインエンティティ
+    │   ├── mod.rs
+    │   ├── call.rs              # Call（Aggregate Root）
+    │   ├── recording.rs         # Recording
+    │   ├── participant.rs       # Participant
+    │   └── identifiers.rs       # CallId, SessionId
+    ├── ports/                   # ポート定義（トレイト）
+    │   ├── mod.rs
+    │   ├── ai.rs                # AsrPort, LlmPort, TtsPort, IntentPort
+    │   ├── ingest.rs            # IngestPort
+    │   ├── storage.rs           # StoragePort
+    │   └── notification.rs      # NotificationPort
+    ├── config/                  # 設定
+    │   └── mod.rs
+    ├── error/                   # エラー型定義
+    │   ├── mod.rs
+    │   ├── ai.rs
+    │   ├── domain.rs
+    │   └── protocol.rs
+    ├── codec/                   # コーデック（PCMU等）
+    │   └── mod.rs
+    ├── media/                   # メディア処理（録音生成等）
+    │   └── mod.rs
+    └── test_support/            # テスト支援
+        └── mod.rs
+```
+
+### 6.2 モジュール層対応表
+
+| レイヤー | モジュール | 許可される依存先 | 禁止される依存先 |
+|----------|-----------|-----------------|-----------------|
+| **Shared** | shared/* (entities, ports, config, error, codec, media, test_support) | 同一 Shared 内のみ | Protocol, Service, Interface |
+| **Protocol** | protocol/* (sip, rtp, session, transport) | Shared | Service, Interface |
+| **Service** | service/* (ai, call_control, recording) | Protocol, Shared | Interface |
+| **Interface** | interface/* (http, health, monitoring, sync) | Service, Protocol, Shared | なし（最上位） |
+| **Entry** | main.rs | すべて | - |
+
+### 6.3 禁止依存の具体例
+
+```rust
+// ❌ 禁止: Protocol → Service
+// src/protocol/session/coordinator.rs で以下は禁止
+use crate::service::call_control::CallControlService;  // NG
+
+// ✅ 正しい: Protocol → Shared (ports)
+use crate::shared::ports::ingest::IngestPort;  // OK
+
+// ❌ 禁止: Protocol → Interface
+// src/protocol/sip/core.rs で以下は禁止
+use crate::interface::http::HttpServer;  // NG
+
+// ✅ 正しい: Protocol → Shared
+use crate::shared::entities::CallId;  // OK
+
+// ❌ 禁止: Shared → Protocol
+// src/shared/entities/call.rs で以下は禁止
+use crate::protocol::sip::SipEngine;  // NG
+
+// ✅ 正しい: Shared は Shared 内のみ参照
+use crate::shared::entities::Recording;  // OK
+
+// ❌ 禁止: Shared → Service
+// src/shared/ports/ai.rs で以下は禁止
+use crate::service::ai::OpenAiAsr;  // NG（Port 定義が実装に依存してはならない）
+
+// ✅ 正しい: Service → Shared (ports)
+// src/service/ai/openai_asr.rs
+use crate::shared::ports::ai::AsrPort;  // OK（Service が Port を実装）
+
+// ❌ 禁止: Service → Interface
+// src/service/call_control/dialog.rs で以下は禁止
+use crate::interface::http::HttpServer;  // NG
+
+// ✅ 正しい: Interface → Service
+// src/interface/http/mod.rs
+use crate::service::call_control::CallControlService;  // OK
 ```
 
 ---
@@ -382,6 +478,7 @@ src/
 | [BD-001](BD-001_architecture.md) | システムアーキテクチャ（モジュール構成） |
 | [BD-002](BD-002_app-layer.md) | App層設計 |
 | [STEER-085](../steering/STEER-085_clean-architecture.md) | クリーンアーキテクチャ移行ステアリング |
+| [STEER-108](../steering/STEER-108_sip-core-engine-refactor.md) | 3層アーキテクチャへのリファクタリング |
 | [CONVENTIONS.md](../../../CONVENTIONS.md) | 開発規約（本原則のサマリ） |
 
 ---
@@ -391,4 +488,7 @@ src/
 | 日付 | バージョン | 変更内容 | 作成者 |
 |------|-----------|---------|--------|
 | 2026-01-31 | 1.0 | 初版作成（STEER-085 §5 より昇格） | @MasanoriSuda + Claude Code |
+| 2026-02-03 | 2.0 | §6 ディレクトリ構造を現行実装に合わせて改訂、モジュール層対応表追加、禁止依存の具体例追加、依存関係図付録追加（#95 対応） | Claude Code |
+| 2026-02-05 | 2.1 | §6.2 L3→session（コールバック）許可を撤廃、L3→ports のみに変更。§6.3 に rtp/sip→session 禁止例を追加（#95 Phase 5 対応） | Claude Code |
+| 2026-02-06 | 3.0 | 3層アーキテクチャに全面改訂（STEER-108）：Interface/Service/Protocol/Shared 構造に再編、全セクションのimport例とディレクトリ構造を更新 | Claude Code |
 

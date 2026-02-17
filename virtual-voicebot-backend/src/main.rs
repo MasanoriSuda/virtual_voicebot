@@ -1,34 +1,36 @@
-mod ai;
-mod app;
-mod compat;
-mod config;
-mod db;
-mod entities;
-mod error;
-mod http;
-mod logging;
-mod media;
-mod ports;
-mod recording;
-mod rtp;
-mod session;
-mod sip;
-mod transport;
-
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::{mpsc, Mutex};
 
-use crate::app::{AppNotificationPort, LineAdapter, NoopNotification};
-use crate::db::{NoopPhoneLookup, PhoneLookupPort, TsurugiAdapter};
-use crate::rtp::tx::RtpTxHandle;
-use crate::session::{
-    spawn_session, MediaConfig, SessionIn, SessionMap, SessionOut, SessionRegistry,
+use virtual_voicebot_backend::interface::db::{PostgresAdapter, RoutingRepoImpl};
+use virtual_voicebot_backend::interface::http;
+use virtual_voicebot_backend::interface::notification::{LineAdapter, NoopNotification};
+use virtual_voicebot_backend::protocol::rtp::tx::RtpTxHandle;
+use virtual_voicebot_backend::protocol::session::types::CallId;
+use virtual_voicebot_backend::protocol::session::{
+    spawn_session, MediaConfig, SessionControlIn, SessionOut, SessionRegistry,
 };
-use crate::sip::{b2bua_bridge, SipConfig, SipCore, SipEvent};
-use crate::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendRequest};
+use virtual_voicebot_backend::protocol::sip::{
+    b2bua_bridge, SipCommand, SipConfig, SipCore, SipEvent,
+};
+use virtual_voicebot_backend::protocol::transport::{
+    run_packet_loop, RtpPortMap, SipInput, TransportSendRequest,
+};
+use virtual_voicebot_backend::service::ai;
+use virtual_voicebot_backend::service::call_control as app;
+use virtual_voicebot_backend::service::call_control::AppNotificationPort;
+use virtual_voicebot_backend::service::recording;
+use virtual_voicebot_backend::shared::ports::call_log_port::{CallLogPort, NoopCallLogPort};
+use virtual_voicebot_backend::shared::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
+use virtual_voicebot_backend::shared::ports::routing_port::{NoopRoutingPort, RoutingPort};
+use virtual_voicebot_backend::shared::ports::session_lookup::SessionLookup;
+use virtual_voicebot_backend::shared::{config, logging};
+
+const SIP_INPUT_CHANNEL_CAPACITY: usize = 256;
+const SIP_SEND_CHANNEL_CAPACITY: usize = 256;
+const SESSION_OUT_CHANNEL_CAPACITY: usize = 128;
 
 /// Starts the SIP/RTP server, initializes services and shared state, and runs the main event loop.
 ///
@@ -56,6 +58,10 @@ async fn main() -> anyhow::Result<()> {
     ai::intent::init_intent_prompt();
 
     let cfg = config::Config::from_env()?;
+    let timeouts = config::timeouts().clone();
+    let rtp_cfg = config::rtp_config().clone();
+    let app_cfg = config::AppRuntimeConfig::from_env();
+    let session_cfg = Arc::new(config::SessionRuntimeConfig::from_env(&cfg));
     let sip_bind_ip = cfg.sip_bind_ip;
     let sip_port = cfg.sip_port;
     let rtp_port_cfg = cfg.rtp_port;
@@ -64,20 +70,41 @@ async fn main() -> anyhow::Result<()> {
     let recording_http_addr = cfg.recording_http_addr;
     let ingest_call_url = cfg.ingest_call_url;
     let recording_base_url = cfg.recording_base_url;
+    let postgres_adapter = if let Some(database_url) = config::database_url() {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            PostgresAdapter::new(database_url),
+        )
+        .await
+        {
+            Ok(Ok(adapter)) => Some(Arc::new(adapter)),
+            Ok(Err(err)) => {
+                log::warn!("[main] postgres adapter init failed: {}", err);
+                None
+            }
+            Err(_) => {
+                log::warn!("[main] postgres adapter init timed out");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
-    // --- セッションとRTPポート管理の共有マップ ---
-    let session_map: SessionMap = Arc::new(Mutex::new(HashMap::new()));
-    let session_registry = SessionRegistry::new(session_map.clone());
+    // --- セッションとRTP送信元管理の共有マップ ---
+    let session_registry = SessionRegistry::new();
     let rtp_port_map: RtpPortMap = Arc::new(Mutex::new(HashMap::new()));
-    let mut rtp_handles: HashMap<String, RtpTxHandle> = HashMap::new();
+    let mut rtp_handles: HashMap<CallId, RtpTxHandle> = HashMap::new();
+    let mut rtp_peers: HashMap<CallId, std::net::SocketAddr> = HashMap::new();
 
-    // packet層 → SIP処理ループ へのチャネル
-    let (sip_tx, mut sip_rx) = unbounded_channel::<SipInput>();
-    // sip → transport 送信指示
-    let (sip_send_tx, sip_send_rx) = unbounded_channel::<TransportSendRequest>();
-    // session → sip 指示
+    // packet層 → SIP処理ループ へのチャネル（過負荷時はtransport側でdrop）
+    let (sip_tx, mut sip_rx) = mpsc::channel::<SipInput>(SIP_INPUT_CHANNEL_CAPACITY);
+    // sip → transport 送信指示（過負荷時はsip側でdrop）
+    let (sip_send_tx, sip_send_rx) =
+        mpsc::channel::<TransportSendRequest>(SIP_SEND_CHANNEL_CAPACITY);
+    // session → sip 指示（boundedでバックプレッシャ）
     let (session_out_tx, mut session_out_rx) =
-        unbounded_channel::<(crate::session::types::CallId, SessionOut)>();
+        mpsc::channel::<(CallId, SessionOut)>(SESSION_OUT_CHANNEL_CAPACITY);
     b2bua_bridge::init(sip_send_tx.clone(), sip_port);
 
     // --- ソケット準備 (SIP/RTPポートは環境変数で指定) ---
@@ -96,13 +123,17 @@ async fn main() -> anyhow::Result<()> {
     // 録音配信の簡易HTTPサーバ（/recordings/<callId>/... を静的配信）
     {
         let base_dir = std::env::current_dir()?.join(recording::RECORDINGS_DIR);
-        http::spawn_recording_server(&recording_http_addr, base_dir).await;
+        let recording_http_pool = postgres_adapter
+            .as_ref()
+            .map(|adapter| adapter.pool().clone());
+        http::spawn_recording_server(&recording_http_addr, base_dir, recording_http_pool).await;
     }
 
     // packetループ起動（UDP受信 → SIP/RTP振り分け → セッションへ）
     {
-        let session_map_for_packet = session_map.clone();
         let rtp_port_map_for_packet = rtp_port_map.clone();
+        let session_lookup_for_packet: Arc<dyn SessionLookup> = Arc::new(session_registry.clone());
+        let rtp_cfg_for_packet = rtp_cfg.clone();
         tokio::spawn(async move {
             if let Err(e) = run_packet_loop(
                 sip_sock,
@@ -110,9 +141,11 @@ async fn main() -> anyhow::Result<()> {
                 rtp_sock,
                 sip_tx,
                 sip_send_rx,
-                session_map_for_packet,
+                session_lookup_for_packet,
                 rtp_port_map_for_packet,
                 None,
+                rtp_cfg_for_packet,
+                timeouts.sip_tcp_idle,
             )
             .await
             {
@@ -123,14 +156,31 @@ async fn main() -> anyhow::Result<()> {
 
     // --- SIP処理ループ: packet層からのSIP入力をセッションへ結線 ---
     let ai_port = Arc::new(ai::DefaultAiPort::new());
+
     let phone_lookup: Arc<dyn PhoneLookupPort> = if config::phone_lookup_enabled() {
-        if let Some(endpoint) = config::tsurugi_endpoint() {
-            Arc::new(TsurugiAdapter::new(endpoint))
-        } else {
-            Arc::new(NoopPhoneLookup::new())
+        match postgres_adapter.clone() {
+            Some(adapter) => adapter,
+            None => {
+                log::warn!("[main] phone lookup enabled but DATABASE_URL is missing/unavailable");
+                Arc::new(NoopPhoneLookup::new())
+            }
         }
     } else {
         Arc::new(NoopPhoneLookup::new())
+    };
+    let call_log_port: Arc<dyn CallLogPort> = match postgres_adapter.clone() {
+        Some(adapter) => adapter,
+        None => {
+            log::warn!("[main] call_log/outbox persist disabled (DATABASE_URL unavailable)");
+            Arc::new(NoopCallLogPort::new())
+        }
+    };
+    let routing_port: Arc<dyn RoutingPort> = match postgres_adapter.clone() {
+        Some(adapter) => Arc::new(RoutingRepoImpl::new(adapter.pool().clone())),
+        None => {
+            log::warn!("[main] routing evaluation disabled (DATABASE_URL unavailable)");
+            Arc::new(NoopRoutingPort::new())
+        }
     };
 
     let notification_port: Arc<dyn AppNotificationPort> = {
@@ -149,9 +199,7 @@ async fn main() -> anyhow::Result<()> {
             Arc::new(NoopNotification::new())
         }
     };
-    let ingest_port = Arc::new(http::ingest::HttpIngestPort::new(
-        config::timeouts().ingest_http,
-    ));
+    let ingest_port = Arc::new(http::ingest::HttpIngestPort::new(timeouts.ingest_http)?);
     let storage_port = Arc::new(recording::storage::FileStoragePort::new());
     let mut sip_core = SipCore::new(
         SipConfig {
@@ -185,7 +233,7 @@ async fn main() -> anyhow::Result<()> {
                         } => {
                             log::info!("[main] new INVITE, call_id={}", call_id);
 
-                            let rtp_handle = RtpTxHandle::new();
+                            let rtp_handle = RtpTxHandle::new(rtp_cfg.clone());
                             let ingest_url = ingest_call_url.clone();
                             let recording_base_url = recording_base_url.clone();
 
@@ -195,8 +243,9 @@ async fn main() -> anyhow::Result<()> {
                                 ai_port.clone(),
                                 phone_lookup.clone(),
                                 notification_port.clone(),
+                                app_cfg.clone(),
                             );
-                            let sess_tx = spawn_session(
+                            let sess_handle = spawn_session(
                                 call_id.clone(),
                                 from.clone(),
                                 to.clone(),
@@ -209,62 +258,140 @@ async fn main() -> anyhow::Result<()> {
                                 recording_base_url,
                                 ingest_port.clone(),
                                 storage_port.clone(),
-                            );
+                                call_log_port.clone(),
+                                routing_port.clone(),
+                                session_cfg.clone(),
+                            )
+                            .await;
 
+                            if let Ok(peer_addr) =
+                                format!("{}:{}", offer.ip, offer.port).parse()
                             {
-                                let mut map = rtp_port_map.lock().unwrap();
-                                map.insert(rtp_port, call_id.clone());
+                                rtp_port_map
+                                    .lock()
+                                    .await
+                                    .insert(peer_addr, call_id.clone());
+                                rtp_peers.insert(call_id.clone(), peer_addr);
+                            } else {
+                                log::warn!(
+                                    "[main] invalid RTP peer {}:{} for call_id={}",
+                                    offer.ip,
+                                    offer.port,
+                                    call_id
+                                );
                             }
 
                             rtp_handles.insert(call_id.clone(), rtp_handle);
-                            let _ = sess_tx.send(SessionIn::SipInvite {
-                                call_id,
-                                from,
-                                to,
-                                offer,
-                                session_timer,
-                            });
+                            let _ = sess_handle
+                                .control_tx
+                                .send(SessionControlIn::SipInvite {
+                                    call_id,
+                                    from,
+                                    to,
+                                    offer,
+                                    session_timer,
+                                })
+                                .await;
                         }
                         SipEvent::ReInvite {
                             call_id,
                             offer,
                             session_timer,
                         } => {
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
-                                let _ = sess_tx.send(SessionIn::SipReInvite {
-                                    offer,
-                                    session_timer,
-                                });
+                            log::info!(
+                                "[main] re-INVITE received call_id={} offer={}:{}",
+                                call_id,
+                                offer.ip,
+                                offer.port
+                            );
+                            if let Ok(peer_addr) =
+                                format!("{}:{}", offer.ip, offer.port).parse()
+                            {
+                                if let Some(old) = rtp_peers.insert(call_id.clone(), peer_addr) {
+                                    let mut map = rtp_port_map.lock().await;
+                                    map.remove(&old);
+                                    map.insert(peer_addr, call_id.clone());
+                                } else {
+                                    rtp_port_map
+                                        .lock()
+                                        .await
+                                        .insert(peer_addr, call_id.clone());
+                                }
+                            } else {
+                                log::warn!(
+                                    "[main] invalid RTP peer {}:{} for call_id={}",
+                                    offer.ip,
+                                    offer.port,
+                                    call_id
+                                );
+                            }
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
+                                if let Err(err) = sess_tx
+                                    .control_tx
+                                    .send(SessionControlIn::SipReInvite {
+                                        offer,
+                                        session_timer,
+                                    })
+                                    .await
+                                {
+                                    log::warn!(
+                                        "[main] failed to forward re-INVITE to session call_id={}: {:?}",
+                                        call_id,
+                                        err
+                                    );
+                                }
+                            } else {
+                                log::warn!(
+                                    "[main] re-INVITE for unknown session call_id={}, sending 481",
+                                    call_id
+                                );
+                                sip_core.handle_sip_command(
+                                    &call_id,
+                                    SipCommand::SendError {
+                                        code: 481,
+                                        reason: "Call/Transaction Does Not Exist".to_string(),
+                                    },
+                                );
                             }
                         }
                         SipEvent::Ack { call_id } => {
                             log::info!("[main] ACK for call_id={}", call_id);
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
-                                let _ = sess_tx.send(SessionIn::SipAck);
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
+                                let _ = sess_tx.control_tx.send(SessionControlIn::SipAck).await;
                             }
                         }
                         SipEvent::Cancel { call_id } => {
                             log::info!("[main] CANCEL for call_id={}", call_id);
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
-                                let _ = sess_tx.send(SessionIn::SipCancel);
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
+                                let _ = sess_tx
+                                    .control_tx
+                                    .send(SessionControlIn::SipCancel)
+                                    .await;
                             }
                         }
                         SipEvent::Bye { call_id } => {
                             log::info!("[main] BYE for call_id={}", call_id);
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
-                                let _ = sess_tx.send(SessionIn::SipBye);
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
+                                let _ = sess_tx.control_tx.send(SessionControlIn::SipBye).await;
+                            } else {
+                                log::warn!("[main] received BYE for unknown call_id: {}", call_id);
                             }
                         }
                         SipEvent::SessionRefresh { call_id, timer } => {
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
-                                let _ = sess_tx.send(SessionIn::SipSessionExpires { timer });
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
+                                let _ = sess_tx
+                                    .control_tx
+                                    .send(SessionControlIn::SipSessionExpires { timer })
+                                    .await;
                             }
                         }
                         SipEvent::TransactionTimeout { call_id } => {
                             log::warn!("[main] TransactionTimeout for call_id={}", call_id);
-                            if let Some(sess_tx) = session_registry.get(&call_id) {
-                                let _ =
-                                    sess_tx.send(SessionIn::SipTransactionTimeout { call_id });
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
+                                let _ = sess_tx
+                                    .control_tx
+                                    .send(SessionControlIn::SipTransactionTimeout { call_id })
+                                    .await;
                             }
                         }
                         SipEvent::Unknown => {
@@ -281,29 +408,51 @@ async fn main() -> anyhow::Result<()> {
                     }
                     SessionOut::RtpStopTx => {
                         if let Some(handle) = rtp_handles.remove(&call_id) {
-                            handle.stop(&call_id);
+                            handle.stop(call_id.as_str());
+                        }
+                        if let Some(peer) = rtp_peers.remove(&call_id) {
+                            rtp_port_map.lock().await.remove(&peer);
                         }
                     }
                     SessionOut::AppSessionTimeout => {
                         log::warn!("[main] session timer fired for call_id={}", call_id);
                         if let Some(handle) = rtp_handles.remove(&call_id) {
-                            handle.stop(&call_id);
+                            handle.stop(call_id.as_str());
+                        }
+                        if let Some(peer) = rtp_peers.remove(&call_id) {
+                            rtp_port_map.lock().await.remove(&peer);
                         }
                     }
                     SessionOut::AppSendBotAudioFile { path } => {
-                        if let Some(sess_tx) = session_registry.get(&call_id) {
-                            let _ = sess_tx.send(SessionIn::AppBotAudioFile { path });
+                        if let Some(sess_tx) = session_registry.get(&call_id).await {
+                            let _ = sess_tx
+                                .control_tx
+                                .send(SessionControlIn::AppBotAudioFile { path })
+                                .await;
                         }
                     }
                     SessionOut::AppRequestHangup => {
-                        if let Some(sess_tx) = session_registry.get(&call_id) {
-                            let _ = sess_tx.send(SessionIn::AppHangup);
+                        if let Some(sess_tx) = session_registry.get(&call_id).await {
+                            let _ = sess_tx
+                                .control_tx
+                                .send(SessionControlIn::AppHangup)
+                                .await;
                         }
                     }
                     SessionOut::AppRequestTransfer { person } => {
-                        if let Some(sess_tx) = session_registry.get(&call_id) {
-                            let _ = sess_tx.send(SessionIn::AppTransferRequest { person });
+                        if let Some(sess_tx) = session_registry.get(&call_id).await {
+                            let _ = sess_tx
+                                .control_tx
+                                .send(SessionControlIn::AppTransferRequest { person })
+                                .await;
                         }
+                    }
+                    SessionOut::AppRequestTts { text } => {
+                        log::debug!(
+                            "[main] AppRequestTts received (stub): call_id={} text_len={}",
+                            call_id,
+                            text.len()
+                        );
                     }
                     SessionOut::Metrics { name, value } => {
                         if name == "rtp_in" {
@@ -322,8 +471,32 @@ async fn main() -> anyhow::Result<()> {
                             );
                         }
                     }
-                    other => {
-                        sip_core.handle_session_out(&call_id, other);
+                    SessionOut::SipSend100 => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::Send100);
+                    }
+                    SessionOut::SipSend180 => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::Send180);
+                    }
+                    SessionOut::SipSend183 { answer } => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::Send183 { answer });
+                    }
+                    SessionOut::SipSend200 { answer } => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::Send200 { answer });
+                    }
+                    SessionOut::SipSendUpdate { expires } => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::SendUpdate { expires });
+                    }
+                    SessionOut::SipSendError { code, reason } => {
+                        sip_core.handle_sip_command(
+                            &call_id,
+                            SipCommand::SendError { code, reason },
+                        );
+                    }
+                    SessionOut::SipSendBye => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::SendBye);
+                    }
+                    SessionOut::SipSendBye200 => {
+                        sip_core.handle_sip_command(&call_id, SipCommand::SendBye200);
                     }
                 }
             }

@@ -1,33 +1,27 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState, type FormEvent } from "react"
 import {
   ChevronDown,
   ChevronRight,
-  Copy,
   Edit,
+  FileAudio,
   Folder,
   FolderOpen,
+  MessageSquare,
+  Mic,
   MoreHorizontal,
+  Phone,
+  PhoneOff,
   Plus,
   Search,
   Trash2,
-  Volume2,
-  Play,
-  Pause,
   Upload,
-  Mic,
-  FileAudio,
-  MessageSquare,
-  Phone,
-  PhoneOff,
-  Megaphone,
+  Volume2,
 } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+
 import { Badge } from "@/components/ui/badge"
-import { Switch } from "@/components/ui/switch"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   DropdownMenu,
@@ -36,213 +30,72 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Input } from "@/components/ui/input"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu"
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
-import type { AnnouncementFolder, Announcement, AnnouncementType } from "@/lib/types"
+import type { AnnouncementType } from "@/lib/types"
 
-// Mock data
-const mockAnnouncementTree: AnnouncementFolder[] = [
-  {
-    id: "root-1",
-    name: "挨拶メッセージ",
-    description: "着信時の挨拶音声",
-    parentId: null,
-    type: "folder",
-    createdAt: "2024-01-01T00:00:00Z",
-    updatedAt: "2024-01-15T00:00:00Z",
-    children: [
-      {
-        id: "ann-1",
-        name: "日本語挨拶",
-        description: "日本語の挨拶メッセージ",
-        parentId: "root-1",
-        type: "announcement",
-        createdAt: "2024-01-01T00:00:00Z",
-        updatedAt: "2024-01-10T00:00:00Z",
-        announcements: [
-          {
-            id: "a1",
-            name: "営業時間内挨拶",
-            description: "通常の営業時間内の挨拶",
-            type: "greeting",
-            enabled: true,
-            audioUrl: "/audio/greeting-ja.mp3",
-            duration: 8,
-            language: "ja-JP",
-          },
-          {
-            id: "a2",
-            name: "混雑時挨拶",
-            description: "混雑時の待機案内",
-            type: "greeting",
-            enabled: true,
-            textToSpeech: "お電話ありがとうございます。ただいま大変混み合っております。しばらくお待ちください。",
-            duration: 6,
-            language: "ja-JP",
-          },
-        ],
-      },
-      {
-        id: "ann-2",
-        name: "英語挨拶",
-        description: "英語の挨拶メッセージ",
-        parentId: "root-1",
-        type: "announcement",
-        createdAt: "2024-01-02T00:00:00Z",
-        updatedAt: "2024-01-12T00:00:00Z",
-        announcements: [
-          {
-            id: "a3",
-            name: "English Greeting",
-            description: "Standard English greeting",
-            type: "greeting",
-            enabled: true,
-            audioUrl: "/audio/greeting-en.mp3",
-            duration: 7,
-            language: "en-US",
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: "root-2",
-    name: "保留音",
-    description: "保留中の音声",
-    parentId: null,
-    type: "folder",
-    createdAt: "2024-01-01T00:00:00Z",
-    updatedAt: "2024-01-20T00:00:00Z",
-    children: [
-      {
-        id: "ann-3",
-        name: "BGM",
-        description: "保留中のBGM",
-        parentId: "root-2",
-        type: "announcement",
-        createdAt: "2024-01-01T00:00:00Z",
-        updatedAt: "2024-01-05T00:00:00Z",
-        announcements: [
-          {
-            id: "a4",
-            name: "クラシック保留音",
-            type: "hold",
-            enabled: true,
-            audioUrl: "/audio/hold-classic.mp3",
-            duration: 120,
-            language: "universal",
-          },
-          {
-            id: "a5",
-            name: "ジャズ保留音",
-            type: "hold",
-            enabled: false,
-            audioUrl: "/audio/hold-jazz.mp3",
-            duration: 180,
-            language: "universal",
-          },
-        ],
-      },
-      {
-        id: "ann-4",
-        name: "待機案内",
-        description: "待機中のアナウンス",
-        parentId: "root-2",
-        type: "announcement",
-        createdAt: "2024-02-01T00:00:00Z",
-        updatedAt: "2024-02-10T00:00:00Z",
-        announcements: [
-          {
-            id: "a6",
-            name: "お待たせアナウンス",
-            type: "hold",
-            enabled: true,
-            textToSpeech: "お待たせしております。まもなくオペレーターにお繋ぎいたします。",
-            duration: 5,
-            language: "ja-JP",
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: "root-3",
-    name: "IVRメニュー",
-    description: "自動音声応答メニュー",
-    parentId: null,
-    type: "folder",
-    createdAt: "2024-01-01T00:00:00Z",
-    updatedAt: "2024-01-25T00:00:00Z",
-    children: [
-      {
-        id: "ann-5",
-        name: "メインメニュー",
-        description: "IVRメインメニュー音声",
-        parentId: "root-3",
-        type: "announcement",
-        createdAt: "2024-01-01T00:00:00Z",
-        updatedAt: "2024-01-08T00:00:00Z",
-        announcements: [
-          {
-            id: "a7",
-            name: "部署選択",
-            type: "ivr",
-            enabled: true,
-            textToSpeech: "お電話ありがとうございます。営業部は1を、サポート部は2を、その他のお問い合わせは3を押してください。",
-            duration: 10,
-            language: "ja-JP",
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: "root-4",
-    name: "時間外案内",
-    description: "営業時間外のアナウンス",
-    parentId: null,
-    type: "folder",
-    createdAt: "2024-01-01T00:00:00Z",
-    updatedAt: "2024-01-28T00:00:00Z",
-    children: [
-      {
-        id: "ann-6",
-        name: "休業案内",
-        description: "休業日・時間外の案内",
-        parentId: "root-4",
-        type: "announcement",
-        createdAt: "2024-01-01T00:00:00Z",
-        updatedAt: "2024-01-10T00:00:00Z",
-        announcements: [
-          {
-            id: "a8",
-            name: "営業時間外",
-            type: "closed",
-            enabled: true,
-            textToSpeech: "お電話ありがとうございます。本日の営業は終了いたしました。営業時間は平日9時から18時までとなっております。",
-            duration: 8,
-            language: "ja-JP",
-          },
-          {
-            id: "a9",
-            name: "祝日休業",
-            type: "closed",
-            enabled: true,
-            textToSpeech: "お電話ありがとうございます。本日は祝日のため休業とさせていただいております。",
-            duration: 6,
-            language: "ja-JP",
-          },
-        ],
-      },
-    ],
-  },
-]
+interface StoredAnnouncement {
+  id: string
+  name: string
+  description: string | null
+  announcementType: AnnouncementType
+  isActive: boolean
+  folderId: string | null
+  audioFileUrl: string | null
+  ttsText: string | null
+  speakerId: number | null
+  speakerName: string | null
+  durationSec: number | null
+  language: string
+  source: "upload" | "tts"
+  createdAt: string
+  updatedAt: string
+}
+
+interface StoredFolder {
+  id: string
+  name: string
+  description: string | null
+  parentId: string | null
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+interface AnnouncementsApiResponse {
+  ok: boolean
+  announcements: StoredAnnouncement[]
+  folders: StoredFolder[]
+  error?: string
+}
+
+interface VoiceVoxSpeakersResponse {
+  ok: boolean
+  speakers: Array<{
+    name: string
+    styles: Array<{ id: number; name: string }>
+  }>
+  error?: string
+}
+
+interface FolderNode extends StoredFolder {
+  children: FolderNode[]
+}
+
+interface SpeakerOption {
+  id: number
+  label: string
+  speakerName: string
+}
 
 const announcementTypeConfig: Record<
   AnnouncementType,
@@ -260,13 +113,18 @@ const announcementTypeConfig: Record<
   },
   ivr: {
     label: "IVR",
-    icon: Megaphone,
-    color: "bg-purple-500/10 text-purple-600",
+    icon: Volume2,
+    color: "bg-indigo-500/10 text-indigo-600",
   },
   closed: {
     label: "時間外",
     icon: PhoneOff,
     color: "bg-red-500/10 text-red-600",
+  },
+  recording_notice: {
+    label: "録音通知",
+    icon: Mic,
+    color: "bg-teal-500/10 text-teal-600",
   },
   custom: {
     label: "カスタム",
@@ -275,246 +133,476 @@ const announcementTypeConfig: Record<
   },
 }
 
-interface TreeItemProps {
-  item: AnnouncementFolder
-  level: number
-  isExpanded: boolean
-  isSelected: boolean
-  onToggle: () => void
-  onSelect: () => void
-}
+const announcementTypes: AnnouncementType[] = [
+  "greeting",
+  "hold",
+  "ivr",
+  "closed",
+  "recording_notice",
+  "custom",
+]
 
-function TreeItem({
-  item,
-  level,
-  isExpanded,
-  isSelected,
-  onToggle,
-  onSelect,
-}: TreeItemProps) {
-  const hasChildren = item.children && item.children.length > 0
-  const isFolder = item.type === "folder"
-
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger>
-        <div
-          className={cn(
-            "group flex items-center gap-1 px-2 py-1.5 rounded-md cursor-pointer transition-colors",
-            isSelected
-              ? "bg-primary/10 text-primary"
-              : "hover:bg-muted text-foreground"
-          )}
-          style={{ paddingLeft: `${level * 16 + 8}px` }}
-          onClick={onSelect}
-        >
-          {hasChildren ? (
-            <button
-              type="button"
-              className="p-0.5 hover:bg-muted-foreground/10 rounded"
-              onClick={(e) => {
-                e.stopPropagation()
-                onToggle()
-              }}
-            >
-              {isExpanded ? (
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
-              ) : (
-                <ChevronRight className="h-4 w-4 text-muted-foreground" />
-              )}
-            </button>
-          ) : (
-            <span className="w-5" />
-          )}
-
-          {isFolder ? (
-            isExpanded ? (
-              <FolderOpen className="h-4 w-4 text-amber-500 shrink-0" />
-            ) : (
-              <Folder className="h-4 w-4 text-amber-500 shrink-0" />
-            )
-          ) : (
-            <Volume2 className="h-4 w-4 text-primary shrink-0" />
-          )}
-
-          <span className="truncate text-sm flex-1">{item.name}</span>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 opacity-0 group-hover:opacity-100"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem>
-                <Edit className="h-4 w-4 mr-2" />
-                編集
-              </DropdownMenuItem>
-              <DropdownMenuItem>
-                <Copy className="h-4 w-4 mr-2" />
-                複製
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-destructive">
-                <Trash2 className="h-4 w-4 mr-2" />
-                削除
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem>
-          <Edit className="h-4 w-4 mr-2" />
-          編集
-        </ContextMenuItem>
-        <ContextMenuItem>
-          <Copy className="h-4 w-4 mr-2" />
-          複製
-        </ContextMenuItem>
-        {isFolder && (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem>
-              <Plus className="h-4 w-4 mr-2" />
-              新規アナウンス追加
-            </ContextMenuItem>
-            <ContextMenuItem>
-              <Folder className="h-4 w-4 mr-2" />
-              サブフォルダ追加
-            </ContextMenuItem>
-          </>
-        )}
-        <ContextMenuSeparator />
-        <ContextMenuItem className="text-destructive">
-          <Trash2 className="h-4 w-4 mr-2" />
-          削除
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
-  )
-}
-
-function AudioPreview({
-  announcement,
-}: {
-  announcement: Announcement
-}) {
-  const [isPlaying, setIsPlaying] = useState(false)
-
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins}:${secs.toString().padStart(2, "0")}`
+function buildFolderTree(folders: StoredFolder[]): FolderNode[] {
+  const byId = new Map<string, FolderNode>()
+  for (const folder of folders) {
+    byId.set(folder.id, { ...folder, children: [] })
   }
 
-  return (
-    <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
-      <Button
-        variant="outline"
-        size="icon"
-        className="h-10 w-10 rounded-full shrink-0 bg-transparent"
-        onClick={() => setIsPlaying(!isPlaying)}
-      >
-        {isPlaying ? (
-          <Pause className="h-4 w-4" />
-        ) : (
-          <Play className="h-4 w-4 ml-0.5" />
-        )}
-      </Button>
-      <div className="flex-1 min-w-0">
-        <div className="h-8 bg-muted rounded flex items-center px-2">
-          <div className="flex-1 flex items-center gap-0.5">
-            {Array.from({ length: 40 }).map((_, i) => (
-              <div
-                key={i}
-                className="w-1 bg-primary/40 rounded-full"
-                style={{
-                  height: `${Math.random() * 20 + 4}px`,
-                }}
-              />
-            ))}
-          </div>
-        </div>
-      </div>
-      <span className="text-sm text-muted-foreground shrink-0">
-        {announcement.duration ? formatDuration(announcement.duration) : "--:--"}
-      </span>
-    </div>
-  )
+  const roots: FolderNode[] = []
+  for (const folder of byId.values()) {
+    if (folder.parentId && byId.has(folder.parentId)) {
+      byId.get(folder.parentId)?.children.push(folder)
+    } else {
+      roots.push(folder)
+    }
+  }
+
+  const sortNodes = (nodes: FolderNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.sortOrder !== b.sortOrder) {
+        return a.sortOrder - b.sortOrder
+      }
+      return a.name.localeCompare(b.name, "ja")
+    })
+    for (const node of nodes) {
+      sortNodes(node.children)
+    }
+  }
+
+  sortNodes(roots)
+  return roots
+}
+
+function formatDuration(durationSec: number | null): string {
+  if (typeof durationSec !== "number" || !Number.isFinite(durationSec)) {
+    return "--:--"
+  }
+  const totalSeconds = Math.max(0, Math.round(durationSec))
+  const min = Math.floor(totalSeconds / 60)
+  const sec = totalSeconds % 60
+  return `${min}:${String(sec).padStart(2, "0")}`
+}
+
+function inferNameFromFile(fileName: string): string {
+  const base = fileName.replace(/\.[^.]+$/, "")
+  const trimmed = base.trim()
+  return trimmed.length > 0 ? trimmed : "新規アナウンス"
+}
+
+function inferNameFromText(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim()
+  if (!normalized) {
+    return "新規TTS"
+  }
+  return normalized.slice(0, 20)
 }
 
 export function AnnouncementsContent() {
+  const [folders, setFolders] = useState<StoredFolder[]>([])
+  const [announcements, setAnnouncements] = useState<StoredAnnouncement[]>([])
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null)
+  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set())
   const [searchQuery, setSearchQuery] = useState("")
-  const [selectedItem, setSelectedItem] = useState<AnnouncementFolder | null>(null)
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(
-    new Set(["root-1"])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [infoMessage, setInfoMessage] = useState<string | null>(null)
+
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState("")
+
+  const [dialogMode, setDialogMode] = useState<"upload" | "tts" | null>(null)
+
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploadName, setUploadName] = useState("")
+  const [uploadType, setUploadType] = useState<AnnouncementType>("custom")
+
+  const [ttsText, setTtsText] = useState("")
+  const [ttsSpeakerId, setTtsSpeakerId] = useState<string>("")
+  const [ttsName, setTtsName] = useState("")
+  const [ttsType, setTtsType] = useState<AnnouncementType>("custom")
+  const [speakersLoading, setSpeakersLoading] = useState(false)
+  const [speakerOptions, setSpeakerOptions] = useState<SpeakerOption[]>([])
+
+  const folderTree = useMemo(() => buildFolderTree(folders), [folders])
+
+  const selectedFolder = useMemo(
+    () => folders.find((folder) => folder.id === selectedFolderId) ?? null,
+    [folders, selectedFolderId],
   )
 
-  const toggleExpand = (id: string) => {
-    setExpandedIds((prev) => {
+  const visibleAnnouncements = useMemo(() => {
+    const keyword = searchQuery.trim().toLowerCase()
+    return announcements
+      .filter((item) => {
+        if (selectedFolderId !== null && item.folderId !== selectedFolderId) {
+          return false
+        }
+        if (!keyword) {
+          return true
+        }
+        const searchable = [
+          item.name,
+          item.description,
+          item.ttsText,
+          item.speakerName,
+          item.language,
+        ]
+          .filter((v): v is string => typeof v === "string")
+          .join(" ")
+          .toLowerCase()
+        return searchable.includes(keyword)
+      })
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+  }, [announcements, searchQuery, selectedFolderId])
+
+  const loadAnnouncements = async () => {
+    setLoading(true)
+    setErrorMessage(null)
+    try {
+      const response = await fetch("/api/announcements", { cache: "no-store" })
+      const payload = (await response.json()) as AnnouncementsApiResponse
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || "failed to fetch announcements")
+      }
+
+      setFolders(payload.folders)
+      setAnnouncements(payload.announcements)
+      setExpandedFolderIds((prev) => {
+        if (prev.size > 0) {
+          return prev
+        }
+        return new Set(payload.folders.filter((item) => item.parentId === null).map((item) => item.id))
+      })
+      setSelectedFolderId((prev) => {
+        if (prev && payload.folders.some((folder) => folder.id === prev)) {
+          return prev
+        }
+        const firstRoot = payload.folders
+          .filter((item) => item.parentId === null)
+          .sort((a, b) => a.sortOrder - b.sortOrder)[0]
+        return firstRoot?.id ?? null
+      })
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "failed to load announcements")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadAnnouncements()
+  }, [])
+
+  const loadSpeakers = async () => {
+    setSpeakersLoading(true)
+    setErrorMessage(null)
+    try {
+      const response = await fetch("/api/announcements/speakers", { cache: "no-store" })
+      const payload = (await response.json()) as VoiceVoxSpeakersResponse
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || "failed to load speakers")
+      }
+
+      const options = payload.speakers.flatMap((speaker) =>
+        speaker.styles.map((style) => ({
+          id: style.id,
+          label: `${speaker.name} - ${style.name}`,
+          speakerName: speaker.name,
+        })),
+      )
+      setSpeakerOptions(options)
+      if (options.length > 0 && !options.some((item) => item.id === Number(ttsSpeakerId))) {
+        setTtsSpeakerId(String(options[0].id))
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "failed to load speakers")
+    } finally {
+      setSpeakersLoading(false)
+    }
+  }
+
+  const openUpload = () => {
+    setDialogMode("upload")
+    setUploadFile(null)
+    setUploadName("")
+    setUploadType("custom")
+    setInfoMessage(null)
+    setErrorMessage(null)
+  }
+
+  const openTts = async () => {
+    setDialogMode("tts")
+    setTtsText("")
+    setTtsName("")
+    setTtsType("custom")
+    setInfoMessage(null)
+    setErrorMessage(null)
+    await loadSpeakers()
+  }
+
+  const closeDialog = () => {
+    setDialogMode(null)
+  }
+
+  const refreshAfterMutation = async (message: string) => {
+    setInfoMessage(message)
+    await loadAnnouncements()
+  }
+
+  const handleUploadSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!uploadFile) {
+      setErrorMessage("WAV ファイルを選択してください")
+      return
+    }
+    if (!uploadName.trim()) {
+      setErrorMessage("アナウンス名を入力してください")
+      return
+    }
+
+    setBusy(true)
+    setErrorMessage(null)
+    setInfoMessage(null)
+    try {
+      const formData = new FormData()
+      formData.set("file", uploadFile)
+      formData.set("name", uploadName.trim())
+      formData.set("announcementType", uploadType)
+      if (selectedFolderId) {
+        formData.set("folderId", selectedFolderId)
+      }
+
+      const response = await fetch("/api/announcements/upload", {
+        method: "POST",
+        body: formData,
+      })
+      const payload = (await response.json()) as { ok?: boolean; error?: string }
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || "failed to upload")
+      }
+
+      closeDialog()
+      await refreshAfterMutation("アナウンスをアップロードしました")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "アップロードに失敗しました")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleTtsSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!ttsText.trim()) {
+      setErrorMessage("読み上げテキストを入力してください")
+      return
+    }
+    if (!ttsName.trim()) {
+      setErrorMessage("アナウンス名を入力してください")
+      return
+    }
+    if (!ttsSpeakerId) {
+      setErrorMessage("キャラクターを選択してください")
+      return
+    }
+
+    setBusy(true)
+    setErrorMessage(null)
+    setInfoMessage(null)
+    try {
+      const response = await fetch("/api/announcements/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: ttsText,
+          speakerId: Number(ttsSpeakerId),
+          name: ttsName.trim(),
+          announcementType: ttsType,
+          folderId: selectedFolderId,
+        }),
+      })
+      const payload = (await response.json()) as { ok?: boolean; error?: string }
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || "failed to synthesize")
+      }
+
+      closeDialog()
+      await refreshAfterMutation("音声を生成しました")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "TTS 生成に失敗しました")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleToggleActive = async (announcement: StoredAnnouncement) => {
+    setBusy(true)
+    setErrorMessage(null)
+    try {
+      const response = await fetch(`/api/announcements/${encodeURIComponent(announcement.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: !announcement.isActive }),
+      })
+      const payload = (await response.json()) as {
+        ok?: boolean
+        error?: string
+        announcement?: StoredAnnouncement
+      }
+      if (!response.ok || !payload.ok || !payload.announcement) {
+        throw new Error(payload.error || "failed to update announcement")
+      }
+      setAnnouncements((prev) =>
+        prev.map((item) => (item.id === payload.announcement?.id ? payload.announcement : item)),
+      )
+      setInfoMessage("状態を更新しました")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "更新に失敗しました")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleDelete = async (announcement: StoredAnnouncement) => {
+    const ok = window.confirm("このアナウンスを削除します。元に戻せません。")
+    if (!ok) {
+      return
+    }
+
+    setBusy(true)
+    setErrorMessage(null)
+    try {
+      const response = await fetch(`/api/announcements/${encodeURIComponent(announcement.id)}`, {
+        method: "DELETE",
+      })
+      const payload = (await response.json()) as { ok?: boolean; error?: string }
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || "failed to delete announcement")
+      }
+      setAnnouncements((prev) => prev.filter((item) => item.id !== announcement.id))
+      setInfoMessage("アナウンスを削除しました")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "削除に失敗しました")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const startRename = (announcement: StoredAnnouncement) => {
+    setEditingId(announcement.id)
+    setEditingName(announcement.name)
+  }
+
+  const cancelRename = () => {
+    setEditingId(null)
+    setEditingName("")
+  }
+
+  const submitRename = async (announcementId: string) => {
+    if (!editingName.trim()) {
+      setErrorMessage("名称を入力してください")
+      return
+    }
+
+    setBusy(true)
+    setErrorMessage(null)
+    try {
+      const response = await fetch(`/api/announcements/${encodeURIComponent(announcementId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editingName.trim() }),
+      })
+      const payload = (await response.json()) as {
+        ok?: boolean
+        error?: string
+        announcement?: StoredAnnouncement
+      }
+      if (!response.ok || !payload.ok || !payload.announcement) {
+        throw new Error(payload.error || "failed to rename announcement")
+      }
+      setAnnouncements((prev) =>
+        prev.map((item) => (item.id === payload.announcement?.id ? payload.announcement : item)),
+      )
+      setEditingId(null)
+      setEditingName("")
+      setInfoMessage("名称を更新しました")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "名称更新に失敗しました")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggleFolderExpand = (folderId: string) => {
+    setExpandedFolderIds((prev) => {
       const next = new Set(prev)
-      if (next.has(id)) {
-        next.delete(id)
+      if (next.has(folderId)) {
+        next.delete(folderId)
       } else {
-        next.add(id)
+        next.add(folderId)
       }
       return next
     })
   }
 
-  const renderTree = (items: AnnouncementFolder[], level = 0) => {
-    return items.map((item) => (
-      <div key={item.id}>
-        <TreeItem
-          item={item}
-          level={level}
-          isExpanded={expandedIds.has(item.id)}
-          isSelected={selectedItem?.id === item.id}
-          onToggle={() => toggleExpand(item.id)}
-          onSelect={() => setSelectedItem(item)}
-        />
-        {expandedIds.has(item.id) && item.children && (
-          <div>{renderTree(item.children, level + 1)}</div>
-        )}
-      </div>
-    ))
+  const renderFolderTree = (nodes: FolderNode[], level = 0): React.ReactNode => {
+    return nodes.map((node) => {
+      const expanded = expandedFolderIds.has(node.id)
+      const selected = selectedFolderId === node.id
+      const hasChildren = node.children.length > 0
+
+      return (
+        <div key={node.id}>
+          <button
+            type="button"
+            className={cn(
+              "w-full text-left flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted",
+              selected && "bg-primary/10 text-primary",
+            )}
+            style={{ paddingLeft: `${level * 16 + 8}px` }}
+            onClick={() => setSelectedFolderId(node.id)}
+          >
+            {hasChildren ? (
+              <span
+                className="flex items-center"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  toggleFolderExpand(node.id)
+                }}
+              >
+                {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              </span>
+            ) : (
+              <span className="w-4" />
+            )}
+            {expanded ? <FolderOpen className="h-4 w-4 text-amber-500" /> : <Folder className="h-4 w-4 text-amber-500" />}
+            <span className="truncate text-sm">{node.name}</span>
+          </button>
+          {hasChildren && expanded ? renderFolderTree(node.children, level + 1) : null}
+        </div>
+      )
+    })
   }
 
   return (
     <div className="flex h-full">
-      {/* Left Panel - Tree */}
       <div className="w-80 border-r flex flex-col bg-card">
-        <div className="p-4 border-b">
-          <div className="flex items-center justify-between mb-4">
+        <div className="p-4 border-b space-y-3">
+          <div className="flex items-center justify-between">
             <h2 className="font-semibold text-lg">アナウンス</h2>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button size="sm">
+                <Button size="sm" disabled={busy}>
                   <Plus className="h-4 w-4 mr-1" />
                   追加
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem>
-                  <Folder className="h-4 w-4 mr-2" />
-                  新規フォルダ
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem>
+                <DropdownMenuItem onClick={openUpload}>
                   <Upload className="h-4 w-4 mr-2" />
                   音声ファイルをアップロード
                 </DropdownMenuItem>
-                <DropdownMenuItem>
-                  <Mic className="h-4 w-4 mr-2" />
-                  録音する
-                </DropdownMenuItem>
-                <DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void openTts()}>
                   <MessageSquare className="h-4 w-4 mr-2" />
                   テキスト読み上げ
                 </DropdownMenuItem>
@@ -526,233 +614,272 @@ export function AnnouncementsContent() {
             <Input
               placeholder="検索..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(event) => setSearchQuery(event.target.value)}
               className="pl-9"
             />
           </div>
+          <Button
+            type="button"
+            variant={selectedFolderId === null ? "default" : "outline"}
+            size="sm"
+            className="w-full"
+            onClick={() => setSelectedFolderId(null)}
+          >
+            すべて表示
+          </Button>
         </div>
 
         <ScrollArea className="flex-1">
-          <div className="p-2">{renderTree(mockAnnouncementTree)}</div>
+          <div className="p-2">
+            {folderTree.length > 0 ? (
+              renderFolderTree(folderTree)
+            ) : (
+              <p className="text-sm text-muted-foreground p-2">フォルダがありません</p>
+            )}
+          </div>
         </ScrollArea>
       </div>
 
-      {/* Right Panel - Detail */}
       <div className="flex-1 overflow-auto bg-background">
-        {selectedItem ? (
-          <div className="p-6">
-            <div className="flex items-start justify-between mb-6">
-              <div className="flex items-center gap-3">
-                {selectedItem.type === "folder" ? (
-                  <div className="p-2 bg-amber-500/10 rounded-lg">
-                    <Folder className="h-6 w-6 text-amber-500" />
-                  </div>
-                ) : (
-                  <div className="p-2 bg-primary/10 rounded-lg">
-                    <Volume2 className="h-6 w-6 text-primary" />
-                  </div>
-                )}
-                <div>
-                  <h1 className="text-2xl font-bold">{selectedItem.name}</h1>
-                  {selectedItem.description && (
-                    <p className="text-muted-foreground">
-                      {selectedItem.description}
-                    </p>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm">
-                  <Edit className="h-4 w-4 mr-1" />
-                  編集
-                </Button>
-                <Button variant="outline" size="sm">
-                  <Copy className="h-4 w-4 mr-1" />
-                  複製
-                </Button>
-              </div>
-            </div>
+        <div className="p-6 space-y-4">
+          <div>
+            <h1 className="text-2xl font-bold">
+              {selectedFolder ? selectedFolder.name : "すべてのアナウンス"}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {selectedFolder?.description ?? "アナウンスを検索・再生・管理できます"}
+            </p>
+          </div>
 
-            {selectedItem.type === "folder" ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">フォルダ内容</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {selectedItem.children && selectedItem.children.length > 0 ? (
-                    <div className="space-y-2">
-                      {selectedItem.children.map((child) => (
-                        <div
-                          key={child.id}
-                          className="flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/50 cursor-pointer transition-colors"
-                          onClick={() => {
-                            setSelectedItem(child)
-                            setExpandedIds((prev) => {
-                              const next = new Set(prev)
-                              next.add(selectedItem.id)
-                              return next
-                            })
-                          }}
-                        >
-                          {child.type === "folder" ? (
-                            <Folder className="h-5 w-5 text-amber-500" />
-                          ) : (
-                            <Volume2 className="h-5 w-5 text-primary" />
-                          )}
-                          <div className="flex-1">
-                            <p className="font-medium">{child.name}</p>
-                            {child.description && (
-                              <p className="text-sm text-muted-foreground">
-                                {child.description}
-                              </p>
-                            )}
-                          </div>
-                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                        </div>
+          {loading ? <p className="text-muted-foreground">読み込み中...</p> : null}
+          {errorMessage ? (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {errorMessage}
+            </div>
+          ) : null}
+          {infoMessage ? (
+            <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-700">
+              {infoMessage}
+            </div>
+          ) : null}
+
+          {dialogMode === "upload" ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">音声ファイルをアップロード</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <form className="space-y-3" onSubmit={handleUploadSubmit}>
+                  <input
+                    type="file"
+                    accept=".wav,audio/wav,audio/x-wav"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0] ?? null
+                      setUploadFile(file)
+                      if (file) {
+                        setUploadName((prev) => (prev.trim().length > 0 ? prev : inferNameFromFile(file.name)))
+                      }
+                    }}
+                  />
+                  <Input
+                    placeholder="アナウンス名"
+                    value={uploadName}
+                    onChange={(event) => setUploadName(event.target.value)}
+                  />
+                  <Select value={uploadType} onValueChange={(value) => setUploadType(value as AnnouncementType)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="タイプ" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {announcementTypes.map((type) => (
+                        <SelectItem key={type} value={type}>
+                          {announcementTypeConfig[type].label}
+                        </SelectItem>
                       ))}
-                    </div>
-                  ) : (
-                    <p className="text-muted-foreground text-center py-8">
-                      このフォルダは空です
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="space-y-4">
-                <Card>
-                  <CardHeader className="flex flex-row items-center justify-between">
-                    <CardTitle className="text-base">アナウンス一覧</CardTitle>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button size="sm">
-                          <Plus className="h-4 w-4 mr-1" />
-                          追加
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem>
-                          <Upload className="h-4 w-4 mr-2" />
-                          音声ファイルをアップロード
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Mic className="h-4 w-4 mr-2" />
-                          録音する
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <MessageSquare className="h-4 w-4 mr-2" />
-                          テキスト読み上げ
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </CardHeader>
-                  <CardContent>
-                    {selectedItem.announcements &&
-                    selectedItem.announcements.length > 0 ? (
-                      <div className="space-y-4">
-                        {selectedItem.announcements.map((announcement) => {
-                          const config = announcementTypeConfig[announcement.type]
-                          const TypeIcon = config.icon
-                          return (
-                            <div
-                              key={announcement.id}
-                              className="p-4 rounded-lg border"
-                            >
-                              <div className="flex items-start justify-between mb-3">
-                                <div className="flex items-center gap-3">
-                                  <div className={cn("p-2 rounded-lg", config.color)}>
-                                    <TypeIcon className="h-4 w-4" />
-                                  </div>
-                                  <div>
-                                    <div className="flex items-center gap-2">
-                                      <p className="font-medium">
-                                        {announcement.name}
-                                      </p>
-                                      <Badge
-                                        variant="outline"
-                                        className={config.color}
-                                      >
-                                        {config.label}
-                                      </Badge>
-                                      <Badge variant="secondary">
-                                        {announcement.language}
-                                      </Badge>
-                                    </div>
-                                    {announcement.description && (
-                                      <p className="text-sm text-muted-foreground">
-                                        {announcement.description}
-                                      </p>
-                                    )}
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <Switch checked={announcement.enabled} />
-                                  <DropdownMenu>
-                                    <DropdownMenuTrigger asChild>
-                                      <Button variant="ghost" size="icon">
-                                        <MoreHorizontal className="h-4 w-4" />
-                                      </Button>
-                                    </DropdownMenuTrigger>
-                                    <DropdownMenuContent align="end">
-                                      <DropdownMenuItem>
-                                        <Edit className="h-4 w-4 mr-2" />
-                                        編集
-                                      </DropdownMenuItem>
-                                      <DropdownMenuItem>
-                                        <Copy className="h-4 w-4 mr-2" />
-                                        複製
-                                      </DropdownMenuItem>
-                                      <DropdownMenuSeparator />
-                                      <DropdownMenuItem className="text-destructive">
-                                        <Trash2 className="h-4 w-4 mr-2" />
-                                        削除
-                                      </DropdownMenuItem>
-                                    </DropdownMenuContent>
-                                  </DropdownMenu>
-                                </div>
+                    </SelectContent>
+                  </Select>
+                  <div className="flex items-center gap-2">
+                    <Button type="submit" disabled={busy}>
+                      保存
+                    </Button>
+                    <Button type="button" variant="outline" onClick={closeDialog} disabled={busy}>
+                      キャンセル
+                    </Button>
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {dialogMode === "tts" ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">テキスト読み上げ（VoiceVox）</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <form className="space-y-3" onSubmit={handleTtsSubmit}>
+                  <textarea
+                    className="w-full min-h-28 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="読み上げテキスト（1〜1000文字）"
+                    value={ttsText}
+                    onChange={(event) => {
+                      const text = event.target.value
+                      setTtsText(text)
+                      setTtsName((prev) => (prev.trim().length > 0 ? prev : inferNameFromText(text)))
+                    }}
+                  />
+                  <Select value={ttsSpeakerId} onValueChange={setTtsSpeakerId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={speakersLoading ? "読み込み中..." : "キャラクターを選択"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {speakerOptions.map((speaker) => (
+                        <SelectItem key={speaker.id} value={String(speaker.id)}>
+                          {speaker.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    placeholder="アナウンス名"
+                    value={ttsName}
+                    onChange={(event) => setTtsName(event.target.value)}
+                  />
+                  <Select value={ttsType} onValueChange={(value) => setTtsType(value as AnnouncementType)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="タイプ" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {announcementTypes.map((type) => (
+                        <SelectItem key={type} value={type}>
+                          {announcementTypeConfig[type].label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <div className="flex items-center gap-2">
+                    <Button type="submit" disabled={busy || speakersLoading}>
+                      生成
+                    </Button>
+                    <Button type="button" variant="outline" onClick={closeDialog} disabled={busy}>
+                      キャンセル
+                    </Button>
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">アナウンス一覧 ({visibleAnnouncements.length}件)</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {visibleAnnouncements.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-8 text-center">
+                  該当するアナウンスがありません
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {visibleAnnouncements.map((announcement) => {
+                    const config = announcementTypeConfig[announcement.announcementType]
+                    const TypeIcon = config.icon
+                    return (
+                      <div key={announcement.id} className="rounded-lg border p-4 space-y-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="space-y-1 min-w-0 flex-1">
+                            {editingId === announcement.id ? (
+                              <div className="flex items-center gap-2">
+                                <Input
+                                  value={editingName}
+                                  onChange={(event) => setEditingName(event.target.value)}
+                                />
+                                <Button
+                                  size="sm"
+                                  onClick={() => void submitRename(announcement.id)}
+                                  disabled={busy}
+                                >
+                                  保存
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={cancelRename} disabled={busy}>
+                                  キャンセル
+                                </Button>
                               </div>
-
-                              <AudioPreview announcement={announcement} />
-
-                              {announcement.textToSpeech && (
-                                <div className="mt-3 p-3 bg-muted/30 rounded-lg">
-                                  <p className="text-xs text-muted-foreground mb-1">
-                                    テキスト読み上げ
-                                  </p>
-                                  <p className="text-sm">
-                                    {announcement.textToSpeech}
-                                  </p>
-                                </div>
-                              )}
-
-                              {announcement.audioUrl && (
-                                <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-                                  <FileAudio className="h-4 w-4" />
-                                  <span>{announcement.audioUrl}</span>
-                                </div>
-                              )}
+                            ) : (
+                              <p className="font-medium truncate">{announcement.name}</p>
+                            )}
+                            {announcement.description ? (
+                              <p className="text-sm text-muted-foreground">{announcement.description}</p>
+                            ) : null}
+                            {announcement.ttsText ? (
+                              <p className="text-xs text-muted-foreground line-clamp-2">
+                                {announcement.ttsText}
+                              </p>
+                            ) : null}
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <Badge variant="outline" className={config.color}>
+                                <TypeIcon className="h-3 w-3 mr-1" />
+                                {config.label}
+                              </Badge>
+                              <Badge variant="secondary">{announcement.language}</Badge>
+                              <Badge variant="secondary">
+                                {announcement.source === "tts" ? "TTS" : "Upload"}
+                              </Badge>
+                              <Badge variant="secondary">{formatDuration(announcement.durationSec)}</Badge>
                             </div>
-                          )
-                        })}
+                            {announcement.speakerName ? (
+                              <p className="text-xs text-muted-foreground">{announcement.speakerName}</p>
+                            ) : null}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              checked={announcement.isActive}
+                              onCheckedChange={() => void handleToggleActive(announcement)}
+                              disabled={busy}
+                            />
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" disabled={busy}>
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => startRename(announcement)}>
+                                  <Edit className="h-4 w-4 mr-2" />
+                                  名称変更
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  className="text-destructive"
+                                  onClick={() => void handleDelete(announcement)}
+                                >
+                                  <Trash2 className="h-4 w-4 mr-2" />
+                                  削除
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        </div>
+
+                        {announcement.audioFileUrl ? (
+                          <div className="space-y-2">
+                            <audio className="w-full" controls preload="metadata" src={announcement.audioFileUrl} />
+                            <div className="text-xs text-muted-foreground break-all flex items-center gap-1">
+                              <FileAudio className="h-3.5 w-3.5" />
+                              <span>{announcement.audioFileUrl}</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">音声ファイル未登録</p>
+                        )}
                       </div>
-                    ) : (
-                      <p className="text-muted-foreground text-center py-8">
-                        アナウンスがありません
-                      </p>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="flex items-center justify-center h-full text-muted-foreground">
-            <div className="text-center">
-              <Volume2 className="h-12 w-12 mx-auto mb-4 opacity-50" />
-              <p>左側からアナウンスを選択してください</p>
-            </div>
-          </div>
-        )}
+                    )
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   )

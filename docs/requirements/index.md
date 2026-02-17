@@ -16,7 +16,7 @@
 
 - 各コンポーネント固有の要件は各サブディレクトリに配置
   - Backend: [virtual-voicebot-backend/docs/requirements/](../../virtual-voicebot-backend/docs/requirements/index.md)
-  - Frontend: [virtual-voicebot-frontend/docs/requirements/](../../virtual-voicebot-frontend/docs/requirements/index.md)（予定）
+  - Frontend: [virtual-voicebot-frontend/docs/requirements/](../../virtual-voicebot-frontend/docs/requirements/index.md)
 
 ---
 
@@ -36,7 +36,7 @@ RD-{連番}_{slug}.md
 | ID | 名称 | ステータス | 対応ST | 概要 |
 |----|------|----------|--------|------|
 | [RD-004](RD-004_call-routing.md) | 電話番号振り分け・迷惑電話対策 | **Draft** | ST-003 | 番号振り分け・IVR・録音・管理画面（システム横断） |
-| [RD-005](RD-005_frontend.md) | Frontend 管理画面 | **Draft** | - | Dashboard・発着信履歴・録音再生・文字起こし・要約（MVP） |
+| [RD-005](../../virtual-voicebot-frontend/docs/requirements/RD-005_frontend.md) | Frontend 管理画面 | **Draft** | - | Dashboard・発着信履歴・録音再生・文字起こし・要約（MVP）— **移動済み** |
 
 ---
 
@@ -45,7 +45,7 @@ RD-{連番}_{slug}.md
 | コンポーネント | リンク | 概要 |
 |---------------|--------|------|
 | Backend | [requirements/index.md](../../virtual-voicebot-backend/docs/requirements/index.md) | SIP/RTP/AI連携等のバックエンド要件 |
-| Frontend | [RD-005_frontend.md](RD-005_frontend.md) | 管理画面（Dashboard・発着信履歴等） |
+| Frontend | [requirements/index.md](../../virtual-voicebot-frontend/docs/requirements/index.md) | 管理画面（Dashboard・発着信履歴等） |
 
 ---
 

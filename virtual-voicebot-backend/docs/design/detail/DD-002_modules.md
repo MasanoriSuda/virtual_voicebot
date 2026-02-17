@@ -1,3 +1,4 @@
+<!-- SOURCE_OF_TRUTH: モジュール設計 -->
 # uas-voice-bot: Design Document
 
 > **I/F 正本の優先順位（2025-12-28 追加、Refs Issue #7）**
@@ -246,7 +247,7 @@ MVP の http は `Call.recordingUrl` の GET（録音配信）のみを必須と
 参照系 REST API / SSE は将来の拡張であり、追加する場合は `docs/contract.md` の合意を正とする。
 
 Frontend ↔ Backend の API 契約は `docs/contract.md` を正とする。
-録音の保存と配信に関する内部設計は `docs/recording.md` を正とする。
+録音の保存と配信に関する内部設計は `docs/design/detail/DD-007_recording.md` を正とする。
 
 ※ 重要: `http` は通話制御や SIP/RTP の内部状態機械には立ち入らず、
 参照/配信用に整形されたデータを提供することに徹する。Frontend から通話制御や入力を行う契約は持たない。
@@ -380,7 +381,7 @@ PCM ⇔ RTP ペイロード変換
 
 通話終了などのビジネス判断をしない（タイムアウト検知は行っても、判断は上位）
 
-補足（ストリーム管理の要約、詳細は docs/rtp.md）：
+補足（ストリーム管理の要約、詳細は docs/design/detail/DD-004_rtp.md）：
 
 - SSRC/Seq/Timestamp は rtp 内で生成・管理（1セッション1 SSRC、Seq/Timestamp は乱数初期化＋単純インクリメント）。
 - 簡易ジッタ対応として約100msの小バッファで整列し、古い/遅延パケットは破棄。PCMのみを asr/tts に受け渡す。
@@ -573,7 +574,7 @@ MVP 方針：
 - AI 呼び出しをしない（app/ai の責務）
 
 詳細：
-- 録音設計は `docs/recording.md` を正とする。
+- 録音設計は `docs/design/detail/DD-007_recording.md` を正とする。
 
 
 ## 6. モジュール間インタフェース（イベント指向）
@@ -850,12 +851,12 @@ B2BUA 化（別の宛先への転送）
 ### 11.1 神様（Single Source of Truth）
 - アーキテクチャと責務境界の神様: `docs/design.md`
 - Frontend ↔ Backend API 契約の神様: `docs/contract.md`
-- 録音（保存/配信）設計の神様: `docs/recording.md`
+- 録音（保存/配信）設計の神様: `docs/design/detail/DD-007_recording.md`
 
 ※ 仕様変更や判断は、該当する「神様ドキュメント」を先に更新し、他ドキュメントやコードを追従させる。
 
 ### 11.2 Codex / AI への認識手順（毎回のプロンプトに含める）
-- 「設計の正: docs/design.md」「API契約の正: docs/contract.md」「録音設計の正: docs/recording.md」を明示する。
+- 「設計の正: docs/design.md」「API契約の正: docs/contract.md」「録音設計の正: docs/design/detail/DD-007_recording.md」を明示する。
 - 依存関係ルール（下方向のみ、禁止事項）を必ず守るよう指示する。
 - 矛盾があれば「docs が正、コードは追従」と明記する。
 - 変更依頼では「まず該当 docs を更新 → その内容に沿ってコードを変更」と指示する。
