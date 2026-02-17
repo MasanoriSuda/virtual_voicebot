@@ -279,9 +279,11 @@ impl AsrPort for DefaultAiPort {
     /// use virtual_voicebot_backend::service::ai::DefaultAiPort;
     /// use virtual_voicebot_backend::ports::ai::AsrPort;
     ///
+    /// # async fn example() {
     /// let port = DefaultAiPort::new();
-    /// let transcript = port.transcribe_chunks("call-1".to_string(), vec![]);
+    /// let transcript = port.transcribe_chunks("call-1".to_string(), vec![]).await;
     /// let _ = transcript;
+    /// # }
     /// ```
     fn transcribe_chunks(
         &self,

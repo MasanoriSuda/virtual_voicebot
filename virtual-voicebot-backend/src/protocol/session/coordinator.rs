@@ -270,7 +270,9 @@ impl SessionCoordinator {
     /// ```ignore
     /// use tokio::sync::mpsc;
     ///
-    /// async fn run_session_example(mut session: crate::protocol::session::Session) {
+    /// async fn run_session_example(
+    ///     mut session: virtual_voicebot_backend::protocol::session::SessionCoordinator,
+    /// ) {
     ///     let (_control_tx, control_rx) = mpsc::channel(1);
     ///     let (_media_tx, media_rx) = mpsc::channel(1);
     ///     // This will run until control_rx is closed or the session ends.

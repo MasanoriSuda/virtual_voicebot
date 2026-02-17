@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 /// RTCP 受信イベントのスタブ。未実装であることを明示するための型。
 #[derive(Debug, Clone)]
 pub struct RtcpEvent {
+    pub call_id: String,
     pub raw: Vec<u8>,
     pub src: SocketAddr,
     pub dst_port: u16,
@@ -118,8 +119,8 @@ pub fn parse_rtcp_packets(data: &[u8]) -> Vec<RtcpPacket> {
             201 => {
                 if body.len() >= 4 {
                     let ssrc = u32::from_be_bytes(body[0..4].try_into().unwrap());
-                    let report = if rc >= 1 && body.len() >= 24 {
-                        let blk = &body[4..24];
+                    let report = if rc >= 1 && body.len() >= 28 {
+                        let blk = &body[4..28];
                         Some(RtcpReportBlock {
                             ssrc: u32::from_be_bytes(blk[0..4].try_into().unwrap()),
                             fraction_lost: blk[4],
@@ -192,4 +193,103 @@ pub fn ntp_timestamp_now() -> u64 {
     let secs = now.as_secs().wrapping_add(NTP_UNIX_EPOCH_DIFF);
     let frac = ((now.subsec_nanos() as u64) << 32) / 1_000_000_000u64;
     (secs << 32) | frac
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_empty_rtcp_returns_empty() {
+        let packets = parse_rtcp_packets(&[]);
+        assert!(packets.is_empty());
+    }
+
+    #[test]
+    fn parse_sender_report_packet() {
+        let data = vec![
+            0x80, 200, 0x00, 0x06, // V=2, PT=200, length=6 (28 bytes)
+            0x11, 0x22, 0x33, 0x44, // SSRC
+            0x01, 0x02, 0x03, 0x04, // NTP hi
+            0x05, 0x06, 0x07, 0x08, // NTP lo
+            0x21, 0x22, 0x23, 0x24, // RTP timestamp
+            0x31, 0x32, 0x33, 0x34, // packet count
+            0x41, 0x42, 0x43, 0x44, // octet count
+        ];
+
+        let packets = parse_rtcp_packets(&data);
+        assert_eq!(packets.len(), 1);
+        match &packets[0] {
+            RtcpPacket::SenderReport(sr) => {
+                assert_eq!(sr.ssrc, 0x1122_3344);
+                assert_eq!(sr.ntp_timestamp, 0x0102_0304_0506_0708);
+                assert_eq!(sr.rtp_timestamp, 0x2122_2324);
+                assert_eq!(sr.packet_count, 0x3132_3334);
+                assert_eq!(sr.octet_count, 0x4142_4344);
+            }
+            _ => panic!("expected sender report"),
+        }
+    }
+
+    #[test]
+    fn build_sr_roundtrip() {
+        let sr = RtcpSenderReport {
+            ssrc: 0x1234_5678,
+            ntp_timestamp: 0x1111_2222_3333_4444,
+            rtp_timestamp: 0xAABB_CCDD,
+            packet_count: 42,
+            octet_count: 9001,
+        };
+
+        let data = build_sr(&sr);
+        let packets = parse_rtcp_packets(&data);
+        assert_eq!(packets.len(), 1);
+        match &packets[0] {
+            RtcpPacket::SenderReport(parsed) => {
+                assert_eq!(parsed.ssrc, sr.ssrc);
+                assert_eq!(parsed.ntp_timestamp, sr.ntp_timestamp);
+                assert_eq!(parsed.rtp_timestamp, sr.rtp_timestamp);
+                assert_eq!(parsed.packet_count, sr.packet_count);
+                assert_eq!(parsed.octet_count, sr.octet_count);
+            }
+            _ => panic!("expected sender report"),
+        }
+    }
+
+    #[test]
+    fn build_rr_with_report_roundtrip() {
+        let rr = RtcpReceiverReport {
+            ssrc: 0x0102_0304,
+            report: Some(RtcpReportBlock {
+                ssrc: 0x1112_1314,
+                fraction_lost: 3,
+                cumulative_lost: 0x00AB_CD,
+                highest_seq: 0x5152_5354,
+                jitter: 0x6162_6364,
+                lsr: 0x7172_7374,
+                dlsr: 0x8182_8384,
+            }),
+        };
+
+        let data = build_rr(&rr);
+        let packets = parse_rtcp_packets(&data);
+        assert_eq!(packets.len(), 1);
+        match &packets[0] {
+            RtcpPacket::ReceiverReport(parsed) => {
+                assert_eq!(parsed.ssrc, rr.ssrc);
+                let Some(report) = &parsed.report else {
+                    panic!("expected receiver report block");
+                };
+                let expected = rr.report.as_ref().expect("expected report in source");
+                assert_eq!(report.ssrc, expected.ssrc);
+                assert_eq!(report.fraction_lost, expected.fraction_lost);
+                assert_eq!(report.cumulative_lost, expected.cumulative_lost);
+                assert_eq!(report.highest_seq, expected.highest_seq);
+                assert_eq!(report.jitter, expected.jitter);
+                assert_eq!(report.lsr, expected.lsr);
+                assert_eq!(report.dlsr, expected.dlsr);
+            }
+            _ => panic!("expected receiver report"),
+        }
+    }
 }

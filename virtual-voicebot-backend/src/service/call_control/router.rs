@@ -350,3 +350,17 @@ impl Router {
 fn normalize_person(input: &str) -> String {
     input.trim().replace(['　', ' '], "")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_person() {
+        assert_eq!(normalize_person("  山田　太郎  "), "山田太郎");
+        assert_eq!(normalize_person("　 Alice Bob "), "AliceBob");
+        assert_eq!(normalize_person("須田"), "須田");
+        assert_eq!(normalize_person("  "), "");
+        assert_eq!(normalize_person(""), "");
+    }
+}

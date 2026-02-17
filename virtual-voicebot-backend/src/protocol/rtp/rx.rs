@@ -111,6 +111,9 @@ impl RtpReceiver {
             }
             if let Some(tx) = &self.rtcp_tx {
                 let _ = tx.try_send(RtcpEvent {
+                    call_id: call_id_opt
+                        .map(|call_id| call_id.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
                     raw: raw.data.clone(),
                     src: raw.src,
                     dst_port: raw.dst_port,
