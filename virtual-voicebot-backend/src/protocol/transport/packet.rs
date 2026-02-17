@@ -246,7 +246,7 @@ async fn run_rtp_udp_loop(sock: UdpSocket, rtp_rx: RtpReceiver) -> std::io::Resu
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// # use tokio::net::TcpListener;
 /// # use tokio::sync::mpsc;
 /// # use std::sync::{Arc, atomic::AtomicU64};

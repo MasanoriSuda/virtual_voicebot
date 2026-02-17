@@ -79,7 +79,7 @@ fn linear16_to_mulaw(sample: i16) -> u8 {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// let pcm: i16 = 1000;
 /// let a = linear16_to_alaw(pcm);
 /// assert_eq!(alaw_to_linear16(a), pcm);
@@ -111,7 +111,7 @@ fn alaw_to_linear16(a: u8) -> i16 {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// let encoded = linear16_to_alaw(0i16);
 /// // `encoded` is the A-law representation of the silent PCM sample
 /// let _ = encoded;

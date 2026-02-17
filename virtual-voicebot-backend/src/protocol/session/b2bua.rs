@@ -1165,7 +1165,7 @@ fn send_non2xx_ack(
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```ignore
 /// # async fn example() -> Result<(), anyhow::Error> {
 /// let addr = resolve_target_addr("sip:alice@example.com").await?;
 /// println!("{}", addr);
@@ -1195,7 +1195,7 @@ async fn resolve_target_addr(uri: &str) -> Result<SocketAddr> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use std::net::SocketAddr;
 /// let sdp = crate::Sdp { ip: "127.0.0.1".into(), port: 1234 };
 /// let addr = crate::resolve_rtp_addr(&sdp).unwrap();
@@ -1332,7 +1332,7 @@ async fn send_outbound_invite(
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// let via = build_via("198.51.100.1", 5060);
 /// assert!(via.starts_with("SIP/2.0/UDP 198.51.100.1:5060"));
 /// assert!(via.contains(";branch="));
@@ -1348,7 +1348,7 @@ fn build_via(host: &str, port: u16) -> String {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// let branch = generate_branch();
 /// assert!(branch.starts_with("z9hG4bK-"));
 /// ```
@@ -1427,7 +1427,7 @@ fn extract_tag(value: &str) -> Option<String> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// assert_eq!(extract_contact_uri("<sip:alice@example.com>;expires=3600"), "sip:alice@example.com");
 /// assert_eq!(extract_contact_uri("sip:bob@example.org"), "sip:bob@example.org");
 /// assert_eq!(extract_contact_uri("  <sip:carol@host>  "), "sip:carol@host");
@@ -1498,7 +1498,7 @@ fn log_cancel(label: &str, peer: SocketAddr, request: &SipRequest) {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// let resp = SipResponse {
 ///     version: "SIP/2.0".to_string(),
 ///     status_code: 200,

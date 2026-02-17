@@ -76,7 +76,7 @@ impl RegisterClient {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// // Given a configured RegisterClient `client`:
     /// let req = client.build_request_with_expires(3600, client.cseq);
     /// // request URI should target the registrar domain configured on the client

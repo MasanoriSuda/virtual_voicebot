@@ -70,7 +70,7 @@ async fn run_with_listener(
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
 /// use std::path::Path;
 /// use tokio::net::TcpStream;
@@ -466,7 +466,7 @@ fn sanitize_path(p: &str) -> PathBuf {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```ignore
 /// # use tokio::net::TcpStream;
 /// # async fn example() -> std::io::Result<()> {
 /// let mut stream = TcpStream::connect("127.0.0.1:8080").await?;

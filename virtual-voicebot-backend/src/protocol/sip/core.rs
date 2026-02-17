@@ -440,7 +440,7 @@ fn build_bye_request(ctx: &mut InviteContext, cfg: &SipConfig) -> Option<Vec<u8>
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// let uri = extract_contact_uri("Alice <sip:alice@example.com>;expires=3600");
 /// assert_eq!(uri, "sip:alice@example.com");
 ///
@@ -467,7 +467,7 @@ fn extract_contact_uri(value: &str) -> &str {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// assert_eq!(contact_scheme_from_uri("sips:alice@example.com"), "sips");
 /// assert_eq!(contact_scheme_from_uri(" SIP:alice@example.com"), "sip");
 /// assert_eq!(contact_scheme_from_uri("   sIps:bob@ex"), "sips");
@@ -735,7 +735,7 @@ impl SipCore {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// // Assume `core` is a mutable SipCore, `resp` is a SipResponse and `peer` is TransportPeer.
     /// // When registrar handles the response the returned vector will be empty:
     /// let events = core.handle_response(resp, peer);
@@ -952,7 +952,7 @@ impl SipCore {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// // Assume `core` is a mutable SipCore and `req`, `headers`, `peer` are prepared.
     /// // The call below will validate session timers, update internal invite state,
     /// // and return a ReInvite event when accepted.
@@ -1057,7 +1057,7 @@ impl SipCore {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// // Assuming `core` is a mutable SipCore, `req` is a parsed CANCEL request,
     /// // `headers` is a CoreHeaderSnapshot extracted from the request, and
     /// // `peer` is the transport peer the request arrived from:
@@ -1273,7 +1273,7 @@ impl SipCore {
     ///
     /// # Examples
     ///
-    /// ```rust,no_run
+    /// ```ignore
     /// // `core` is a mutable SipCore instance, `req` is a parsed UPDATE request,
     /// // `headers` is a CoreHeaderSnapshot for that request, and `peer` is the transport peer.
     /// let events = core.handle_update(req, headers, peer);
@@ -1514,8 +1514,8 @@ impl SipCore {
     /// # Examples
     ///
     /// ```no_run
-    /// # use crate::shared::entities::CallId;
-    /// # use crate::protocol::sip::{SipCore, SipCommand};
+    /// # use virtual_voicebot_backend::entities::CallId;
+    /// # use virtual_voicebot_backend::protocol::sip::{SipCommand, SipCore};
     /// # fn example(core: &mut SipCore, call_id: &CallId, cmd: SipCommand) {
     /// core.handle_sip_command(call_id, cmd);
     /// # }

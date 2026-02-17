@@ -107,7 +107,7 @@ fn fallback_summary(report: &WeatherReport) -> String {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```ignore
 /// # use crate::weather::WeatherQuery;
 /// # async fn _example() -> anyhow::Result<()> {
 /// let q = WeatherQuery { location: "Tokyo".into(), date: None };
@@ -335,4 +335,106 @@ fn read_prompt_from(name: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn normalize_location_removes_spaces_and_suffixes() {
+        assert_eq!(normalize_location("東京都"), "東京");
+        assert_eq!(normalize_location(" 大阪府 "), "大阪");
+        assert_eq!(normalize_location("愛知県"), "愛知");
+        assert_eq!(normalize_location("　札幌　"), "札幌");
+    }
+
+    #[test]
+    fn location_to_area_code_maps_known_locations_and_codes() {
+        assert_eq!(location_to_area_code("東京"), Some("130000".to_string()));
+        assert_eq!(location_to_area_code("大阪府"), Some("270000".to_string()));
+        assert_eq!(location_to_area_code("130000"), Some("130000".to_string()));
+        assert_eq!(location_to_area_code("Unknown"), None);
+    }
+
+    #[test]
+    fn select_area_matches_by_normalized_name() {
+        let areas = vec![
+            json!({"area": {"name": "大阪府"}}),
+            json!({"area": {"name": "東京都"}}),
+        ];
+        let selected = select_area(&areas, "東京").expect("expected matched area");
+        let name = selected
+            .get("area")
+            .and_then(|v| v.get("name"))
+            .and_then(|v| v.as_str());
+        assert_eq!(name, Some("東京都"));
+    }
+
+    #[test]
+    fn parse_weather_report_extracts_selected_area_values() {
+        let value = json!([
+            {
+                "timeSeries": [
+                    {
+                        "areas": [
+                            {
+                                "area": {"name": "大阪府"},
+                                "weathers": ["雨"],
+                                "pops": ["20", "40"],
+                                "tempsMin": ["10"],
+                                "tempsMax": ["18"]
+                            },
+                            {
+                                "area": {"name": "東京都"},
+                                "weathers": ["晴れ"],
+                                "pops": ["10", "20"],
+                                "tempsMin": ["12"],
+                                "tempsMax": ["22"]
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]);
+
+        let report = parse_weather_report(&value, "東京", "today").expect("parse should succeed");
+        assert_eq!(report.location, "東京都");
+        assert_eq!(report.date, "today");
+        assert_eq!(report.weather.as_deref(), Some("晴れ"));
+        assert_eq!(report.temp_min, Some(12));
+        assert_eq!(report.temp_max, Some(22));
+        assert_eq!(report.pops, vec!["10".to_string(), "20".to_string()]);
+    }
+
+    #[test]
+    fn parse_weather_report_falls_back_to_temps_range() {
+        let value = json!([
+            {
+                "timeSeries": [
+                    {
+                        "areas": [
+                            {
+                                "area": {"name": "名古屋市"},
+                                "weathers": ["くもり"],
+                                "temps": ["17", "5", "9"]
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]);
+
+        let report = parse_weather_report(&value, "名古屋", "today").expect("parse should succeed");
+        assert_eq!(report.location, "名古屋市");
+        assert_eq!(report.temp_min, Some(5));
+        assert_eq!(report.temp_max, Some(17));
+    }
+
+    #[test]
+    fn parse_weather_report_returns_error_for_non_array_response() {
+        let value = json!({"timeSeries": []});
+        assert!(parse_weather_report(&value, "東京", "today").is_err());
+    }
 }

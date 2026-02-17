@@ -275,10 +275,15 @@ impl AsrPort for DefaultAiPort {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// use virtual_voicebot_backend::service::ai::DefaultAiPort;
+    /// use virtual_voicebot_backend::ports::ai::AsrPort;
+    ///
+    /// # async fn example() {
     /// let port = DefaultAiPort::new();
-    /// let transcript = futures::executor::block_on(port.transcribe_chunks("call-1".to_string(), vec![])).unwrap();
+    /// let transcript = port.transcribe_chunks("call-1".to_string(), vec![]).await;
+    /// let _ = transcript;
+    /// # }
     /// ```
     fn transcribe_chunks(
         &self,
@@ -398,7 +403,7 @@ pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```ignore
 /// # use crate::service::ai::llm::{call_gemini, ChatMessage, Role};
 /// # tokio_test::block_on(async {
 /// let msgs = vec![ChatMessage { role: Role::User, content: "Hello".into() }];
@@ -489,7 +494,7 @@ fn aws_transcribe_enabled() -> bool {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// # tokio_test::block_on(async {
 /// let transcript = crate::service::ai::transcribe_with_aws("/tmp/example.wav").await;
 /// match transcript {

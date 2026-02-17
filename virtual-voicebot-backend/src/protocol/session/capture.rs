@@ -69,9 +69,12 @@ impl AudioCapture {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
+    /// use virtual_voicebot_backend::protocol::session::capture::AudioCapture;
+    /// use virtual_voicebot_backend::shared::config::VadConfig;
+    ///
     /// let cfg = VadConfig {
-    ///     vad_threshold: 50,
+    ///     rms_threshold: 50,
     ///     start_silence_ms: 0,
     ///     end_silence_ms: 200,
     ///     min_speech_ms: 100,

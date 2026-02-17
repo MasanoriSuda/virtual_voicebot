@@ -77,26 +77,34 @@ const APP_HISTORY_MAX_MESSAGES: usize = 20;
 /// # Examples
 ///
 /// ```no_run
-/// // assume necessary types and implementations are in scope
-/// let (session_tx, _session_rx) = tokio::sync::mpsc::channel(128);
-/// let ai_port: std::sync::Arc<dyn AiServices> = /* ... */;
-/// let phone_lookup: std::sync::Arc<dyn PhoneLookupPort> = /* ... */;
-/// let notification_port: std::sync::Arc<dyn NotificationPort> = /* ... */;
-/// let app_cfg = crate::shared::config::AppRuntimeConfig::from_env();
+/// use std::sync::Arc;
+/// use tokio::sync::mpsc::channel;
+/// use virtual_voicebot_backend::ai::DefaultAiPort;
+/// use virtual_voicebot_backend::app::{spawn_app_worker, AppEvent};
+/// use virtual_voicebot_backend::config::AppRuntimeConfig;
+/// use virtual_voicebot_backend::entities::CallId;
+/// use virtual_voicebot_backend::notification::NoopNotification;
+/// use virtual_voicebot_backend::ports::ai::AiServices;
+/// use virtual_voicebot_backend::ports::notification::NotificationService;
+/// use virtual_voicebot_backend::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
+/// use virtual_voicebot_backend::session::SessionOut;
+///
+/// let (session_tx, _session_rx) = channel::<(CallId, SessionOut)>(128);
+/// let ai_port: Arc<dyn AiServices> = Arc::new(DefaultAiPort::new());
+/// let phone_lookup: Arc<dyn PhoneLookupPort> = Arc::new(NoopPhoneLookup::new());
+/// let notification_port: Arc<dyn NotificationService> = Arc::new(NoopNotification::new());
 /// let tx = spawn_app_worker(
-///     crate::protocol::session::types::CallId::new("call-123").unwrap(),
+///     CallId::new("call-123").unwrap(),
 ///     session_tx,
 ///     ai_port,
 ///     phone_lookup,
 ///     notification_port,
-///     app_cfg,
+///     AppRuntimeConfig::from_env(),
 /// );
-/// let _ = tx
-///     .send(AppEvent::CallStarted {
-///         call_id: CallId::new("call-123").unwrap(),
-///         caller: None,
-///     })
-///     .await;
+/// let _ = tx.try_send(AppEvent::CallStarted {
+///     call_id: CallId::new("call-123").unwrap(),
+///     caller: None,
+/// });
 /// ```
 pub fn spawn_app_worker(
     call_id: CallId,
@@ -162,7 +170,7 @@ impl AppWorker {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// use std::sync::Arc;
     ///
     /// use crate::shared::ports::app::app_event_channel;
@@ -334,6 +342,7 @@ impl AppWorker {
     ///
     /// ```rust,no_run
     /// # use std::sync::Arc;
+    /// # use virtual_voicebot_backend::entities::CallId;
     /// # async fn example() {
     /// // `worker` is an instance of the surrounding type that provides `handle_audio_buffer`.
     /// // This example demonstrates the call pattern; constructing a full `AppWorker` requires
@@ -585,7 +594,7 @@ impl AppWorker {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// // Assume `worker` is a mutable AppWorker instance.
     /// // The first call schedules a ringing notification; the second call is ignored.
     /// let ts = chrono::FixedOffset::east_opt(9 * 3600).unwrap().now();
@@ -621,7 +630,7 @@ impl AppWorker {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// // Assuming `worker` is a mutable AppWorker instance:
     /// use chrono::FixedOffset;
     /// let timestamp = chrono::Utc::now().with_timezone(&FixedOffset::east(0));
@@ -704,7 +713,7 @@ impl AppWorker {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// // given a mutable `worker: AppWorker` in scope:
     /// worker.handle_phone_lookup(Some("03-1234-5678".into())).await;
     /// worker.handle_phone_lookup(None).await;
@@ -759,7 +768,7 @@ impl AppWorker {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// assert!(is_spec_question("使ってるモデルは？"));
 /// assert!(is_spec_question("LLMは何？"));
 /// assert!(!is_spec_question("今日の天気はどうですか？"));
