@@ -36,13 +36,13 @@ pub fn build_rtp_packet(pkt: &RtpPacket) -> Vec<u8> {
 
     // Extension
     if let Some(ext) = pkt.extension.as_ref() {
-        let ext_len_words = (ext.data.len() + 3) / 4;
+        let ext_len_words = ext.data.len().div_ceil(4);
         buf.extend_from_slice(&ext.profile.to_be_bytes());
         buf.extend_from_slice(&(ext_len_words as u16).to_be_bytes());
         buf.extend_from_slice(&ext.data);
         let pad_len = ext_len_words * 4 - ext.data.len();
         if pad_len > 0 {
-            buf.extend(std::iter::repeat(0u8).take(pad_len));
+            buf.extend(std::iter::repeat_n(0u8, pad_len));
         }
     }
 

@@ -48,61 +48,33 @@ pub fn parse_digest_challenge(header_value: &str) -> Option<DigestChallenge> {
 }
 
 /// Builds a Digest Authorization header value from the given credentials and challenge.
-
 ///
-
 /// The function computes the response value according to the challenge fields (realm, nonce,
-
 /// optional algorithm, optional qop, optional opaque) and returns a header string beginning with
-
 /// `"Digest "` containing the required parameters. If the challenge is missing required fields
-
 /// (realm or nonce) or specifies an unsupported algorithm, `None` is returned.
-
 ///
-
 /// # Parameters
-
 ///
-
 /// - `nc`: the nonce count for this request; formatted as an eight-digit hexadecimal in the header.
-
 /// - `challenge`: the parsed `DigestChallenge` describing server-supplied parameters.
-
 ///
-
 /// # Returns
-
 ///
-
 /// `Some` containing the full Authorization header value when computation succeeds, `None` otherwise.
-
 ///
-
 /// # Examples
-
 ///
-
 /// ```
-
 /// let challenge = DigestChallenge {
-
 ///     realm: "example.com".into(),
-
 ///     nonce: "nonce123".into(),
-
 ///     algorithm: None,
-
 ///     qop: Some("auth".into()),
-
 ///     opaque: None,
-
 /// };
-
 /// let header = build_authorization_header("alice", "password", "GET", "/protected", &challenge, 1);
-
 /// assert!(header.is_some());
-
 /// ```
 pub fn build_authorization_header(
     username: &str,

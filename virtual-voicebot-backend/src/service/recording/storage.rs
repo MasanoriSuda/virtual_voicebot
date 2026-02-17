@@ -10,6 +10,12 @@ impl FileStoragePort {
     }
 }
 
+impl Default for FileStoragePort {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StoragePort for FileStoragePort {
     fn load_wav_as_pcmu_frames(&self, path: &str) -> Result<Vec<Vec<u8>>, StorageError> {
         load_wav_as_pcmu_frames(path)

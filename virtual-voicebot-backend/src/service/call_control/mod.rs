@@ -143,45 +143,25 @@ struct NotificationState {
 
 impl AppWorker {
     /// Creates a new AppWorker initialized for the given call.
-
     ///
-
     /// The returned worker is inactive, has an empty chat history, a fresh Router,
-
     /// and a default NotificationState ready to track ringing/missed/ended notifications.
-
     ///
-
     /// # Parameters
-
     ///
-
     /// - `call_id`: identifier for the call this worker will manage.
-
     /// - `session_out_tx`: channel to send SessionOut updates back to the session.
-
     /// - `rx`: receiver for AppEvent messages destined for this worker.
-
     /// - `ai_port`: AI service port (transcription, NLU, TTS, etc.).
-
     /// - `phone_lookup`: phone lookup service port.
-
     /// - `notification_port`: notification service used to emit ringing/missed/ended notifications.
-
     ///
-
     /// # Returns
-
     ///
-
     /// A configured `AppWorker` instance ready to be spawned.
-
     ///
-
     /// # Examples
-
     ///
-
     /// ```no_run
     /// use std::sync::Arc;
     ///
@@ -510,7 +490,7 @@ impl AppWorker {
                 };
                 (answer_text, query)
             }
-            RouteAction::Transfer { query: _, person } => {
+            RouteAction::Transfer { person } => {
                 let target = self.router.resolve_transfer_person(person.as_str());
                 if let Some(resolved) = target {
                     let confirm_message = self.router.transfer_confirm_message();

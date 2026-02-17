@@ -3735,6 +3735,29 @@
       "transferEndedAt": null,
       "createdAt": "2026-02-17T00:26:03.857Z",
       "updatedAt": "2026-02-17T00:26:03.857Z"
+    },
+    "019c692b-be7b-7912-a2f6-c79efdb3c5a8": {
+      "id": "019c692b-be7b-7912-a2f6-c79efdb3c5a8",
+      "externalCallId": "019c692b-be7b-7912-a2f6-c79efdb3c5a8",
+      "sipCallId": "Asc7v4ys_4XeGkbZ95X-SA..",
+      "callerNumber": "+819028894539",
+      "callerCategory": "registered",
+      "actionCode": "AN",
+      "ivrFlowId": null,
+      "status": "ended",
+      "startedAt": "2026-02-17T01:16:40.443Z",
+      "answeredAt": null,
+      "endedAt": "2026-02-17T01:16:46.648484919+00:00",
+      "durationSec": 6,
+      "endReason": "normal",
+      "callDisposition": "denied",
+      "finalAction": "announcement",
+      "transferStatus": "no_transfer",
+      "transferStartedAt": null,
+      "transferAnsweredAt": null,
+      "transferEndedAt": null,
+      "createdAt": "2026-02-17T01:16:49.242Z",
+      "updatedAt": "2026-02-17T01:16:49.242Z"
     }
   },
   "recordings": {
@@ -9339,5 +9362,5 @@
       "updatedAt": "2026-02-17T00:25:48.899Z"
     }
   },
-  "updatedAt": "2026-02-17T00:26:03.857Z"
+  "updatedAt": "2026-02-17T01:16:49.242Z"
 }

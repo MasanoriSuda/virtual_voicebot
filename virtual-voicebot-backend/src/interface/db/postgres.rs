@@ -53,9 +53,8 @@ impl PostgresAdapter {
         Ok(Self { pool })
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn pool(&self) -> PgPool {
-        self.pool.clone()
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
     }
 
     async fn lookup_phone_inner(

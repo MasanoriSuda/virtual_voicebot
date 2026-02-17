@@ -84,6 +84,7 @@ type TcpConnMap = Arc<Mutex<HashMap<ConnId, TcpConn>>>;
 ///     });
 /// }
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub async fn run_packet_loop(
     sip_sock: UdpSocket,
     sip_tcp_listener: Option<TcpListener>,
@@ -122,8 +123,7 @@ pub async fn run_packet_loop(
     }
 
     if let Some(settings) = config::tls_settings() {
-        let acceptor = tls::build_tls_acceptor(settings)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let acceptor = tls::build_tls_acceptor(settings).map_err(std::io::Error::other)?;
         let listener = TcpListener::bind((settings.bind_ip.as_str(), settings.port)).await?;
         let sip_tx = sip_tx.clone();
         let tcp_conns = tcp_conns.clone();

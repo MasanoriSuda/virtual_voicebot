@@ -1,33 +1,32 @@
-mod interface;
-mod protocol;
-mod service;
-mod shared;
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::interface::db::{PostgresAdapter, RoutingRepoImpl};
-use crate::interface::http;
-use crate::interface::notification::{LineAdapter, NoopNotification};
-use crate::protocol::rtp::tx::RtpTxHandle;
-use crate::protocol::session::types::CallId;
-use crate::protocol::session::{
+use virtual_voicebot_backend::interface::db::{PostgresAdapter, RoutingRepoImpl};
+use virtual_voicebot_backend::interface::http;
+use virtual_voicebot_backend::interface::notification::{LineAdapter, NoopNotification};
+use virtual_voicebot_backend::protocol::rtp::tx::RtpTxHandle;
+use virtual_voicebot_backend::protocol::session::types::CallId;
+use virtual_voicebot_backend::protocol::session::{
     spawn_session, MediaConfig, SessionControlIn, SessionOut, SessionRegistry,
 };
-use crate::protocol::sip::{b2bua_bridge, SipCommand, SipConfig, SipCore, SipEvent};
-use crate::protocol::transport::{run_packet_loop, RtpPortMap, SipInput, TransportSendRequest};
-use crate::service::ai;
-use crate::service::call_control as app;
-use crate::service::call_control::AppNotificationPort;
-use crate::service::recording;
-use crate::shared::ports::call_log_port::{CallLogPort, NoopCallLogPort};
-use crate::shared::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
-use crate::shared::ports::routing_port::{NoopRoutingPort, RoutingPort};
-use crate::shared::ports::session_lookup::SessionLookup;
-use crate::shared::{config, logging};
+use virtual_voicebot_backend::protocol::sip::{
+    b2bua_bridge, SipCommand, SipConfig, SipCore, SipEvent,
+};
+use virtual_voicebot_backend::protocol::transport::{
+    run_packet_loop, RtpPortMap, SipInput, TransportSendRequest,
+};
+use virtual_voicebot_backend::service::ai;
+use virtual_voicebot_backend::service::call_control as app;
+use virtual_voicebot_backend::service::call_control::AppNotificationPort;
+use virtual_voicebot_backend::service::recording;
+use virtual_voicebot_backend::shared::ports::call_log_port::{CallLogPort, NoopCallLogPort};
+use virtual_voicebot_backend::shared::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
+use virtual_voicebot_backend::shared::ports::routing_port::{NoopRoutingPort, RoutingPort};
+use virtual_voicebot_backend::shared::ports::session_lookup::SessionLookup;
+use virtual_voicebot_backend::shared::{config, logging};
 
 const SIP_INPUT_CHANNEL_CAPACITY: usize = 256;
 const SIP_SEND_CHANNEL_CAPACITY: usize = 256;
@@ -177,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     let routing_port: Arc<dyn RoutingPort> = match postgres_adapter.clone() {
-        Some(adapter) => Arc::new(RoutingRepoImpl::new(adapter.pool())),
+        Some(adapter) => Arc::new(RoutingRepoImpl::new(adapter.pool().clone())),
         None => {
             log::warn!("[main] routing evaluation disabled (DATABASE_URL unavailable)");
             Arc::new(NoopRoutingPort::new())

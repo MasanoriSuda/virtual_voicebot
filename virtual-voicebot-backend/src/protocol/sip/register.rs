@@ -219,13 +219,14 @@ impl RegisterClient {
 
     pub fn next_timer_at(&self) -> Option<Instant> {
         let mut next = None;
-        for candidate in [self.next_refresh_at, self.next_retry_at] {
-            if let Some(value) = candidate {
-                next = match next {
-                    Some(existing) => Some(std::cmp::min(existing, value)),
-                    None => Some(value),
-                };
-            }
+        for value in [self.next_refresh_at, self.next_retry_at]
+            .into_iter()
+            .flatten()
+        {
+            next = match next {
+                Some(existing) => Some(std::cmp::min(existing, value)),
+                None => Some(value),
+            };
         }
         if let Some(expires_at) = self.expires_at {
             if !self.expired_notified {
@@ -239,11 +240,11 @@ impl RegisterClient {
     }
 
     pub fn pop_due_request(&mut self, now: Instant) -> Option<SipRequest> {
-        if self.next_retry_at.map_or(false, |t| now >= t) {
+        if self.next_retry_at.is_some_and(|t| now >= t) {
             self.next_retry_at = None;
             return Some(self.build_next_request());
         }
-        if self.next_refresh_at.map_or(false, |t| now >= t) {
+        if self.next_refresh_at.is_some_and(|t| now >= t) {
             self.next_refresh_at = None;
             return Some(self.build_next_request());
         }

@@ -271,8 +271,8 @@ impl JitterBuffer {
                 self.buffer.clear();
                 self.expected = Some(frame.seq.wrapping_add(1));
                 out.push(frame);
-            } else if !self.buffer.contains_key(&frame.seq) {
-                self.buffer.insert(frame.seq, frame);
+            } else {
+                self.buffer.entry(frame.seq).or_insert(frame);
             }
         } else {
             // 古すぎる/重複は捨てる
@@ -528,7 +528,7 @@ fn update_jitter(state: &mut RtcpRxState, arrival: Instant, rtp_ts: u32) {
             let arrival_units = duration_to_rtp_units(arrival_delta, RTP_CLOCK_RATE);
             let rtp_delta = rtp_ts.wrapping_sub(prev_rtp_ts);
             let d = arrival_units as i64 - rtp_delta as i64;
-            let d_abs = d.abs() as u32;
+            let d_abs = d.unsigned_abs();
             let jitter = state.jitter as i64 + (d_abs as i64 - state.jitter as i64) / 16;
             state.jitter = jitter.max(0) as u32;
         }

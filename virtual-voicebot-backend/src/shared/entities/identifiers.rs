@@ -42,6 +42,12 @@ impl SessionId {
     }
 }
 
+impl Default for SessionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// 録音識別子
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RecordingId(uuid::Uuid);
@@ -49,5 +55,11 @@ pub struct RecordingId(uuid::Uuid);
 impl RecordingId {
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for RecordingId {
+    fn default() -> Self {
+        Self::new()
     }
 }

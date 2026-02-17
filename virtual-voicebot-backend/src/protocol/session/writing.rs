@@ -16,6 +16,7 @@ use crate::shared::ports::routing_port::RoutingPort;
 use crate::shared::ports::storage::StoragePort;
 
 /// セッションを生成し、SessionOut を上位レイヤに配線する（挙動は従来と同じ）。
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_call(
     call_id: CallId,
     from_uri: String,
@@ -32,7 +33,7 @@ pub fn spawn_call(
     routing_port: Arc<dyn RoutingPort>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
 ) -> SessionHandle {
-    let handle = Session::spawn(
+    Session::spawn(
         call_id.clone(),
         from_uri,
         to_uri,
@@ -47,11 +48,10 @@ pub fn spawn_call(
         call_log_port,
         routing_port,
         runtime_cfg,
-    );
-
-    handle
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_session(
     call_id: CallId,
     from_uri: String,

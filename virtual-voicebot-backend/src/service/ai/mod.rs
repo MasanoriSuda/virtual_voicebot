@@ -255,6 +255,12 @@ impl DefaultAiPort {
     }
 }
 
+impl Default for DefaultAiPort {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AsrPort for DefaultAiPort {
     /// Transcribes a sequence of ASR audio chunks for a given call and returns the resulting transcript.
     ///

@@ -234,7 +234,7 @@ pub enum SessionOut {
 
 /// セッション状態（設計 doc の Idle/Early/Confirmed/Terminating/Terminated に対応）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SessState {
+pub enum SessState {
     Idle,
     Early,
     /// Confirmed 相当
@@ -436,6 +436,12 @@ impl SessionRegistry {
             return Vec::new();
         }
         reply_rx.await.unwrap_or_default()
+    }
+}
+
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

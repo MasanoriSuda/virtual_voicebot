@@ -1104,6 +1104,7 @@ fn send_b2bua_payload(peer: TransportPeer, payload: Vec<u8>) -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_invite_ack(
     peer: TransportPeer,
     request_uri: &str,
@@ -1289,6 +1290,7 @@ fn build_outbound_auth_value(
 /// //     via, via_port, &registrar, sdp, auth).await?;
 /// # Ok(()) }
 /// ```
+#[allow(clippy::too_many_arguments)]
 async fn send_outbound_invite(
     peer: SocketAddr,
     request_uri: &str,
@@ -1340,25 +1342,15 @@ fn build_via(host: &str, port: u16) -> String {
 }
 
 /// Generates a unique SIP "branch" parameter suitable for Via headers.
-
 ///
-
 /// The returned string is a branch token prefixed with `z9hG4bK-` followed by a
-
 /// randomized numeric component to avoid collisions.
-
 ///
-
 /// # Examples
-
 ///
-
 /// ```
-
 /// let branch = generate_branch();
-
 /// assert!(branch.starts_with("z9hG4bK-"));
-
 /// ```
 fn generate_branch() -> String {
     let mut rng = rand::thread_rng();
@@ -1416,9 +1408,7 @@ fn extract_tag(value: &str) -> Option<String> {
     let lower = value.to_ascii_lowercase();
     let idx = lower.find("tag=")?;
     let rest = &value[idx + 4..];
-    let end = rest
-        .find(|c: char| c == ';' || c == '>' || c == ' ')
-        .unwrap_or(rest.len());
+    let end = rest.find([';', '>', ' ']).unwrap_or(rest.len());
     Some(rest[..end].to_string())
 }
 
