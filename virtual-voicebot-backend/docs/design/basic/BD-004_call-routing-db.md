@@ -661,7 +661,7 @@ SIP INVITE 受信
 | 項目 | 方針 |
 |------|------|
 | SQL インジェクション | パラメータバインド必須（SQLx） |
-| 電話番号 | E.164 形式で正規化保存。DB の CHECK 制約で強制 |
+| 電話番号 | E.164 正規化して保存（`+819012345678` 形式） |
 
 ---
 
@@ -669,8 +669,11 @@ SIP INVITE 受信
 
 ### 8.1 前提条件
 
-- PostgreSQL 16+ を使用（#62 決定事項、STEER-110 で Tsurugi から移行決定）
-- Backend は Rust + SQLx（コンパイル時クエリ検証）でDB接続
+- PostgreSQL を使用（#62 決定事項）
+- **環境構成方針**
+  - 開発環境: Frontend / Backend / PostgreSQL すべてローカル（同一 PC or 同一ラズパイ、Docker 不使用）
+  - 本番環境: 安定後 AWS に展開（マネージド DB 等を検討）
+- Backend は Rust + SQLx でDB接続
 - SIP INVITE から Caller ID を取得可能
 - UUID v7 は Rust 側で生成（`uuid::Uuid::now_v7()`）
 
@@ -686,7 +689,7 @@ SIP INVITE 受信
 
 ## 9. 未確定事項（Open Questions）
 
-全件 Resolved（STEER-110 で決定）。
+### 解決済み
 
 - [x] Q1: 本設計のスコープ → 仕様決定のみ
 - [x] Q2: RD-004 との関係 → BD レベルで対応
@@ -704,6 +707,29 @@ SIP INVITE 受信
 - [x] Q14: パーティション FK → call_log_index 中間テーブル
 - [x] Q15: IVR 循環 FK → root_node_id 廃止
 
+### 解決済み（Codex 指摘）
+
+- [x] Q8: **DBスキーマ移行方針** → **SQLx migrate** を使用
+  - Rust + SQLx 環境に整合、`migrations/` ディレクトリで管理
+
+- [x] Q9: **ActionCode 適用優先度** → **registered_numbers 優先**（個別設定 > デフォルト）
+  - 判定順序: spam_numbers → registered_numbers（個別 action_code）→ routing_rules（カテゴリデフォルト）
+
+- [x] Q10: **ivr_nodes.node_type vs action_code** → **責務分離**
+  - `node_type`: ノードの構造種別（ANNOUNCE / KEYPAD / FORWARD / EXIT 等）
+  - `action_code`: そのノードで実行する処理コード（IA / IK / IF / IE 等）
+  - node_type は木構造の意味、action_code は実行時の処理を規定
+
+- [x] Q11: **IVR 木構造保証** → **両方**（DB + アプリ）
+  - DB: `parent_id` による親子関係 + アプリ側で挿入/更新時に循環チェック
+  - 理由: DBトリガーは複雑になるため、アプリ側で検証しつつ DB で基本構造を保証
+
+- [x] Q12: **Caller ID 正規化ルール** → **E.164 正規化**
+  - 国番号欠落時: 日本 `+81` を補完（デフォルト設定）
+  - 先頭 `0` 除去: `090...` → `+8190...`
+  - ハイフン/スペース除去: `090-1234-5678` → `+819012345678`
+  - 保存形式: `+{国番号}{番号}` （例: `+819012345678`）
+
 ---
 
 ## 変更履歴
@@ -712,5 +738,6 @@ SIP INVITE 受信
 |------|-----------|---------|--------|
 | 2026-02-02 | 1.0 | 初版作成（#92 壁打ち結果） | Claude Code |
 | 2026-02-02 | 1.1 | VB/VR（ボイスボット録音なし/あり）追加、IB追加、録音オプション対応表追加 | Claude Code |
-| 2026-02-07 | 2.0 | STEER-110 反映: root_node_id 廃止、UUID v7/E.164/論理削除/楽観ロック対応、通話系テーブル追加（call_log_index, call_logs, recordings）、同期・設定系追加（sync_outbox, system_settings）、ER図全面更新 | Claude Code |
-| 2026-02-08 | 2.1 | Issue #138 反映: registered_numbers に group_id/group_name カラム追加、call_action_rules テーブル追加（番号グループ評価用）、ER図更新 | Claude Code (claude-sonnet-4-5) |
+| 2026-02-02 | 1.2 | Codex 指摘による Open Questions 追加（Q8〜Q12） | Claude Code |
+| 2026-02-02 | 1.3 | Q8〜Q12 解決: SQLx migrate、優先度、責務分離、循環チェック、E.164正規化 | Claude Code |
+| 2026-02-02 | 1.4 | 環境構成方針: 開発=ローカル（PC/ラズパイ）、本番=AWS | Claude Code |
