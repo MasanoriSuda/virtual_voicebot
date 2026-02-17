@@ -6,7 +6,8 @@
     "build": "next build",
     "dev": "next dev",
     "lint": "eslint .",
-    "start": "next start"
+    "start": "next start",
+    "test:e2e": "npx playwright test --pass-with-no-tests"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
