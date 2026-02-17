@@ -1,0 +1,33 @@
+services:
+  backend:
+    build:
+      target: runtime
+    volumes: []
+    environment:
+      DATABASE_URL: postgres://voicebot:voicebot_test@postgres:5432/voicebot_test
+      RECORDING_HTTP_ADDR: 0.0.0.0:18080
+    command: /workspace/virtual-voicebot-backend
+
+  frontend:
+    build:
+      dockerfile: Dockerfile.prod
+    volumes: []
+    environment:
+      BACKEND_URL: http://backend:18080
+      NODE_ENV: production
+    command: ["node", "server.js"]
+
+  postgres:
+    environment:
+      POSTGRES_DB: voicebot_test
+      POSTGRES_USER: voicebot
+      POSTGRES_PASSWORD: voicebot_test
+
+  e2e:
+    build:
+      context: ./virtual-voicebot-frontend
+      dockerfile: Dockerfile.e2e
+    depends_on:
+      - frontend
+      - backend
+    command: pnpm test:e2e

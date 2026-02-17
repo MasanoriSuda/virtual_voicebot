@@ -28,10 +28,15 @@ RUN pip3 install --no-cache-dir \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain stable
 
+# cargo watch（開発時ホットリロード）
+RUN cargo install cargo-watch
+
 WORKDIR /workspace
 
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main() { println!(\"dummy\") }" > src/main.rs \
+RUN mkdir -p src/bin \
+    && echo "fn main() { println!(\"dummy\") }" > src/main.rs \
+    && echo "fn main() { println!(\"dummy\") }" > src/bin/serversync.rs \
     && cargo build --release \
     && rm -rf src
 
@@ -45,7 +50,7 @@ FROM ubuntu:22.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=UTC \
     RUST_BACKTRACE=1 \
-    PUBLIC_IP=127.0.0.1
+    LOCAL_IP=127.0.0.1
 
 RUN apt-get update && \
     apt-get install -y software-properties-common && \
@@ -65,6 +70,7 @@ WORKDIR /workspace
 COPY --from=build /workspace/target/release/virtual-voicebot-backend /workspace/virtual-voicebot-backend
 
 EXPOSE 5060/udp
-EXPOSE 10000-20000/udp
+EXPOSE 10000-10100/udp
+EXPOSE 18080
 
 CMD ["/workspace/virtual-voicebot-backend"]
