@@ -169,6 +169,23 @@
       "source": "tts",
       "createdAt": "2026-02-16T02:51:35.224Z",
       "updatedAt": "2026-02-16T02:51:35.224Z"
+    },
+    "55451734-e4c9-424e-ac3c-34c8a9691300": {
+      "id": "55451734-e4c9-424e-ac3c-34c8a9691300",
+      "name": "四国めたん時間外アナウンス",
+      "description": null,
+      "announcementType": "closed",
+      "isActive": true,
+      "folderId": "folder-closed",
+      "audioFileUrl": "/audio/announcements/55451734-e4c9-424e-ac3c-34c8a9691300.wav",
+      "ttsText": "おでんわありがとうございます、ほんじつのえいぎょうはしゅうりょうしておりますのでさいどおかけなおしください。",
+      "speakerId": 2,
+      "speakerName": "四国めたん - ノーマル",
+      "durationSec": 6.219,
+      "language": "ja",
+      "source": "tts",
+      "createdAt": "2026-02-17T00:24:00.208Z",
+      "updatedAt": "2026-02-17T00:24:00.208Z"
     }
   },
   "folders": {
@@ -209,5 +226,5 @@
       "updatedAt": "2026-02-07T17:48:30.883Z"
     }
   },
-  "updatedAt": "2026-02-16T02:51:35.224Z"
+  "updatedAt": "2026-02-17T00:24:00.208Z"
 }
