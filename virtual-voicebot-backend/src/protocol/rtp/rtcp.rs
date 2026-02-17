@@ -263,7 +263,7 @@ mod tests {
             report: Some(RtcpReportBlock {
                 ssrc: 0x1112_1314,
                 fraction_lost: 3,
-                cumulative_lost: 0x00AB_CD,
+                cumulative_lost: 0x0000_ABCD,
                 highest_seq: 0x5152_5354,
                 jitter: 0x6162_6364,
                 lsr: 0x7172_7374,
