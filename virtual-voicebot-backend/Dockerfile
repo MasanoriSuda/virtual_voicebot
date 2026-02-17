@@ -31,9 +31,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # cargo watch（開発時ホットリロード）
 RUN cargo install cargo-watch
 
-# inotify の監視上限を引き上げ（大量ファイル監視時の不足対策）
-RUN echo "fs.inotify.max_user_watches=524288" >> /etc/sysctl.conf
-
 WORKDIR /workspace
 
 COPY Cargo.toml Cargo.lock ./
