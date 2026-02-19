@@ -119,6 +119,8 @@ fn max_and_second(values: &[f64; 4]) -> (usize, f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::rtp::codec::linear16_to_mulaw;
+
     fn generate_tone(low: f64, high: f64, duration_ms: u32) -> Vec<u8> {
         let sample_count = (SAMPLE_RATE as u32 * duration_ms / 1000) as usize;
         let mut out = Vec::with_capacity(sample_count);
@@ -131,40 +133,7 @@ mod tests {
         }
         out
     }
-    /// Encodes a 16-bit linear PCM sample into 8-bit mu-law (μ-law).
-    ///
-    /// The function applies the standard μ-law companding algorithm with a bias
-    /// and returns the resulting encoded byte.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// // Zero maps to 0xFF in this μ-law implementation.
-    /// assert_eq!(linear16_to_mulaw(0), 0xFF);
-    /// ```
-    fn linear16_to_mulaw(sample: i16) -> u8 {
-        const BIAS: i32 = 0x84;
-        let mut pcm = sample as i32;
-        let sign = if pcm < 0 {
-            pcm = -pcm;
-            0x80
-        } else {
-            0x00
-        };
-        pcm += BIAS;
-        if pcm > 0x7FFF {
-            pcm = 0x7FFF;
-        }
-        let mut exponent: u32 = 7;
-        for exp in 0u32..8 {
-            if pcm <= (0x1F << (exp + 3)) {
-                exponent = exp;
-                break;
-            }
-        }
-        let mantissa = ((pcm >> (exponent + 3)) & 0x0F) as u8;
-        !(sign | ((exponent as u8) << 4) | mantissa)
-    }
+
     /// Detects the first debounced DTMF digit in a mu-law encoded audio buffer.
     ///
     /// Processes the provided 8-bit mu-law PCM samples in 160-sample frames and returns the first

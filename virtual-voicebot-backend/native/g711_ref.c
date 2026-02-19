@@ -11,8 +11,8 @@
 
 static short seg_aend[8] = {0x1F, 0x3F, 0x7F, 0xFF,
                             0x1FF, 0x3FF, 0x7FF, 0xFFF};
-static short seg_uend[8] = {0x3F, 0x7F, 0xFF, 0x1FF,
-                            0x3FF, 0x7FF, 0xFFF, 0x1FFF};
+static short seg_uend[8] = {0xFF, 0x1FF, 0x3FF, 0x7FF,
+                            0xFFF, 0x1FFF, 0x3FFF, 0x7FFF};
 
 static short search_segment(short val, short *table, short size) {
     short i;
@@ -78,33 +78,34 @@ short g711_alaw2linear(unsigned char a_val) {
 }
 
 #define BIAS (0x84)
-#define CLIP (8159)
+#define CLIP (32635)
 
 unsigned char g711_linear2ulaw(short pcm_val) {
-    short mask;
+    int pcm;
+    int mask;
     short seg;
     unsigned char uval;
 
-    pcm_val = pcm_val >> 2;
-    if (pcm_val < 0) {
-        pcm_val = -pcm_val;
+    pcm = (int) pcm_val;
+    if (pcm < 0) {
+        pcm = -pcm;
         mask = 0x7F;
     } else {
         mask = 0xFF;
     }
 
-    if (pcm_val > CLIP) {
-        pcm_val = CLIP;
+    if (pcm > CLIP) {
+        pcm = CLIP;
     }
-    pcm_val += (BIAS >> 2);
+    pcm += BIAS;
 
-    seg = search_segment(pcm_val, seg_uend, NSEGS);
+    seg = search_segment((short) pcm, seg_uend, NSEGS);
 
     if (seg >= NSEGS) {
         return (unsigned char) (0x7F ^ mask);
     }
 
-    uval = (unsigned char) ((seg << 4) | ((pcm_val >> (seg + 1)) & 0x0F));
+    uval = (unsigned char) ((seg << 4) | ((pcm >> (seg + 3)) & 0x0F));
     return (unsigned char) (uval ^ mask);
 }
 

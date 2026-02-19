@@ -49,10 +49,10 @@ pub(crate) fn mulaw_to_linear16(mu: u8) -> i16 {
     }
 }
 
-fn linear16_to_mulaw(sample: i16) -> u8 {
-    const BIAS: i16 = 0x84;
-    const CLIP: i16 = 8159;
-    let mut pcm = sample >> 2;
+pub(crate) fn linear16_to_mulaw(sample: i16) -> u8 {
+    const BIAS: i32 = 0x84;
+    const CLIP: i32 = 32635;
+    let mut pcm = sample as i32;
     let mask = if pcm < 0 {
         pcm = -pcm;
         0x7F
@@ -62,13 +62,13 @@ fn linear16_to_mulaw(sample: i16) -> u8 {
     if pcm > CLIP {
         pcm = CLIP;
     }
-    pcm += BIAS >> 2;
+    pcm += BIAS;
 
-    let seg = search_g711_segment(pcm, &SEG_UEND);
+    let seg = search_g711_segment(pcm as i16, &SEG_UEND);
     if seg >= 8 {
         return 0x7F ^ mask;
     }
-    let uval = (seg << 4) | (((pcm >> (seg + 1)) & 0x0F) as u8);
+    let uval = (seg << 4) | (((pcm >> (seg + 3)) & 0x0F) as u8);
     uval ^ mask
 }
 
@@ -135,7 +135,7 @@ fn linear16_to_alaw(sample: i16) -> u8 {
 }
 
 const SEG_AEND: [i16; 8] = [0x1F, 0x3F, 0x7F, 0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF];
-const SEG_UEND: [i16; 8] = [0x3F, 0x7F, 0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF, 0x1FFF];
+const SEG_UEND: [i16; 8] = [0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF, 0x1FFF, 0x3FFF, 0x7FFF];
 
 fn search_g711_segment(value: i16, table: &[i16; 8]) -> u8 {
     for (idx, limit) in table.iter().enumerate() {
