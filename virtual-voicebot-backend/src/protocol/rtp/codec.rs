@@ -93,7 +93,11 @@ fn alaw_to_linear16(a: u8) -> i16 {
         value += 0x100;
         value <<= exponent - 1;
     }
-    if sign { value } else { -value }
+    if sign {
+        value
+    } else {
+        -value
+    }
 }
 
 /// Converts a 16-bit linear PCM sample to its G.711 A-law encoded byte.
