@@ -1084,11 +1084,25 @@ fn spawn_rtp_listener(
                         }
                     };
                     let payload = decode_to_mulaw(codec, &pkt.payload);
-                    let _ = media_tx.try_send(SessionMediaIn::BLegRtp {
+                    match media_tx.try_send(SessionMediaIn::BLegRtp {
                         call_id: a_call_id.clone(),
                         stream_id: "b-leg".to_string(),
                         payload,
-                    });
+                    }) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            warn!(
+                                "[b2bua {} stream=b-leg] B-leg RTP drop: channel full",
+                                a_call_id
+                            );
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            error!(
+                                "[b2bua {} stream=b-leg] B-leg RTP drop: channel closed",
+                                a_call_id
+                            );
+                        }
+                    }
                 }
             }
         }
