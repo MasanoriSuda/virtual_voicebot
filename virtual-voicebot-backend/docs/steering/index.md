@@ -41,6 +41,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-110](STEER-110_backend-db-design.md) | バックエンド側データベース設計 | Approved | #110 | P0 | PostgreSQL 統合 DB 設計（11テーブル、UUID v7、月次パーティション、Outbox 同期） |
 | [STEER-123](STEER-123_recording-outbox-enqueue.md) | 録音データ sync_outbox エンキュー実装（Serversync バグフィックス） | Draft | #123 | P0 | 通話終了時に recording と recording_file を sync_outbox にエンキューするトランザクショナルライト実装 |
 | [STEER-143](STEER-143_recording-enhancement.md) | Backend 録音実装強化（Phase 5） | Approved | #143 | P2 | 録音フラグ連動・録音メタデータ管理・Frontend 同期の整合実装 |
+| [STEER-203](STEER-203_fix-bleg-rtp-timestamp-double-add.md) | B-leg → A-leg RTP タイムスタンプ二重加算バグ修正 | Approved | #203 | P0 | B2BUA 転送時に align_rtp_clock() と send_payload() でタイムスタンプが二重加算される問題を修正 |
 
 ---
 
@@ -84,3 +85,4 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-07 | 1.2 | STEER-095, STEER-110 追加 | Claude Code |
 | 2026-02-07 | 1.3 | STEER-096, STEER-123 追加（Serversync 実装とバグフィックス） | Claude Code |
 | 2026-02-11 | 1.4 | STEER-143 追加（Phase 5: 録音実装強化） | Codex |
+| 2026-02-20 | 1.5 | STEER-203 追加（B-leg RTP タイムスタンプ二重加算バグ修正） | Claude Code |

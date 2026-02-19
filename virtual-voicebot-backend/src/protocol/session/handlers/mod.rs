@@ -887,7 +887,6 @@ impl SessionCoordinator {
                     return;
                 }
                 if self.ivr_state == IvrState::B2buaMode {
-                    self.align_rtp_clock();
                     self.recording.push_tx(&payload);
                     self.recording.push_b_leg_rx(&payload);
                     self.rtp.send_payload(self.call_id.as_str(), payload);
