@@ -191,26 +191,40 @@ let _ = media_tx.try_send(SessionMediaIn::BLegRtp {
 });
 ```
 
+**現在のコード（コード確認済み）**: `match` による `Full`/`Closed` 分岐は実装済みだが、`Closed` 時に `break` がなくループが継続する。
+
+```rust
+// b2bua.rs 1099–1104 現状（break なし）
+Err(mpsc::error::TrySendError::Closed(_)) => {
+    error!(
+        "[b2bua {} stream=b-leg] B-leg RTP drop: channel closed",
+        a_call_id
+    );
+    // ← ここで break が必要
+}
+```
+
 **修正後**:
 ```rust
-match media_tx.try_send(SessionMediaIn::BLegRtp {
-    call_id: a_call_id.clone(),
-    stream_id: "b-leg".to_string(),
-    payload,
-}) {
-    Ok(_) => {}
-    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-        warn!("[b2bua {}] B-leg RTP drop: channel full", a_call_id);
-    }
-    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-        error!("[b2bua {}] B-leg RTP drop: channel closed", a_call_id);
-    }
+Err(mpsc::error::TrySendError::Full(_)) => {
+    warn!(
+        "[b2bua {} stream=b-leg] B-leg RTP drop: channel full",
+        a_call_id
+    );
+}
+Err(mpsc::error::TrySendError::Closed(_)) => {
+    error!(
+        "[b2bua {} stream=b-leg] B-leg RTP drop: channel closed",
+        a_call_id
+    );
+    break;  // セッション終了済み。これ以上ループを継続しない
 }
 ```
 
 **目的**: チャネル満杯（`Full`）とチャネル閉塞（`Closed`）を区別して可視化する。
-- `Full`: 高負荷によるバックプレッシャー。warn で検知し、頻度次第でキャパシティ調整を検討。
-- `Closed`: セッション終了後に受信ループが継続するなどの異常状態。error で検知して調査する。
+- `Full`: 高負荷によるバックプレッシャー。`warn` で検知し、頻度次第でキャパシティ調整を検討。ループは継続。
+- `Closed`: セッション終了後にチャネルが閉じられた状態。`error` で検知後、`break` でループを終了する。
+  `break` 後は既存の後続処理（`info!("[b2bua {}] rtp listener ended", ...)` ログ）が実行される。
 
 ---
 
@@ -252,7 +266,7 @@ B-leg 受信側のジッター再整列（reorder バッファ）は現状未実
 |--------|------|
 | 修正①適用後に IVR → B2BUA 遷移直後に音飛びが発生する場合 | Q1 回答により `rtp_last_sent` はリセットされないため、遷移直後の最初のパケットで `send_payload()` 内の `+pcm_len` のみが走る（問題なし）。ただし **実機での RTP タイムスタンプ連続性確認（20ms ごとに +160）は必須**。 |
 | 修正②で warn ログが大量出力されてログが埋もれる場合 | `media_tx` 容量は 64（約 1.28 秒分）。短時間で 64 超えは高負荷状態を示すため、まず warn で可視化し、頻度が高い場合は rate-limit ログへの変更を検討する。 |
-| `Closed` ログが実運用で発生した場合の調査観点 | セッション終了後も B-leg 受信ループが継続する競合状態が疑われる。実装 PR のレビュー時に「`b2bua` ループの終了タイミング」と「チャネルクローズのタイミング」の整合を確認すること。 |
+| `Closed` ログが実運用で発生した場合の調査観点 | `Closed` 検出時に `break` でループを終了する（修正②）。`break` 後は既存の `rtp listener ended` ログでクリーンアップ完了を確認できる。 |
 
 ---
 
@@ -260,7 +274,9 @@ B-leg 受信側のジッター再整列（reorder バッファ）は現状未実
 
 - [ ] B-leg → A-leg 転送中の RTP タイムスタンプが 20ms ごとに +160 で単調増加している（パケットキャプチャで確認）
 - [ ] 着信側から発信側への音声が聞き取れるレベルになる
-- [ ] `media_tx.try_send` 失敗時に `warn` ログが出力される
+- [ ] `media_tx.try_send` が `Full` の場合に `warn` ログが出力される
+- [ ] `media_tx.try_send` が `Closed` の場合に `error` ログを出力後、RTP リスナーループが `break` で終了する
+- [ ] `Closed` で `break` 後、`info!("[b2bua {}] rtp listener ended", ...)` ログが出力される（クリーンアップ確認）
 - [ ] IVR 再生モード（`B2buaMode` 以外）の動作に影響がないこと（既存テスト通過）
 - [ ] `cargo test` が pass する
 
@@ -294,3 +310,4 @@ B-leg 受信側のジッター再整列（reorder バッファ）は現状未実
 | 2026-02-20 | Codex レビュー指摘3点を修正（不変条件の矛盾解消・try_send Full/Closed 分岐・align 加算値の表現修正） | Claude Code (claude-sonnet-4-6) |
 | 2026-02-20 | Codex レビュー OK 確認。§3.3 にレビュー結果記録、§8 に残リスク2点補足 | Claude Code (claude-sonnet-4-6) |
 | 2026-02-20 | @MasanoriSuda 承認。Status: Approved | Claude Code (claude-sonnet-4-6) |
+| 2026-02-20 | §5.3 に Closed 時 break 追加（コード確認済み: 現状 break なし）、§9 受入条件に Closed ループ終了を追記 | Claude Code (claude-sonnet-4-6) |

@@ -1101,6 +1101,7 @@ fn spawn_rtp_listener(
                                 "[b2bua {} stream=b-leg] B-leg RTP drop: channel closed",
                                 a_call_id
                             );
+                            break;
                         }
                     }
                 }
