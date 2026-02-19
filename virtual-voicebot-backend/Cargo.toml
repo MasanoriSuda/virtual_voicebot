@@ -32,6 +32,9 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 tempfile = "3"
 rcgen = "0.13"
 
+[build-dependencies]
+cc = "1"
+
 [[bin]]
 name = "serversync"
 path = "src/bin/serversync.rs"
