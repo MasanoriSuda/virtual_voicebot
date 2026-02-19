@@ -1,5 +1,6 @@
 use hound::WavReader;
 
+use crate::protocol::rtp::codec::linear16_to_mulaw;
 use crate::shared::ports::storage::{StorageError, StoragePort};
 
 pub struct FileStoragePort;
@@ -59,30 +60,4 @@ fn load_wav_as_pcmu_frames(path: &str) -> Result<Vec<Vec<u8>>, StorageError> {
         frames.push(cur);
     }
     Ok(frames)
-}
-
-fn linear16_to_mulaw(sample: i16) -> u8 {
-    const BIAS: i16 = 0x84;
-    const CLIP: i16 = 32635;
-    let mut s = sample;
-    let mut sign = 0u8;
-    if s < 0 {
-        s = -s;
-        sign = 0x80;
-    }
-    if s > CLIP {
-        s = CLIP;
-    }
-    s += BIAS;
-    let mut segment: u8 = 0;
-    let mut value = (s as u16) >> 7;
-    while value > 0 {
-        segment += 1;
-        value >>= 1;
-        if segment >= 8 {
-            break;
-        }
-    }
-    let mantissa = ((s >> (segment + 3)) & 0x0F) as u8;
-    !(sign | (segment << 4) | mantissa)
 }

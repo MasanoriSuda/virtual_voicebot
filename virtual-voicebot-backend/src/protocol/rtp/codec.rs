@@ -49,30 +49,27 @@ pub(crate) fn mulaw_to_linear16(mu: u8) -> i16 {
     }
 }
 
-fn linear16_to_mulaw(sample: i16) -> u8 {
+pub(crate) fn linear16_to_mulaw(sample: i16) -> u8 {
     const BIAS: i32 = 0x84;
-    const MAX: i32 = 0x7FFF;
-
+    const CLIP: i32 = 32635;
     let mut pcm = sample as i32;
-    let sign = if pcm < 0 {
+    let mask = if pcm < 0 {
         pcm = -pcm;
-        0x80
+        0x7F
     } else {
-        0x00
+        0xFF
     };
-    if pcm > MAX {
-        pcm = MAX;
+    if pcm > CLIP {
+        pcm = CLIP;
     }
     pcm += BIAS;
 
-    let mut exponent = 7;
-    let mut mask = 0x4000;
-    while exponent > 0 && (pcm & mask) == 0 {
-        exponent -= 1;
-        mask >>= 1;
+    let seg = search_g711_segment(pcm as i16, &SEG_UEND);
+    if seg >= 8 {
+        return 0x7F ^ mask;
     }
-    let mantissa = ((pcm >> (exponent + 3)) & 0x0F) as u8;
-    !(sign | ((exponent as u8) << 4) | mantissa)
+    let uval = (seg << 4) | (((pcm >> (seg + 3)) & 0x0F) as u8);
+    uval ^ mask
 }
 
 /// Converts an 8-bit A-law encoded value into a 16-bit linear PCM sample.
@@ -97,9 +94,9 @@ fn alaw_to_linear16(a: u8) -> i16 {
         value <<= exponent - 1;
     }
     if sign {
-        -value
-    } else {
         value
+    } else {
+        -value
     }
 }
 
@@ -117,29 +114,179 @@ fn alaw_to_linear16(a: u8) -> i16 {
 /// let _ = encoded;
 /// ```
 fn linear16_to_alaw(sample: i16) -> u8 {
-    let mut pcm = sample as i32;
-    let sign = if pcm >= 0 {
-        0x80
+    let mut pcm = sample >> 3;
+    let mask = if pcm >= 0 {
+        0xD5
     } else {
         pcm = -pcm - 1;
-        0x00
+        0x55
     };
-    if pcm > 0x7FFF {
-        pcm = 0x7FFF;
+    let seg = search_g711_segment(pcm, &SEG_AEND);
+    if seg >= 8 {
+        return 0x7F ^ mask;
     }
-
-    let mut exponent: u8 = 0;
-    let mut mask: i32 = 0x400;
-    while exponent < 7 && (pcm & mask) == 0 {
-        exponent += 1;
-        mask >>= 1;
-    }
-    let mantissa = if exponent == 0 {
-        (pcm >> 4) & 0x0F
+    let mut aval = seg << 4;
+    if seg < 2 {
+        aval |= ((pcm >> 1) & 0x0F) as u8;
     } else {
-        (pcm >> (exponent + 3)) & 0x0F
-    } as u8;
+        aval |= ((pcm >> seg) & 0x0F) as u8;
+    }
+    aval ^ mask
+}
 
-    let alaw = sign | (exponent << 4) | mantissa;
-    alaw ^ 0x55
+const SEG_AEND: [i16; 8] = [0x1F, 0x3F, 0x7F, 0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF];
+const SEG_UEND: [i16; 8] = [0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF, 0x1FFF, 0x3FFF, 0x7FFF];
+
+fn search_g711_segment(value: i16, table: &[i16; 8]) -> u8 {
+    for (idx, limit) in table.iter().enumerate() {
+        if value <= *limit {
+            return idx as u8;
+        }
+    }
+    8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        alaw_to_linear16, codec_from_pt, decode_to_mulaw, encode_from_mulaw, linear16_to_alaw,
+        linear16_to_mulaw, mulaw_to_linear16, Codec,
+    };
+
+    extern "C" {
+        fn g711_linear2alaw(pcm_val: i16) -> u8;
+        fn g711_alaw2linear(a_val: u8) -> i16;
+        fn g711_linear2ulaw(pcm_val: i16) -> u8;
+        fn g711_ulaw2linear(u_val: u8) -> i16;
+    }
+
+    fn ref_linear2alaw(sample: i16) -> u8 {
+        unsafe { g711_linear2alaw(sample) }
+    }
+
+    fn ref_alaw2linear(code: u8) -> i16 {
+        unsafe { g711_alaw2linear(code) }
+    }
+
+    fn ref_linear2ulaw(sample: i16) -> u8 {
+        unsafe { g711_linear2ulaw(sample) }
+    }
+
+    fn ref_ulaw2linear(code: u8) -> i16 {
+        unsafe { g711_ulaw2linear(code) }
+    }
+
+    #[test]
+    fn codec_from_pt_maps_supported_payload_types() {
+        assert_eq!(codec_from_pt(0).expect("pt=0 should be PCMU"), Codec::Pcmu);
+        assert_eq!(codec_from_pt(8).expect("pt=8 should be PCMA"), Codec::Pcma);
+    }
+
+    #[test]
+    fn codec_from_pt_rejects_unsupported_payload_type() {
+        assert!(codec_from_pt(96).is_err());
+    }
+
+    #[test]
+    fn decode_to_mulaw_pcmu_is_passthrough() {
+        let payload = [0x00, 0x7F, 0x80, 0xFF];
+        assert_eq!(decode_to_mulaw(Codec::Pcmu, &payload), payload);
+    }
+
+    #[test]
+    fn encode_from_mulaw_pcmu_is_passthrough() {
+        let payload = [0x00, 0x7F, 0x80, 0xFF];
+        assert_eq!(encode_from_mulaw(Codec::Pcmu, &payload), payload);
+    }
+
+    #[test]
+    fn pcma_decode_encode_matches_scalar_conversion_for_all_codewords() {
+        let payload: Vec<u8> = (u8::MIN..=u8::MAX).collect();
+        let decoded = decode_to_mulaw(Codec::Pcma, &payload);
+        assert_eq!(decoded.len(), payload.len());
+        for (&a, &mu) in payload.iter().zip(decoded.iter()) {
+            assert_eq!(mu, linear16_to_mulaw(alaw_to_linear16(a)));
+        }
+
+        let encoded = encode_from_mulaw(Codec::Pcma, &decoded);
+        assert_eq!(encoded.len(), decoded.len());
+        for (&mu, &a) in decoded.iter().zip(encoded.iter()) {
+            assert_eq!(a, linear16_to_alaw(mulaw_to_linear16(mu)));
+        }
+    }
+
+    #[test]
+    fn mulaw_reencode_is_stable_for_all_linear16_values() {
+        for sample in i16::MIN..=i16::MAX {
+            let mu = linear16_to_mulaw(sample);
+            let reconstructed = mulaw_to_linear16(mu);
+            let reencoded = linear16_to_mulaw(reconstructed);
+            assert_eq!(
+                mulaw_to_linear16(reencoded),
+                reconstructed,
+                "mu-law reencode mismatch: sample={sample}, mu={mu:#04x}, reconstructed={reconstructed}, reencoded={reencoded:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn alaw_reencode_is_stable_for_all_linear16_values() {
+        for sample in i16::MIN..=i16::MAX {
+            let a = linear16_to_alaw(sample);
+            let reconstructed = alaw_to_linear16(a);
+            let reencoded = linear16_to_alaw(reconstructed);
+            assert_eq!(
+                reencoded, a,
+                "a-law reencode mismatch: sample={sample}, a={a:#04x}, reconstructed={reconstructed}, reencoded={reencoded:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn mulaw_encode_matches_g711_reference_for_all_linear16_values() {
+        for sample in i16::MIN..=i16::MAX {
+            let actual = linear16_to_mulaw(sample);
+            let expected = ref_linear2ulaw(sample);
+            assert_eq!(
+                actual, expected,
+                "mu-law encode mismatch: sample={sample}, actual={actual:#04x}, expected={expected:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn alaw_encode_matches_g711_reference_for_all_linear16_values() {
+        for sample in i16::MIN..=i16::MAX {
+            let actual = linear16_to_alaw(sample);
+            let expected = ref_linear2alaw(sample);
+            assert_eq!(
+                actual, expected,
+                "a-law encode mismatch: sample={sample}, actual={actual:#04x}, expected={expected:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn mulaw_decode_matches_g711_reference_for_all_codewords() {
+        for code in u8::MIN..=u8::MAX {
+            let actual = mulaw_to_linear16(code);
+            let expected = ref_ulaw2linear(code);
+            assert_eq!(
+                actual, expected,
+                "mu-law decode mismatch: code={code:#04x}, actual={actual}, expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn alaw_decode_matches_g711_reference_for_all_codewords() {
+        for code in u8::MIN..=u8::MAX {
+            let actual = alaw_to_linear16(code);
+            let expected = ref_alaw2linear(code);
+            assert_eq!(
+                actual, expected,
+                "a-law decode mismatch: code={code:#04x}, actual={actual}, expected={expected}"
+            );
+        }
+    }
 }

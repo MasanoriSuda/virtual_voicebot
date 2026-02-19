@@ -3452,6 +3452,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "aws-sdk-transcribe",
+ "cc",
  "chrono",
  "env_logger",
  "hound",
