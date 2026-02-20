@@ -62,18 +62,16 @@ impl SessionCoordinator {
             }
             b_leg.shutdown();
             self.rtp.stop(&b_leg.rtp_key);
+        } else if self.ivr_state == IvrState::B2buaMode {
+            warn!(
+                "[session {}] shutdown_b_leg called but b_leg is None (send_bye={}) in B2buaMode",
+                self.call_id, send_bye
+            );
         } else {
-            if self.ivr_state == IvrState::B2buaMode {
-                warn!(
-                    "[session {}] shutdown_b_leg called but b_leg is None (send_bye={}) in B2buaMode",
-                    self.call_id, send_bye
-                );
-            } else {
-                debug!(
-                    "[session {}] shutdown_b_leg called but b_leg is None (send_bye={})",
-                    self.call_id, send_bye
-                );
-            }
+            debug!(
+                "[session {}] shutdown_b_leg called but b_leg is None (send_bye={})",
+                self.call_id, send_bye
+            );
         }
     }
 }
