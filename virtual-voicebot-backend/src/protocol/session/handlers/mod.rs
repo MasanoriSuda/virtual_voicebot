@@ -606,10 +606,16 @@ impl SessionCoordinator {
                     .try_send((self.call_id.clone(), SessionOut::SipSendBye));
                 self.send_call_ended(EndReason::AppHangup);
             }
-            (_, SessionControlIn::AppTransferRequest { person }) => {
+            (SessState::Established, SessionControlIn::AppTransferRequest { person }) => {
                 if !self.start_b2bua_transfer(person.as_str()) {
                     return false;
                 }
+            }
+            (state, SessionControlIn::AppTransferRequest { person }) => {
+                warn!(
+                    "[session {}] AppTransferRequest ignored in state {:?} (person={})",
+                    self.call_id, state, person
+                );
             }
             (_, SessionControlIn::SipSessionExpires { timer }) => {
                 self.update_session_expires(timer);
@@ -1894,6 +1900,34 @@ mod tests {
         assert!(
             session.invite_rejected,
             "outbound mode should mark invite_rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn app_transfer_request_is_ignored_outside_established() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
+
+        let advance = session
+            .handle_control_event(
+                SessState::Terminated,
+                SessionControlIn::AppTransferRequest {
+                    person: "recording_notice".to_string(),
+                },
+            )
+            .await;
+
+        assert!(
+            advance,
+            "ignored transfer request should keep session loop running"
+        );
+        assert!(
+            session.transfer_cancel.is_none(),
+            "transfer must not be started outside established state"
+        );
+        assert!(
+            session.b_leg.is_none(),
+            "b_leg must remain unset when transfer request is ignored"
         );
     }
 }

@@ -971,6 +971,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_playback_does_not_trigger_transfer() {
+        let (mut session, mut control_rx) =
+            build_test_session_with_control(Arc::new(DummyStoragePort));
+        session.set_announce_mode(true);
+        session.set_recording_notice_pending(true);
+        session.start_playback(&["dummy.wav"]).await.unwrap();
+
+        session.cancel_playback();
+
+        assert!(session.playback.is_none());
+        assert!(!session.sending_audio);
+        assert!(!session.announce_mode);
+        assert!(!session.recording_notice_pending);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), control_rx.recv())
+                .await
+                .is_err(),
+            "cancel_playback should not enqueue transfer"
+        );
+    }
+
+    #[tokio::test]
     async fn finish_playback_requests_transfer_after_recording_notice() {
         let (mut session, mut control_rx) =
             build_test_session_with_control(Arc::new(DummyStoragePort));
