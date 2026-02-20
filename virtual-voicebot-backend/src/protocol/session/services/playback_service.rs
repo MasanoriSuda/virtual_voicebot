@@ -71,8 +71,7 @@ impl SessionCoordinator {
     }
 
     pub(crate) fn finish_playback(&mut self, restart_ivr_timeout: bool) {
-        self.playback = None;
-        self.sending_audio = false;
+        self.clear_playback_state();
 
         if self.announce_mode {
             if self.voicemail_mode {
@@ -123,6 +122,13 @@ impl SessionCoordinator {
             return;
         }
         info!("[session {}] playback cancelled", self.call_id);
-        self.finish_playback(false);
+        self.clear_playback_state();
+        self.announce_mode = false;
+        self.recording_notice_pending = false;
+    }
+
+    fn clear_playback_state(&mut self) {
+        self.playback = None;
+        self.sending_audio = false;
     }
 }

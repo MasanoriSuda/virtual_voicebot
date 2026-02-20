@@ -1,9 +1,9 @@
-use log::{info, warn};
+use log::{debug, info, warn};
 use tokio::sync::oneshot;
 use tokio::time::{interval, MissedTickBehavior};
 
 use super::super::SessionCoordinator;
-use crate::protocol::session::types::SessionControlIn;
+use crate::protocol::session::types::{IvrState, SessionControlIn};
 
 impl SessionCoordinator {
     pub(crate) fn cancel_transfer(&mut self) {
@@ -63,10 +63,17 @@ impl SessionCoordinator {
             b_leg.shutdown();
             self.rtp.stop(&b_leg.rtp_key);
         } else {
-            warn!(
-                "[session {}] shutdown_b_leg called but b_leg is None (send_bye={})",
-                self.call_id, send_bye
-            );
+            if self.ivr_state == IvrState::B2buaMode {
+                warn!(
+                    "[session {}] shutdown_b_leg called but b_leg is None (send_bye={}) in B2buaMode",
+                    self.call_id, send_bye
+                );
+            } else {
+                debug!(
+                    "[session {}] shutdown_b_leg called but b_leg is None (send_bye={})",
+                    self.call_id, send_bye
+                );
+            }
         }
     }
 }
