@@ -50,6 +50,9 @@ protocol/session ────────────────┼─→ proto
 - RECORDING_HTTP_ADDR（録音配信サーバのbind、デフォルト 0.0.0.0:18080）
 - RECORDING_BASE_URL（フロントに渡す録音URLのベース、未指定なら RECORDING_HTTP_ADDR を http:// で利用）
 - INGEST_CALL_URL（フロントの `/api/ingest/call` へのURL）
+- OLLAMA_MODEL（LLMモデル。デフォルト `gemma3:4b`、Raspberry Pi 推奨 `llama3.2:1b`）
+- OLLAMA_INTENT_MODEL（未指定時は `OLLAMA_MODEL` と同値）
+- GEMINI_API_KEY（任意。未設定時は `call_gemini` 失敗後に Ollama へフォールバック）
 
 ## これ以降の拡張（後続タスク）
 - 正式な SIP トランザクションタイマ（A/B/E/F/H/J）と状態機械の実装
