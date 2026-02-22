@@ -138,6 +138,21 @@ impl TtsStage {
     }
 }
 
+#[derive(Clone, Copy)]
+enum IntentStage {
+    Local,
+    Raspi,
+}
+
+impl IntentStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Raspi => "raspi",
+        }
+    }
+}
+
 fn asr_stage_count(ai_cfg: &config::AiConfig) -> usize {
     usize::from(ai_cfg.use_aws_transcribe)
         + usize::from(ai_cfg.asr_local_server_enabled)
@@ -160,6 +175,10 @@ fn llm_stage_count(ai_cfg: &config::AiConfig) -> usize {
 
 fn tts_stage_count(ai_cfg: &config::AiConfig) -> usize {
     usize::from(ai_cfg.tts_local_server_enabled) + usize::from(ai_cfg.tts_raspi_enabled)
+}
+
+fn intent_stage_count(ai_cfg: &config::AiConfig) -> usize {
+    usize::from(ai_cfg.intent_local_server_enabled) + usize::from(ai_cfg.intent_raspi_enabled)
 }
 
 fn log_asr_startup_warnings() {
@@ -198,6 +217,20 @@ fn log_tts_startup_warnings() {
     if ai_cfg.tts_raspi_enabled && ai_cfg.tts_raspi_base_url.is_none() {
         log::warn!(
             "[tts] TTS_RASPI_ENABLED=1 but TTS_RASPI_BASE_URL is not set; raspi stage will be skipped"
+        );
+    }
+}
+
+fn log_intent_startup_warnings() {
+    let ai_cfg = config::ai_config();
+    if intent_stage_count(ai_cfg) == 0 {
+        log::warn!(
+            "[intent] no intent stages enabled (INTENT_LOCAL_SERVER_ENABLED=0, INTENT_RASPI_ENABLED=0)"
+        );
+    }
+    if ai_cfg.intent_raspi_enabled && ai_cfg.intent_raspi_url.is_none() {
+        log::warn!(
+            "[intent] INTENT_RASPI_ENABLED=1 but INTENT_RASPI_URL is not set; raspi stage will be skipped"
         );
     }
 }
@@ -554,6 +587,62 @@ async fn call_ollama_for_stage(
         .await
 }
 
+pub(crate) async fn call_ollama_for_intent_stage(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    model: &str,
+    endpoint_url: &str,
+    http_timeout: Duration,
+) -> Result<String> {
+    let client = http_client(http_timeout)?;
+
+    let mut ollama_messages = Vec::with_capacity(messages.len() + 1);
+    ollama_messages.push(OllamaMessage {
+        role: "system".to_string(),
+        content: system_prompt.to_string(),
+    });
+    for msg in messages {
+        let role = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        };
+        ollama_messages.push(OllamaMessage {
+            role: role.to_string(),
+            content: msg.content.clone(),
+        });
+    }
+
+    let req = OllamaChatRequest {
+        model: model.to_string(),
+        messages: ollama_messages,
+        stream: false,
+    };
+
+    let resp = client.post(endpoint_url).json(&req).send().await?;
+    let status = resp.status();
+    let body_text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "Ollama HTTP error {} (body_len={})",
+            status,
+            body_text.len()
+        );
+    }
+
+    #[derive(Deserialize)]
+    struct ChatResponse {
+        message: Option<OllamaMessage>,
+    }
+
+    let body: ChatResponse = serde_json::from_str(&body_text)?;
+    let answer = body
+        .message
+        .map(|m| m.content)
+        .unwrap_or_else(|| "<no response>".to_string());
+
+    Ok(answer)
+}
+
 pub(crate) async fn call_ollama_with_prompt(
     messages: &[ChatMessage],
     system_prompt: &str,
@@ -634,6 +723,7 @@ impl DefaultAiPort {
         log_asr_startup_warnings();
         log_llm_startup_warnings();
         log_tts_startup_warnings();
+        log_intent_startup_warnings();
         Self
     }
 }
@@ -682,9 +772,13 @@ impl AsrPort for DefaultAiPort {
 }
 
 impl IntentPort for DefaultAiPort {
-    fn classify_intent(&self, text: String) -> AiFuture<Result<String, IntentError>> {
+    fn classify_intent(
+        &self,
+        call_id: String,
+        text: String,
+    ) -> AiFuture<Result<String, IntentError>> {
         Box::pin(async move {
-            intent::classify_intent(text)
+            intent::classify_intent(&call_id, text)
                 .await
                 .map_err(|e| IntentError::ClassificationFailed(e.to_string()))
         })

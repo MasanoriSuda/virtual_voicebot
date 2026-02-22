@@ -860,6 +860,14 @@ pub struct AiConfig {
     pub gemini_model: String,
     pub ollama_model: String,
     pub ollama_intent_model: String,
+    pub intent_local_server_url: String,
+    pub intent_local_server_enabled: bool,
+    pub intent_local_model: String,
+    pub intent_raspi_url: Option<String>,
+    pub intent_raspi_enabled: bool,
+    pub intent_raspi_model: String,
+    pub intent_local_timeout: Duration,
+    pub intent_raspi_timeout: Duration,
     pub llm_local_server_url: String,
     pub llm_local_server_enabled: bool,
     pub llm_local_model: String,
@@ -896,6 +904,14 @@ impl AiConfig {
     /// - `GEMINI_MODEL`: model name for Gemini; defaults to `"gemini-2.5-flash-lite"`.
     /// - `OLLAMA_MODEL`: model name for Ollama; defaults to `"gemma3:4b"`.
     /// - `OLLAMA_INTENT_MODEL`: intent model for Ollama; defaults to the value of `OLLAMA_MODEL`.
+    /// - `INTENT_LOCAL_SERVER_URL`: local intent server full endpoint URL; defaults to `"http://localhost:11434/api/chat"`.
+    /// - `INTENT_LOCAL_SERVER_ENABLED`: enables local intent fallback; defaults to `true`.
+    /// - `INTENT_LOCAL_MODEL`: local intent model; defaults to the value of `OLLAMA_INTENT_MODEL`.
+    /// - `INTENT_RASPI_URL`: optional Raspberry Pi intent server full endpoint URL (required only when `INTENT_RASPI_ENABLED=1`).
+    /// - `INTENT_RASPI_ENABLED`: enables Raspberry Pi intent fallback; defaults to `false`.
+    /// - `INTENT_RASPI_MODEL`: Raspberry Pi intent model; defaults to `"llama3.2:1b"`.
+    /// - `INTENT_LOCAL_TIMEOUT_MS`: local intent timeout in milliseconds; defaults to `3000`.
+    /// - `INTENT_RASPI_TIMEOUT_MS`: Raspberry Pi intent timeout in milliseconds; defaults to `5000`.
     /// - `LLM_LOCAL_SERVER_URL`: local LLM server full endpoint URL; defaults to `"http://localhost:11434/api/chat"`.
     /// - `LLM_LOCAL_SERVER_ENABLED`: enables local LLM server fallback; defaults to `true`.
     /// - `LLM_LOCAL_MODEL`: local LLM model; defaults to the value of `OLLAMA_MODEL`.
@@ -934,6 +950,14 @@ impl AiConfig {
     /// env::remove_var("GEMINI_MODEL");
     /// env::remove_var("OLLAMA_MODEL");
     /// env::remove_var("OLLAMA_INTENT_MODEL");
+    /// env::remove_var("INTENT_LOCAL_SERVER_URL");
+    /// env::remove_var("INTENT_LOCAL_SERVER_ENABLED");
+    /// env::remove_var("INTENT_LOCAL_MODEL");
+    /// env::remove_var("INTENT_RASPI_URL");
+    /// env::remove_var("INTENT_RASPI_ENABLED");
+    /// env::remove_var("INTENT_RASPI_MODEL");
+    /// env::remove_var("INTENT_LOCAL_TIMEOUT_MS");
+    /// env::remove_var("INTENT_RASPI_TIMEOUT_MS");
     /// env::remove_var("LLM_LOCAL_SERVER_URL");
     /// env::remove_var("LLM_LOCAL_SERVER_ENABLED");
     /// env::remove_var("LLM_LOCAL_MODEL");
@@ -970,6 +994,8 @@ impl AiConfig {
             std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma3:4b".to_string());
         let ollama_intent_model =
             std::env::var("OLLAMA_INTENT_MODEL").unwrap_or_else(|_| ollama_model.clone());
+        let intent_local_model =
+            env_non_empty("INTENT_LOCAL_MODEL").unwrap_or_else(|| ollama_intent_model.clone());
         let llm_local_model =
             env_non_empty("LLM_LOCAL_MODEL").unwrap_or_else(|| ollama_model.clone());
         Self {
@@ -978,6 +1004,16 @@ impl AiConfig {
                 .unwrap_or_else(|_| "gemini-2.5-flash-lite".to_string()),
             ollama_model,
             ollama_intent_model,
+            intent_local_server_url: env_non_empty("INTENT_LOCAL_SERVER_URL")
+                .unwrap_or_else(|| "http://localhost:11434/api/chat".to_string()),
+            intent_local_server_enabled: env_bool("INTENT_LOCAL_SERVER_ENABLED", true),
+            intent_local_model,
+            intent_raspi_url: env_non_empty("INTENT_RASPI_URL"),
+            intent_raspi_enabled: env_bool("INTENT_RASPI_ENABLED", false),
+            intent_raspi_model: env_non_empty("INTENT_RASPI_MODEL")
+                .unwrap_or_else(|| "llama3.2:1b".to_string()),
+            intent_local_timeout: env_duration_ms("INTENT_LOCAL_TIMEOUT_MS", 3_000),
+            intent_raspi_timeout: env_duration_ms("INTENT_RASPI_TIMEOUT_MS", 5_000),
             llm_local_server_url: env_non_empty("LLM_LOCAL_SERVER_URL")
                 .unwrap_or_else(|| "http://localhost:11434/api/chat".to_string()),
             llm_local_server_enabled: env_bool("LLM_LOCAL_SERVER_ENABLED", true),
