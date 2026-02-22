@@ -9,9 +9,10 @@ use reqwest::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+use std::future::Future;
 use std::io::Cursor;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 use aws_config::meta::region::RegionProviderChain;
 use aws_config::{BehaviorVersion, SdkConfig};
@@ -88,27 +89,49 @@ fn http_client(timeout: Duration) -> Result<Client> {
     Ok(Client::builder().timeout(timeout).build()?)
 }
 
-/// ASR 実行（現行実装: AWS Transcribe→Whisper fallback）。呼び出し順・ポリシーはそのまま。
-pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
-    if aws_transcribe_enabled() {
-        match transcribe_with_aws(wav_path).await {
-            Ok(text) => {
-                if text.trim().is_empty() {
-                    log::warn!(
-                        "AWS Transcribe returned empty text, falling back to local Whisper."
-                    );
-                } else {
-                    info!("User question (aws): {}", text);
-                    return Ok(text);
-                }
-            }
-            Err(e) => {
-                log::error!("AWS Transcribe failed: {e:?}. Falling back to local Whisper.");
-            }
+#[derive(Clone, Copy)]
+enum AsrStage {
+    Cloud,
+    Local,
+    Raspi,
+}
+
+impl AsrStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cloud => "cloud",
+            Self::Local => "local",
+            Self::Raspi => "raspi",
         }
     }
+}
 
-    let client = http_client(config::timeouts().ai_http)?;
+fn asr_stage_count(ai_cfg: &config::AiConfig) -> usize {
+    usize::from(ai_cfg.use_aws_transcribe)
+        + usize::from(ai_cfg.asr_local_server_enabled)
+        + usize::from(ai_cfg.asr_raspi_enabled)
+}
+
+fn log_asr_startup_warnings() {
+    let ai_cfg = config::ai_config();
+    if asr_stage_count(ai_cfg) == 0 {
+        log::warn!(
+            "[asr] no ASR stages enabled (USE_AWS_TRANSCRIBE=0, ASR_LOCAL_SERVER_ENABLED=0, ASR_RASPI_ENABLED=0)"
+        );
+    }
+    if ai_cfg.asr_raspi_enabled && ai_cfg.asr_raspi_url.is_none() {
+        log::warn!(
+            "[asr] ASR_RASPI_ENABLED=1 but ASR_RASPI_URL is not set; raspi stage will be skipped"
+        );
+    }
+}
+
+async fn transcribe_with_http_asr(
+    url: &str,
+    wav_path: &str,
+    http_timeout: Duration,
+) -> Result<String> {
+    let client = http_client(http_timeout)?;
     let bytes = tokio::fs::read(wav_path).await?;
 
     let part = multipart::Part::bytes(bytes)
@@ -117,11 +140,7 @@ pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
 
     let form = multipart::Form::new().part("file", part);
 
-    let resp = client
-        .post("http://localhost:9000/transcribe")
-        .multipart(form)
-        .send()
-        .await?;
+    let resp = client.post(url).multipart(form).send().await?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -130,10 +149,127 @@ pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
     }
 
     let result: WhisperResponse = resp.json().await?;
-    let text = result.text;
-    info!("User question (whisper): {}", text);
+    Ok(result.text)
+}
 
-    Ok(text)
+async fn try_asr_stage<F, Fut>(
+    call_id: &str,
+    stage: AsrStage,
+    stage_timeout: Duration,
+    run: F,
+) -> Option<String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<String>>,
+{
+    let stage_name = stage.as_str();
+    log::debug!(
+        "[asr {call_id}] ASR stage start: asr_stage={} timeout_ms={}",
+        stage_name,
+        stage_timeout.as_millis()
+    );
+
+    let text = match timeout(stage_timeout, run()).await {
+        Ok(Ok(text)) => text,
+        Ok(Err(err)) => {
+            log::warn!(
+                "[asr {call_id}] ASR stage failed: asr_stage={} reason={}",
+                stage_name,
+                err
+            );
+            return None;
+        }
+        Err(_) => {
+            log::warn!(
+                "[asr {call_id}] ASR stage failed: asr_stage={} reason=timeout timeout_ms={}",
+                stage_name,
+                stage_timeout.as_millis()
+            );
+            return None;
+        }
+    };
+
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        log::warn!(
+            "[asr {call_id}] ASR stage failed: asr_stage={} reason=empty_text",
+            stage_name
+        );
+        return None;
+    }
+
+    if asr::is_hallucination(trimmed) {
+        log::warn!(
+            "[asr {call_id}] ASR stage failed: asr_stage={} reason=hallucination_filtered",
+            stage_name
+        );
+        log::debug!(
+            "[asr {call_id}] ASR hallucination filtered: asr_stage={} text={}",
+            stage_name,
+            mask_pii(trimmed)
+        );
+        return None;
+    }
+
+    info!(
+        "[asr {call_id}] ASR stage success: asr_stage={} text_len={}",
+        stage_name,
+        trimmed.chars().count()
+    );
+    Some(text)
+}
+
+/// ASR 実行（現行実装を拡張）: cloud(AWS) -> local server -> raspi server の3段フォールバック。
+pub async fn transcribe_and_log(call_id: &str, wav_path: &str) -> Result<String> {
+    let ai_cfg = config::ai_config();
+
+    if asr_stage_count(ai_cfg) == 0 {
+        log::error!("[asr {call_id}] ASR failed: reason=all ASR stages disabled");
+        anyhow::bail!("all ASR stages failed");
+    }
+
+    if ai_cfg.use_aws_transcribe {
+        if let Some(text) =
+            try_asr_stage(call_id, AsrStage::Cloud, ai_cfg.asr_cloud_timeout, || {
+                transcribe_with_aws(wav_path)
+            })
+            .await
+        {
+            return Ok(text);
+        }
+    }
+
+    if ai_cfg.asr_local_server_enabled {
+        let local_url = ai_cfg.asr_local_server_url.clone();
+        if let Some(text) =
+            try_asr_stage(call_id, AsrStage::Local, ai_cfg.asr_local_timeout, || {
+                transcribe_with_http_asr(&local_url, wav_path, ai_cfg.asr_local_timeout)
+            })
+            .await
+        {
+            return Ok(text);
+        }
+    }
+
+    if ai_cfg.asr_raspi_enabled {
+        if let Some(raspi_url) = ai_cfg.asr_raspi_url.clone() {
+            if let Some(text) =
+                try_asr_stage(call_id, AsrStage::Raspi, ai_cfg.asr_raspi_timeout, || {
+                    transcribe_with_http_asr(&raspi_url, wav_path, ai_cfg.asr_raspi_timeout)
+                })
+                .await
+            {
+                return Ok(text);
+            }
+        } else {
+            log::warn!(
+                "[asr {call_id}] ASR stage failed: asr_stage=raspi reason=ASR_RASPI_URL missing"
+            );
+        }
+    }
+
+    log::error!("[asr {call_id}] ASR failed: reason=all ASR stages failed");
+    anyhow::bail!("all ASR stages failed")
 }
 
 /// LLM + TTS 実行（現行実装: Gemini→Ollama fallback→ずんだもんTTS）。挙動は変更なし。
@@ -251,6 +387,7 @@ pub struct DefaultAiPort;
 
 impl DefaultAiPort {
     pub fn new() -> Self {
+        log_asr_startup_warnings();
         Self
     }
 }
@@ -471,10 +608,6 @@ async fn call_gemini(messages: &[ChatMessage]) -> Result<String> {
         .unwrap_or_else(|| "<no response>".to_string());
 
     Ok(answer)
-}
-
-fn aws_transcribe_enabled() -> bool {
-    config::ai_config().use_aws_transcribe
 }
 
 /// Uploads a WAV file to S3, starts an AWS Transcribe job, and returns the resulting transcript.
