@@ -74,7 +74,7 @@ docs 修正は原則、**全文再生成ではなく最小差分（patch）で�
 - その他の docs ファイル
 
 **許可形式（必須）:**
-```
+```text
 DOCS_OK: <file paths>
 ```
 - **パス列挙必須**（`DOCS_OK: true` のような全許可は不可）
@@ -82,7 +82,7 @@ DOCS_OK: <file paths>
 - 例：`DOCS_OK: docs/design/basic/BD-003.md README.md`
 
 **オプション: スコープ指定**
-```
+```text
 DOCS_OK_SCOPE: #<issue number>
 ```
 - 指定した Issue/PR のスコープ内のみ有効
@@ -151,13 +151,12 @@ DOCS_OK_SCOPE: #<issue number>
 - 指摘がある場合は、重大/中/軽に分類して根拠（該当 docs 章/行）とともに提示
 - 「オーナーが承認済み」であっても、仕様観点から独立したレビューを実施
 - レビュー結果は PR コメントまたは `docs/reviews/` に記録
-- 運用例外で Codex がレビューする場合は、`Codexレビュー→指摘→Codex修正` の流れを許可する
 
 **レビュー判定と続行条件（必須）:**
 - レビュー結果は `OK` / `NG` を明示する。
-- `OK` の場合、Codex は当該作業を続行してよい。
-- `NG` の場合、オーナーの修正方針承認を得るまで Codex は続行しない。
-- オーナー承認後、Codex は承認内容に沿って最小差分で修正する。
+- `OK` の場合、修正者（Claude Code）は当該作業を続行してよい。
+- `NG` の場合、オーナーの修正方針承認を得るまで修正を行わない。
+- オーナー承認後、Claude Code は承認内容に沿って最小差分で修正する。
 
 **PR テンプレート要件（推奨）:**
 
@@ -174,7 +173,7 @@ DOCS_OK_SCOPE: #<issue number>
 
 **CODEOWNERS 活用（推奨）:**
 
-```
+```text
 # ステアリングファイルは Claude Code またはオーナーの承認必須
 docs/steering/** @owner-username
 virtual-voicebot-backend/docs/steering/** @owner-username
