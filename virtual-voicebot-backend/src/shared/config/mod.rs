@@ -861,6 +861,13 @@ pub struct AiConfig {
     pub ollama_model: String,
     pub ollama_intent_model: String,
     pub use_aws_transcribe: bool,
+    pub asr_local_server_url: String,
+    pub asr_local_server_enabled: bool,
+    pub asr_raspi_url: Option<String>,
+    pub asr_raspi_enabled: bool,
+    pub asr_cloud_timeout: Duration,
+    pub asr_local_timeout: Duration,
+    pub asr_raspi_timeout: Duration,
     pub aws_transcribe_bucket: Option<String>,
     pub aws_transcribe_prefix: String,
     pub ser_url: Option<String>,
@@ -875,6 +882,13 @@ impl AiConfig {
     /// - `OLLAMA_MODEL`: model name for Ollama; defaults to `"gemma3:4b"`.
     /// - `OLLAMA_INTENT_MODEL`: intent model for Ollama; defaults to the value of `OLLAMA_MODEL`.
     /// - `USE_AWS_TRANSCRIBE`: treated as a boolean; defaults to `false`.
+    /// - `ASR_LOCAL_SERVER_URL`: local ASR server URL; defaults to `"http://localhost:9000/transcribe"`.
+    /// - `ASR_LOCAL_SERVER_ENABLED`: enables local ASR server fallback; defaults to `true`.
+    /// - `ASR_RASPI_URL`: optional Raspberry Pi ASR server URL (required only when `ASR_RASPI_ENABLED=1`).
+    /// - `ASR_RASPI_ENABLED`: enables Raspberry Pi ASR fallback; defaults to `false`.
+    /// - `ASR_CLOUD_TIMEOUT_MS`: overall cloud ASR timeout in milliseconds; defaults to `5000`.
+    /// - `ASR_LOCAL_TIMEOUT_MS`: local ASR server timeout in milliseconds; defaults to `3000`.
+    /// - `ASR_RASPI_TIMEOUT_MS`: Raspberry Pi ASR timeout in milliseconds; defaults to `8000`.
     /// - `AWS_TRANSCRIBE_BUCKET`: optional S3 bucket name for AWS Transcribe.
     /// - `AWS_TRANSCRIBE_PREFIX`: prefix for transcribe objects; defaults to `"voicebot"`.
     /// - `SER_URL`: optional SER service URL.
@@ -891,6 +905,13 @@ impl AiConfig {
     /// env::remove_var("OLLAMA_MODEL");
     /// env::remove_var("OLLAMA_INTENT_MODEL");
     /// env::remove_var("USE_AWS_TRANSCRIBE");
+    /// env::remove_var("ASR_LOCAL_SERVER_URL");
+    /// env::remove_var("ASR_LOCAL_SERVER_ENABLED");
+    /// env::remove_var("ASR_RASPI_URL");
+    /// env::remove_var("ASR_RASPI_ENABLED");
+    /// env::remove_var("ASR_CLOUD_TIMEOUT_MS");
+    /// env::remove_var("ASR_LOCAL_TIMEOUT_MS");
+    /// env::remove_var("ASR_RASPI_TIMEOUT_MS");
     /// env::remove_var("AWS_TRANSCRIBE_BUCKET");
     /// env::remove_var("AWS_TRANSCRIBE_PREFIX");
     /// env::remove_var("SER_URL");
@@ -911,6 +932,17 @@ impl AiConfig {
             ollama_model,
             ollama_intent_model,
             use_aws_transcribe: env_bool("USE_AWS_TRANSCRIBE", false),
+            asr_local_server_url: std::env::var("ASR_LOCAL_SERVER_URL")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "http://localhost:9000/transcribe".to_string()),
+            asr_local_server_enabled: env_bool("ASR_LOCAL_SERVER_ENABLED", true),
+            asr_raspi_url: env_non_empty("ASR_RASPI_URL"),
+            asr_raspi_enabled: env_bool("ASR_RASPI_ENABLED", false),
+            asr_cloud_timeout: env_duration_ms("ASR_CLOUD_TIMEOUT_MS", 5_000),
+            asr_local_timeout: env_duration_ms("ASR_LOCAL_TIMEOUT_MS", 3_000),
+            asr_raspi_timeout: env_duration_ms("ASR_RASPI_TIMEOUT_MS", 8_000),
             aws_transcribe_bucket: std::env::var("AWS_TRANSCRIBE_BUCKET").ok(),
             aws_transcribe_prefix: std::env::var("AWS_TRANSCRIBE_PREFIX")
                 .unwrap_or_else(|_| "voicebot".to_string()),

@@ -1,17 +1,16 @@
 #![allow(dead_code)]
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
-use std::path::Path;
+use std::path::{Component, Path};
 
 use crate::protocol::rtp::codec::mulaw_to_linear16;
 use crate::shared::ports::ai::AsrChunk;
-use crate::shared::utils::mask_pii;
 
 /// ASR 呼び出しの薄いラッパ（挙動は ai::transcribe_and_log と同じ）。
 /// app からはこの関数を経由させる想定だが、現状の呼び出し順・回数は変えない。
-pub async fn transcribe_and_log(wav_path: &str) -> Result<String> {
-    super::transcribe_and_log(wav_path).await
+pub async fn transcribe_and_log(call_id: &str, wav_path: &str) -> Result<String> {
+    super::transcribe_and_log(call_id, wav_path).await
 }
 
 /// μ-law チャンクを WAV にまとめ、既存ASRを呼ぶ（挙動は従来と同じ）
@@ -23,14 +22,42 @@ pub async fn transcribe_chunks(call_id: &str, chunks: &[AsrChunk]) -> Result<Str
             break;
         }
     }
-    let wav_path = format!("/tmp/asr_input_{}.wav", call_id);
+    let safe_call_id = sanitize_call_id_for_tmp_filename(call_id)?;
+    let wav_path = format!("/tmp/asr_input_{}.wav", safe_call_id);
     write_mulaw_to_wav(&pcmu, &wav_path)?;
-    let text = super::transcribe_and_log(&wav_path).await?;
-    if is_hallucination(&text) {
-        log::info!("[asr] hallucination filtered: {}", mask_pii(&text));
-        return Ok(String::new());
+    let result = super::transcribe_and_log(call_id, &wav_path).await;
+    if let Err(err) = tokio::fs::remove_file(&wav_path).await {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            log::warn!(
+                "[asr {call_id}] failed to remove temporary wav file {}: {}",
+                wav_path,
+                err
+            );
+        }
     }
-    Ok(text)
+    result
+}
+
+fn sanitize_call_id_for_tmp_filename(call_id: &str) -> Result<String> {
+    let mut parts = Vec::new();
+    for component in Path::new(call_id).components() {
+        match component {
+            Component::Normal(part) => {
+                let part = part.to_string_lossy();
+                if part.is_empty() {
+                    return Err(anyhow!("invalid call_id for tmp filename"));
+                }
+                parts.push(part.into_owned());
+            }
+            _ => return Err(anyhow!("invalid call_id for tmp filename")),
+        }
+    }
+
+    if parts.is_empty() {
+        return Err(anyhow!("invalid call_id for tmp filename"));
+    }
+
+    Ok(parts.join("_"))
 }
 
 const HALLUCINATION_PATTERNS: &[&str] = &[
@@ -42,7 +69,7 @@ const HALLUCINATION_PATTERNS: &[&str] = &[
     "ありがとうございました",
 ];
 
-fn is_hallucination(text: &str) -> bool {
+pub(crate) fn is_hallucination(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return true;
@@ -67,6 +94,17 @@ mod tests {
     #[test]
     fn non_hallucination_passes() {
         assert!(!is_hallucination("こんにちは、元気ですか？"));
+    }
+
+    #[test]
+    fn sanitize_call_id_rejects_parent_dir() {
+        assert!(sanitize_call_id_for_tmp_filename("../escape").is_err());
+    }
+
+    #[test]
+    fn sanitize_call_id_flattens_normal_components() {
+        let got = sanitize_call_id_for_tmp_filename("call/part-1").unwrap();
+        assert_eq!(got, "call_part-1");
     }
 }
 
