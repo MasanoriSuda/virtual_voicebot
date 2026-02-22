@@ -55,34 +55,17 @@ docs 修正は原則、**全文再生成ではなく最小差分（patch）で�
 - 仕様/責務/フロー変更を伴う場合は、原則 Claude Code が docs を更新する。
 - Codex は docs（docs/**, *.md）を **原則編集禁止**。
 
-### 例外1: ステアリングファイル（Review以降の修正のみ）
+### ステアリングファイルの扱い（必須）
 
-**Codex は以下の条件を満たす場合、既存ステアリングファイルを修正可能：**
+- **新規作成・Review 対応**: Claude Code が担当。Codex は一切編集しない。
+- **Approved 以降の段取り更新**（§3.5 のみ）: Codex が実装完了記録として更新可能。
+- **禁止事項**:
+  - Codex による新規ステアリングの作成（Draft 作成は Claude Code の専任）
+  - Codex による §5 差分仕様・§6 受入条件・§2 ストーリーの変更
+  - Status の勝手な変更（Status 更新は人間が判断）
+  - `docs/STEER-*.md`（root 直下）への配置（正規3箇所のみ使用）
 
-1. **対象ファイル**: 以下のいずれか（**既存のみ**）
-   - `docs/steering/STEER-*.md`（横断）
-   - `virtual-voicebot-backend/docs/steering/STEER-*.md`（Backend）
-   - `virtual-voicebot-frontend/docs/steering/STEER-*.md`（Frontend）
-2. **ステータス条件**: `Status: Review` または `Status: Approved`
-3. **イシュー番号**: メタ情報に関連Issueが記載されていること
-4. **修正範囲**: 以下のセクションのみ
-   - §3.3 レビュー（レビュー記録の追記）
-   - §3.5 実装（実装段取りの更新）
-   - §5 差分仕様（レビュー指摘に基づく修正）
-   - §6 受入条件（レビュー指摘に基づく修正）
-   - §7 未確定点/質問（質問の解消）
-5. **レビュー要件**: 修正内容は Claude Code またはオーナーのレビューを受けること（運用例外: Claude Code 使用量不足時は Codex セルフレビュー可）
-6. **差分最小**: 全文再生成ではなく、最小差分で修正すること
-
-**禁止事項:**
-- **Codex による新規ステアリングファイルの作成**（Draft 作成は Claude Code の責務）
-- Status: Draft のステアリングを修正すること
-- **ストーリー（§2）の変更**（Why の変更は Issue で合意すべき）
-- Status の勝手な変更（Status 更新は人間が判断）
-- 本体仕様書（RD/BD/DD等）の無許可修正
-- **`docs/STEER-*.md`（root 直下）への配置**（正規3箇所のみ使用）
-
-### 例外2: オーナー許可（DOCS_OK）
+### 例外1: オーナー許可（DOCS_OK）
 
 **オーナーが明示的に許可した場合のみ、Codex は以下を修正可能：**
 
@@ -91,7 +74,7 @@ docs 修正は原則、**全文再生成ではなく最小差分（patch）で�
 - その他の docs ファイル
 
 **許可形式（必須）:**
-```
+```text
 DOCS_OK: <file paths>
 ```
 - **パス列挙必須**（`DOCS_OK: true` のような全許可は不可）
@@ -99,7 +82,7 @@ DOCS_OK: <file paths>
 - 例：`DOCS_OK: docs/design/basic/BD-003.md README.md`
 
 **オプション: スコープ指定**
-```
+```text
 DOCS_OK_SCOPE: #<issue number>
 ```
 - 指定した Issue/PR のスコープ内のみ有効
@@ -114,7 +97,7 @@ DOCS_OK_SCOPE: #<issue number>
 - 指定されたファイルのみ
 - 指定された Issue/PR のスコープ内のみ
 
-### 例外3: 軽微修正（許可不要）
+### 例外2: 軽微修正（許可不要）
 
 **以下は DOCS_OK なしで修正可能（意味が変わらない編集のみ）:**
 - タイポ修正
@@ -159,22 +142,21 @@ DOCS_OK_SCOPE: #<issue number>
 
 ### ステアリング Review 時のレビュー手順
 
-1. **Codex が修正**: ステアリング §5 等をレビュー指摘に基づき修正
+1. **Claude Code が修正**: ステアリング §5 等をレビュー指摘に基づき修正
 2. **PR 作成**: 修正内容を PR にして以下をチェック
-3. **レビュー依頼**: Claude Code またはオーナーに依頼（運用例外: Claude Code 使用量不足時は Codex がレビュー実施）
+3. **レビュー依頼**: オーナーに依頼
 
 **レビュー要件（共通）:**
 - 単なる形式チェックではなく、[CLAUDE.md](CLAUDE.md) に定義された観点から実質的レビューを行う
 - 指摘がある場合は、重大/中/軽に分類して根拠（該当 docs 章/行）とともに提示
 - 「オーナーが承認済み」であっても、仕様観点から独立したレビューを実施
 - レビュー結果は PR コメントまたは `docs/reviews/` に記録
-- 運用例外で Codex がレビューする場合は、`Codexレビュー→指摘→Codex修正` の流れを許可する
 
 **レビュー判定と続行条件（必須）:**
 - レビュー結果は `OK` / `NG` を明示する。
-- `OK` の場合、Codex は当該作業を続行してよい。
-- `NG` の場合、オーナーの修正方針承認を得るまで Codex は続行しない。
-- オーナー承認後、Codex は承認内容に沿って最小差分で修正する。
+- `OK` の場合、修正者（Claude Code）は当該作業を続行してよい。
+- `NG` の場合、オーナーの修正方針承認を得るまで修正を行わない。
+- オーナー承認後、Claude Code は承認内容に沿って最小差分で修正する。
 
 **PR テンプレート要件（推奨）:**
 
@@ -183,7 +165,7 @@ DOCS_OK_SCOPE: #<issue number>
 ```markdown
 ## Review Checklist (for STEER edits)
 
-- [ ] Claude Code / Owner reviewed（運用例外: Claude 使用量不足時は Codex self-review 可）
+- [ ] Claude Code / Owner reviewed
 - [ ] DOCS_OK included (required for SoT docs edits)
 - [ ] ストーリー（§2）を変更していない
 - [ ] 差分は最小限（全文再生成していない）
@@ -191,7 +173,7 @@ DOCS_OK_SCOPE: #<issue number>
 
 **CODEOWNERS 活用（推奨）:**
 
-```
+```text
 # ステアリングファイルは Claude Code またはオーナーの承認必須
 docs/steering/** @owner-username
 virtual-voicebot-backend/docs/steering/** @owner-username
