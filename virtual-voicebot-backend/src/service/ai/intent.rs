@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use anyhow::Result;
+use tokio::time::timeout;
 
 use crate::shared::config;
 use crate::shared::ports::ai::{ChatMessage, Role};
@@ -72,12 +74,120 @@ fn read_prompt_from(name: &str) -> Option<String> {
     None
 }
 
-pub async fn classify_intent(text: String) -> Result<String> {
+pub async fn classify_intent(call_id: &str, text: String) -> Result<String> {
     let prompt = intent_prompt();
-    let model = config::ai_config().ollama_intent_model.clone();
+    let ai_cfg = config::ai_config();
+    let text_len = text.chars().count();
     let messages = vec![ChatMessage {
         role: Role::User,
         content: text,
     }];
-    super::call_ollama_with_prompt(&messages, &prompt, &model).await
+
+    if !ai_cfg.intent_local_server_enabled && !ai_cfg.intent_raspi_enabled {
+        log::error!("[intent {call_id}] intent failed: reason=all intent stages disabled");
+        anyhow::bail!("all intent stages failed");
+    }
+
+    if ai_cfg.intent_local_server_enabled {
+        let endpoint_url = ai_cfg.intent_local_server_url.clone();
+        let model = ai_cfg.intent_local_model.clone();
+        if let Some(raw) = try_intent_stage(
+            call_id,
+            super::IntentStage::Local,
+            text_len,
+            ai_cfg.intent_local_timeout,
+            || {
+                super::call_ollama_for_intent_stage(
+                    &messages,
+                    &prompt,
+                    &model,
+                    &endpoint_url,
+                    ai_cfg.intent_local_timeout,
+                )
+            },
+        )
+        .await
+        {
+            return Ok(raw);
+        }
+    }
+
+    if ai_cfg.intent_raspi_enabled {
+        if let Some(endpoint_url) = ai_cfg.intent_raspi_url.clone() {
+            let model = ai_cfg.intent_raspi_model.clone();
+            if let Some(raw) = try_intent_stage(
+                call_id,
+                super::IntentStage::Raspi,
+                text_len,
+                ai_cfg.intent_raspi_timeout,
+                || {
+                    super::call_ollama_for_intent_stage(
+                        &messages,
+                        &prompt,
+                        &model,
+                        &endpoint_url,
+                        ai_cfg.intent_raspi_timeout,
+                    )
+                },
+            )
+            .await
+            {
+                return Ok(raw);
+            }
+        } else {
+            log::warn!(
+                "[intent {call_id}] intent stage failed: intent_stage=raspi reason=INTENT_RASPI_URL missing"
+            );
+        }
+    }
+
+    log::error!("[intent {call_id}] intent failed: reason=all intent stages failed");
+    anyhow::bail!("all intent stages failed")
+}
+
+async fn try_intent_stage<F, Fut>(
+    call_id: &str,
+    stage: super::IntentStage,
+    text_len: usize,
+    stage_timeout: Duration,
+    run: F,
+) -> Option<String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<String>>,
+{
+    let stage_name = stage.as_str();
+    log::debug!(
+        "[intent {call_id}] intent stage start: intent_stage={} timeout_ms={} text_len={}",
+        stage_name,
+        stage_timeout.as_millis(),
+        text_len
+    );
+
+    let raw = match timeout(stage_timeout, run()).await {
+        Ok(Ok(raw)) => raw,
+        Ok(Err(err)) => {
+            log::warn!(
+                "[intent {call_id}] intent stage failed: intent_stage={} reason={}",
+                stage_name,
+                err
+            );
+            return None;
+        }
+        Err(_) => {
+            log::warn!(
+                "[intent {call_id}] intent stage failed: intent_stage={} reason=timeout timeout_ms={}",
+                stage_name,
+                stage_timeout.as_millis()
+            );
+            return None;
+        }
+    };
+
+    log::info!(
+        "[intent {call_id}] intent stage success: intent_stage={} raw_len={}",
+        stage_name,
+        raw.chars().count()
+    );
+    Some(raw)
 }

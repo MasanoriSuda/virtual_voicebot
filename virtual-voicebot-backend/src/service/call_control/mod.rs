@@ -453,7 +453,11 @@ impl AppWorker {
             return Ok(());
         }
 
-        let intent_json = match self.ai_port.classify_intent(trimmed.to_string()).await {
+        let intent_json = match self
+            .ai_port
+            .classify_intent(call_id.to_string(), trimmed.to_string())
+            .await
+        {
             Ok(raw) => raw,
             Err(err) => {
                 log::warn!("[app {call_id}] intent classify failed: {err:?}");
