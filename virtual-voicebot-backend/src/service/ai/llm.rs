@@ -56,8 +56,8 @@ fn read_prompt_file() -> Option<String> {
 }
 
 /// LLM 呼び出しの薄いI/F（挙動は ai::handle_user_question_from_whisper のLLM部分と同じ）
-pub async fn generate_answer(messages: Vec<ChatMessage>) -> Result<String> {
-    super::handle_user_question_from_whisper_llm_only(messages).await
+pub async fn generate_answer(call_id: &str, messages: Vec<ChatMessage>) -> Result<String> {
+    super::handle_user_question_from_whisper_llm_only(call_id, messages).await
 }
 
 /// LLM 呼び出しの薄いラッパ（挙動は ai::handle_user_question_from_whisper と同じ）。

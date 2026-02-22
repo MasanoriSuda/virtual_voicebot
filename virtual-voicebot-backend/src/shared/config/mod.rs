@@ -860,6 +860,15 @@ pub struct AiConfig {
     pub gemini_model: String,
     pub ollama_model: String,
     pub ollama_intent_model: String,
+    pub llm_local_server_url: String,
+    pub llm_local_server_enabled: bool,
+    pub llm_local_model: String,
+    pub llm_raspi_url: Option<String>,
+    pub llm_raspi_enabled: bool,
+    pub llm_raspi_model: String,
+    pub llm_cloud_timeout: Duration,
+    pub llm_local_timeout: Duration,
+    pub llm_raspi_timeout: Duration,
     pub use_aws_transcribe: bool,
     pub asr_local_server_url: String,
     pub asr_local_server_enabled: bool,
@@ -881,6 +890,15 @@ impl AiConfig {
     /// - `GEMINI_MODEL`: model name for Gemini; defaults to `"gemini-2.5-flash-lite"`.
     /// - `OLLAMA_MODEL`: model name for Ollama; defaults to `"gemma3:4b"`.
     /// - `OLLAMA_INTENT_MODEL`: intent model for Ollama; defaults to the value of `OLLAMA_MODEL`.
+    /// - `LLM_LOCAL_SERVER_URL`: local LLM server full endpoint URL; defaults to `"http://localhost:11434/api/chat"`.
+    /// - `LLM_LOCAL_SERVER_ENABLED`: enables local LLM server fallback; defaults to `true`.
+    /// - `LLM_LOCAL_MODEL`: local LLM model; defaults to the value of `OLLAMA_MODEL`.
+    /// - `LLM_RASPI_URL`: optional Raspberry Pi LLM server full endpoint URL (required only when `LLM_RASPI_ENABLED=1`).
+    /// - `LLM_RASPI_ENABLED`: enables Raspberry Pi LLM fallback; defaults to `false`.
+    /// - `LLM_RASPI_MODEL`: Raspberry Pi LLM model; defaults to `"llama3.2:1b"`.
+    /// - `LLM_CLOUD_TIMEOUT_MS`: cloud LLM timeout in milliseconds; defaults to `10000`.
+    /// - `LLM_LOCAL_TIMEOUT_MS`: local LLM timeout in milliseconds; defaults to `8000`.
+    /// - `LLM_RASPI_TIMEOUT_MS`: Raspberry Pi LLM timeout in milliseconds; defaults to `15000`.
     /// - `USE_AWS_TRANSCRIBE`: treated as a boolean; defaults to `false`.
     /// - `ASR_LOCAL_SERVER_URL`: local ASR server URL; defaults to `"http://localhost:9000/transcribe"`.
     /// - `ASR_LOCAL_SERVER_ENABLED`: enables local ASR server fallback; defaults to `true`.
@@ -904,6 +922,15 @@ impl AiConfig {
     /// env::remove_var("GEMINI_MODEL");
     /// env::remove_var("OLLAMA_MODEL");
     /// env::remove_var("OLLAMA_INTENT_MODEL");
+    /// env::remove_var("LLM_LOCAL_SERVER_URL");
+    /// env::remove_var("LLM_LOCAL_SERVER_ENABLED");
+    /// env::remove_var("LLM_LOCAL_MODEL");
+    /// env::remove_var("LLM_RASPI_URL");
+    /// env::remove_var("LLM_RASPI_ENABLED");
+    /// env::remove_var("LLM_RASPI_MODEL");
+    /// env::remove_var("LLM_CLOUD_TIMEOUT_MS");
+    /// env::remove_var("LLM_LOCAL_TIMEOUT_MS");
+    /// env::remove_var("LLM_RASPI_TIMEOUT_MS");
     /// env::remove_var("USE_AWS_TRANSCRIBE");
     /// env::remove_var("ASR_LOCAL_SERVER_URL");
     /// env::remove_var("ASR_LOCAL_SERVER_ENABLED");
@@ -925,12 +952,25 @@ impl AiConfig {
             std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma3:4b".to_string());
         let ollama_intent_model =
             std::env::var("OLLAMA_INTENT_MODEL").unwrap_or_else(|_| ollama_model.clone());
+        let llm_local_model =
+            env_non_empty("LLM_LOCAL_MODEL").unwrap_or_else(|| ollama_model.clone());
         Self {
             gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
             gemini_model: std::env::var("GEMINI_MODEL")
                 .unwrap_or_else(|_| "gemini-2.5-flash-lite".to_string()),
             ollama_model,
             ollama_intent_model,
+            llm_local_server_url: env_non_empty("LLM_LOCAL_SERVER_URL")
+                .unwrap_or_else(|| "http://localhost:11434/api/chat".to_string()),
+            llm_local_server_enabled: env_bool("LLM_LOCAL_SERVER_ENABLED", true),
+            llm_local_model,
+            llm_raspi_url: env_non_empty("LLM_RASPI_URL"),
+            llm_raspi_enabled: env_bool("LLM_RASPI_ENABLED", false),
+            llm_raspi_model: env_non_empty("LLM_RASPI_MODEL")
+                .unwrap_or_else(|| "llama3.2:1b".to_string()),
+            llm_cloud_timeout: env_duration_ms("LLM_CLOUD_TIMEOUT_MS", 10_000),
+            llm_local_timeout: env_duration_ms("LLM_LOCAL_TIMEOUT_MS", 8_000),
+            llm_raspi_timeout: env_duration_ms("LLM_RASPI_TIMEOUT_MS", 15_000),
             use_aws_transcribe: env_bool("USE_AWS_TRANSCRIBE", false),
             asr_local_server_url: std::env::var("ASR_LOCAL_SERVER_URL")
                 .ok()
