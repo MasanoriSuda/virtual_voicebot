@@ -93,7 +93,7 @@ So that 環境（高性能サーバーあり/なし/Pi 単体）に応じて最�
 | 実装者 | Codex |
 | 実装日 | 2026-02-22 |
 | 実装内容 | TTS 2 段フォールバック（local server → raspi）を実装。`TtsPort` に `call_id` を追加して段別ログ（start/success/failure/all failed）を実装。`AiConfig` に `TTS_*` 設定を追加し、`docker-compose.dev.yml` の `VOICEVOX_URL` を `TTS_LOCAL_SERVER_BASE_URL` に置換。 |
-| 検証結果 | `cargo fmt` / `cargo test -q` / `cargo clippy -q` PASS（127 tests passed） |
+| 検証結果 | `cargo fmt` / `cargo test -q` / `cargo clippy -- -D warnings` PASS（127 tests passed） |
 
 ### 3.6 マージ
 
