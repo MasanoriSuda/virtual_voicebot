@@ -106,10 +106,41 @@ impl AsrStage {
     }
 }
 
+#[derive(Clone, Copy)]
+enum LlmStage {
+    Cloud,
+    Local,
+    Raspi,
+}
+
+impl LlmStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cloud => "cloud",
+            Self::Local => "local",
+            Self::Raspi => "raspi",
+        }
+    }
+}
+
 fn asr_stage_count(ai_cfg: &config::AiConfig) -> usize {
     usize::from(ai_cfg.use_aws_transcribe)
         + usize::from(ai_cfg.asr_local_server_enabled)
         + usize::from(ai_cfg.asr_raspi_enabled)
+}
+
+fn llm_cloud_enabled(ai_cfg: &config::AiConfig) -> bool {
+    ai_cfg
+        .gemini_api_key
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|key| !key.is_empty())
+}
+
+fn llm_stage_count(ai_cfg: &config::AiConfig) -> usize {
+    usize::from(llm_cloud_enabled(ai_cfg))
+        + usize::from(ai_cfg.llm_local_server_enabled)
+        + usize::from(ai_cfg.llm_raspi_enabled)
 }
 
 fn log_asr_startup_warnings() {
@@ -122,6 +153,20 @@ fn log_asr_startup_warnings() {
     if ai_cfg.asr_raspi_enabled && ai_cfg.asr_raspi_url.is_none() {
         log::warn!(
             "[asr] ASR_RASPI_ENABLED=1 but ASR_RASPI_URL is not set; raspi stage will be skipped"
+        );
+    }
+}
+
+fn log_llm_startup_warnings() {
+    let ai_cfg = config::ai_config();
+    if llm_stage_count(ai_cfg) == 0 {
+        log::warn!(
+            "[llm] no LLM stages enabled (GEMINI_API_KEY missing, LLM_LOCAL_SERVER_ENABLED=0, LLM_RASPI_ENABLED=0)"
+        );
+    }
+    if ai_cfg.llm_raspi_enabled && ai_cfg.llm_raspi_url.is_none() {
+        log::warn!(
+            "[llm] LLM_RASPI_ENABLED=1 but LLM_RASPI_URL is not set; raspi stage will be skipped"
         );
     }
 }
@@ -219,6 +264,51 @@ where
     Some(text)
 }
 
+async fn try_llm_stage<F, Fut>(
+    call_id: &str,
+    stage: LlmStage,
+    stage_timeout: Duration,
+    run: F,
+) -> Option<String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<String>>,
+{
+    let stage_name = stage.as_str();
+    log::debug!(
+        "[llm {call_id}] LLM stage start: llm_stage={} timeout_ms={}",
+        stage_name,
+        stage_timeout.as_millis()
+    );
+
+    let text = match timeout(stage_timeout, run()).await {
+        Ok(Ok(text)) => text,
+        Ok(Err(err)) => {
+            log::warn!(
+                "[llm {call_id}] LLM stage failed: llm_stage={} reason={}",
+                stage_name,
+                err
+            );
+            return None;
+        }
+        Err(_) => {
+            log::warn!(
+                "[llm {call_id}] LLM stage failed: llm_stage={} reason=timeout timeout_ms={}",
+                stage_name,
+                stage_timeout.as_millis()
+            );
+            return None;
+        }
+    };
+
+    info!(
+        "[llm {call_id}] LLM stage success: llm_stage={} text_len={}",
+        stage_name,
+        text.chars().count()
+    );
+    Some(text)
+}
+
 /// ASR 実行（現行実装を拡張）: cloud(AWS) -> local server -> raspi server の3段フォールバック。
 pub async fn transcribe_and_log(call_id: &str, wav_path: &str) -> Result<String> {
     let ai_cfg = config::ai_config();
@@ -275,7 +365,15 @@ pub async fn transcribe_and_log(call_id: &str, wav_path: &str) -> Result<String>
 /// LLM + TTS 実行（現行実装: Gemini→Ollama fallback→ずんだもんTTS）。挙動は変更なし。
 /// I/F はテキスト入力→WAVパス出力（将来はチャネル/PCM化予定、現状は一時ファイルのまま）。
 pub async fn handle_user_question_from_whisper(messages: Vec<ChatMessage>) -> Result<String> {
-    let answer = handle_user_question_from_whisper_llm_only(messages).await?;
+    let answer = match handle_user_question_from_whisper_llm_only("standalone", messages).await {
+        Ok(answer) => answer,
+        Err(err) => {
+            log::error!(
+                "[llm standalone] all LLM stages failed in handle_user_question_from_whisper: {err:?}"
+            );
+            "すみません、うまく答えを用意できませんでした。".to_string()
+        }
+    };
 
     // 一時WAVファイル経由のまま（責務は ai モジュール内に閉じ込める）
     let answer_wav = "/tmp/ollama_answer.wav";
@@ -286,41 +384,98 @@ pub async fn handle_user_question_from_whisper(messages: Vec<ChatMessage>) -> Re
 
 /// LLM 部分のみを切り出した I/F（app→ai で分離できるようにする）
 pub async fn handle_user_question_from_whisper_llm_only(
+    call_id: &str,
     messages: Vec<ChatMessage>,
 ) -> Result<String> {
     if let Some(last_user) = messages.iter().rev().find(|m| m.role == Role::User) {
-        info!("User question (whisper): {}", last_user.content);
+        log::debug!(
+            "[llm {call_id}] user question: {}",
+            mask_pii(&last_user.content)
+        );
     }
 
-    let answer = match call_gemini(&messages).await {
-        Ok(ans) => {
-            info!("LLM answer (gemini): {}", ans);
-            ans
-        }
-        Err(gemini_err) => {
-            log::error!("call_gemini failed: {gemini_err:?}, falling back to ollama");
-            match call_ollama(&messages).await {
-                Ok(fallback) => {
-                    info!("LLM answer (ollama fallback): {}", fallback);
-                    fallback
-                }
-                Err(ollama_err) => {
-                    log::error!(
-                        "call_ollama also failed: {ollama_err:?}. Using default apology message."
-                    );
-                    "すみません、うまく答えを用意できませんでした。".to_string()
-                }
-            }
-        }
-    };
+    let ai_cfg = config::ai_config();
+    if llm_stage_count(ai_cfg) == 0 {
+        log::error!("[llm {call_id}] LLM failed: reason=all LLM stages disabled");
+        anyhow::bail!("all LLM stages failed");
+    }
 
-    Ok(answer)
+    if llm_cloud_enabled(ai_cfg) {
+        if let Some(text) =
+            try_llm_stage(call_id, LlmStage::Cloud, ai_cfg.llm_cloud_timeout, || {
+                call_gemini_with_http_timeout(&messages, ai_cfg.llm_cloud_timeout)
+            })
+            .await
+        {
+            return Ok(text);
+        }
+    }
+
+    let system_prompt = llm::system_prompt();
+
+    if ai_cfg.llm_local_server_enabled {
+        let local_url = ai_cfg.llm_local_server_url.clone();
+        let local_model = ai_cfg.llm_local_model.clone();
+        if let Some(text) =
+            try_llm_stage(call_id, LlmStage::Local, ai_cfg.llm_local_timeout, || {
+                call_ollama_for_stage(
+                    &messages,
+                    &system_prompt,
+                    &local_model,
+                    &local_url,
+                    ai_cfg.llm_local_timeout,
+                )
+            })
+            .await
+        {
+            return Ok(text);
+        }
+    }
+
+    if ai_cfg.llm_raspi_enabled {
+        if let Some(raspi_url) = ai_cfg.llm_raspi_url.clone() {
+            let raspi_model = ai_cfg.llm_raspi_model.clone();
+            if let Some(text) =
+                try_llm_stage(call_id, LlmStage::Raspi, ai_cfg.llm_raspi_timeout, || {
+                    call_ollama_for_stage(
+                        &messages,
+                        &system_prompt,
+                        &raspi_model,
+                        &raspi_url,
+                        ai_cfg.llm_raspi_timeout,
+                    )
+                })
+                .await
+            {
+                return Ok(text);
+            }
+        } else {
+            log::warn!(
+                "[llm {call_id}] LLM stage failed: llm_stage=raspi reason=LLM_RASPI_URL missing"
+            );
+        }
+    }
+
+    log::error!("[llm {call_id}] LLM failed: reason=all LLM stages failed");
+    anyhow::bail!("all LLM stages failed")
 }
 
+#[allow(dead_code)]
 async fn call_ollama(messages: &[ChatMessage]) -> Result<String> {
     let model = config::ai_config().ollama_model.clone();
     let system_prompt = llm::system_prompt();
     call_ollama_with_prompt(messages, &system_prompt, &model).await
+}
+
+async fn call_ollama_for_stage(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    model: &str,
+    endpoint_url: &str,
+    http_timeout: Duration,
+) -> Result<String> {
+    call_ollama_with_prompt_internal(messages, system_prompt, model, endpoint_url, http_timeout)
+        .await
 }
 
 pub(crate) async fn call_ollama_with_prompt(
@@ -328,7 +483,24 @@ pub(crate) async fn call_ollama_with_prompt(
     system_prompt: &str,
     model: &str,
 ) -> Result<String> {
-    let client = http_client(config::timeouts().ai_http)?;
+    call_ollama_with_prompt_internal(
+        messages,
+        system_prompt,
+        model,
+        "http://localhost:11434/api/chat",
+        config::timeouts().ai_http,
+    )
+    .await
+}
+
+async fn call_ollama_with_prompt_internal(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    model: &str,
+    endpoint_url: &str,
+    http_timeout: Duration,
+) -> Result<String> {
+    let client = http_client(http_timeout)?;
 
     let mut ollama_messages = Vec::with_capacity(messages.len() + 1);
     ollama_messages.push(OllamaMessage {
@@ -352,11 +524,7 @@ pub(crate) async fn call_ollama_with_prompt(
         stream: false,
     };
 
-    let resp = client
-        .post("http://localhost:11434/api/chat")
-        .json(&req)
-        .send()
-        .await?;
+    let resp = client.post(endpoint_url).json(&req).send().await?;
 
     let status = resp.status();
     let body_text = resp.text().await?;
@@ -388,6 +556,7 @@ pub struct DefaultAiPort;
 impl DefaultAiPort {
     pub fn new() -> Self {
         log_asr_startup_warnings();
+        log_llm_startup_warnings();
         Self
     }
 }
@@ -446,9 +615,13 @@ impl IntentPort for DefaultAiPort {
 }
 
 impl LlmPort for DefaultAiPort {
-    fn generate_answer(&self, messages: Vec<ChatMessage>) -> AiFuture<Result<String, LlmError>> {
+    fn generate_answer(
+        &self,
+        call_id: String,
+        messages: Vec<ChatMessage>,
+    ) -> AiFuture<Result<String, LlmError>> {
         Box::pin(async move {
-            llm::generate_answer(messages)
+            llm::generate_answer(&call_id, messages)
                 .await
                 .map_err(|e| LlmError::GenerationFailed(e.to_string()))
         })
@@ -548,8 +721,16 @@ pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
 /// println!("{}", reply);
 /// # });
 /// ```
+#[allow(dead_code)]
 async fn call_gemini(messages: &[ChatMessage]) -> Result<String> {
-    let client = http_client(config::timeouts().ai_http)?;
+    call_gemini_with_http_timeout(messages, config::timeouts().ai_http).await
+}
+
+async fn call_gemini_with_http_timeout(
+    messages: &[ChatMessage],
+    http_timeout: Duration,
+) -> Result<String> {
+    let client = http_client(http_timeout)?;
 
     let ai_cfg = config::ai_config();
     let api_key = ai_cfg

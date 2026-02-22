@@ -475,7 +475,11 @@ impl AppWorker {
                     content: query.clone(),
                 });
 
-                let answer_text = match self.ai_port.generate_answer(messages).await {
+                let answer_text = match self
+                    .ai_port
+                    .generate_answer(call_id.to_string(), messages)
+                    .await
+                {
                     Ok(ans) => ans,
                     Err(e) => {
                         log::warn!("[app {call_id}] LLM failed: {e:?}");
