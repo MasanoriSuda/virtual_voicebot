@@ -25,7 +25,17 @@ pub async fn transcribe_chunks(call_id: &str, chunks: &[AsrChunk]) -> Result<Str
     let safe_call_id = sanitize_call_id_for_tmp_filename(call_id)?;
     let wav_path = format!("/tmp/asr_input_{}.wav", safe_call_id);
     write_mulaw_to_wav(&pcmu, &wav_path)?;
-    super::transcribe_and_log(call_id, &wav_path).await
+    let result = super::transcribe_and_log(call_id, &wav_path).await;
+    if let Err(err) = tokio::fs::remove_file(&wav_path).await {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            log::warn!(
+                "[asr {call_id}] failed to remove temporary wav file {}: {}",
+                wav_path,
+                err
+            );
+        }
+    }
+    result
 }
 
 fn sanitize_call_id_for_tmp_filename(call_id: &str) -> Result<String> {
