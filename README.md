@@ -1,5 +1,10 @@
 # Virtual Voicebot
-本ソフトはSIP/RTP ベースの音声対話ボットシステムです。電話着信を受けて ASR→LLM→TTS のパイプラインで自動応答します。
+
+SIP/RTP ベースの音声対話ボットシステムです。電話着信を受けて ASR → LLM → TTS のパイプラインで自動応答します。
+
+> **対応プラットフォーム**: 通常 PC（x86_64 Linux）/ Raspberry Pi（ARM64）
+
+---
 
 ## アーキテクチャ概要
 
@@ -7,57 +12,48 @@
 ┌─────────────────┐     ┌──────────────────────────────────────────┐
 │  電話機/SIP     │────▶│  virtual-voicebot-backend (Rust)        │
 │  クライアント   │◀────│                                          │
-└─────────────────┘     │  ┌─────────┐  ┌─────────┐  ┌─────────┐  │
-                        │  │ SIP/RTP │──│ Session │──│   App   │  │
-                        │  └─────────┘  └─────────┘  └────┬────┘  │
-                        └─────────────────────────────────┼───────┘
-                                                          │
-                        ┌─────────────────────────────────┼───────┐
-                        │            AI サービス群        │       │
-                        │  ┌─────┐  ┌─────┐  ┌─────────┐  │       │
-                        │  │ ASR │  │ LLM │  │   TTS   │  │       │
-                        │  └─────┘  └─────┘  └─────────┘  │       │
+└─────────────────┘     │  ┌──────────┐  ┌──────────┐  ┌───────┐  │
+                        │  │ protocol │──│ service  │──│  app  │  │
+                        │  │ sip/rtp  │  │call_ctrl │  └───────┘  │
+                        │  └──────────┘  └──────────┘             │
                         └─────────────────────────────────────────┘
+                                          │
+                        ┌─────────────────┼─────────────────────────┐
+                        │            AI サービス群                  │
+                        │  ┌─────────┐  ┌───────────┐  ┌─────────┐ │
+                        │  │ Whisper │  │Gemini/    │  │VOICEVOX │ │
+                        │  │  ASR    │  │Ollama LLM │  │  TTS    │ │
+                        │  └─────────┘  └───────────┘  └─────────┘ │
+                        └──────────────────────────────────────────┘
 ```
+
+---
 
 ## 必要なコンポーネント
 
-| コンポーネント | 用途 | 選択肢 |
-|---------------|------|--------|
-| **ASR** | 音声→テキスト | AWS Transcribe（推奨）/ Whisper（ローカル） |
-| **LLM** | 対話生成 | Google Gemini API（推奨）/ Ollama（ローカル） |
-| **TTS** | テキスト→音声 | VOICEVOX（ずんだもん） |
+| コンポーネント | 用途 | 通常PC 推奨 | Raspberry Pi 推奨 |
+|---------------|------|------------|------------------|
+| **ASR** | 音声→テキスト | AWS Transcribe / Whisper | Whisper（ローカル） |
+| **LLM** | 対話生成 | Gemini API / Ollama + `gemma3:4b` | Ollama + `llama3.2:1b` |
+| **TTS** | テキスト→音声 | VOICEVOX（ずんだもん） | VOICEVOX（ずんだもん） |
 
-> **Note**: TTS は現在 VOICEVOX のみ対応。他の TTS（Google Cloud TTS 等）は PR/Issue があれば対応予定。
+> **重要**: AI エンドポイントはコード内で **localhost 固定** です（`localhost:9000` / `localhost:11434` / `localhost:50021`）。
+> `.env.example` の `OLLAMA_URL` / `VOICEVOX_URL` 等の変数は現在のコードでは参照されません。
 
 ---
 
 ## クイックスタート
 
-### 1. 前提条件
+### 前提条件
 
 - Rust toolchain（1.70+）
-- Docker（AI サービス用）
-- ネットワーク: SIP/RTP ポートが開放されていること
-####
+- ネットワーク: SIP ポート（5060）・RTP ポート（10000）が開放されていること
 
-### 2. AI サービスの起動
+---
 
-> **Note**: Docker Compose による一括起動は対応中です。
+### 通常PC 向けセットアップ
 
-#### Option A: クラウド API（推奨）
-
-```bash
-# Google Gemini API キーを取得
-export GEMINI_API_KEY="your-api-key"
-
-# AWS Transcribe を使用する場合
-export USE_AWS_TRANSCRIBE=true
-export AWS_TRANSCRIBE_BUCKET="your-bucket"
-# AWS 認証情報（~/.aws/credentials または環境変数）
-```
-
-#### Option B: ローカル AI サービス
+#### 1. AI サービスの起動
 
 ```bash
 # Whisper ASR（ポート 9000）
@@ -65,125 +61,190 @@ docker run -d -p 9000:9000 onerahmet/openai-whisper-asr-webservice:latest
 
 # Ollama LLM（ポート 11434）
 docker run -d -p 11434:11434 ollama/ollama
-docker exec -it <container> ollama pull gemma3:4b
+docker exec -it <container_name> ollama pull gemma3:4b
 
-# VOICEVOX TTS（ポート 50021）- 必須
+# VOICEVOX TTS（ポート 50021）— 必須
 docker run -d -p 50021:50021 voicevox/voicevox_engine:cpu-ubuntu20.04-latest
 ```
 
-### 3. Backend のビルドと起動
+#### 2. Backend のビルドと起動
 
 ```bash
 cd virtual-voicebot-backend
 
-# ビルド
-cargo build --release
+# inbound-only（ローカルソフトフォンテスト）
+ADVERTISED_IP=192.168.1.100 bash run_uas.sh
 
-# 環境変数を設定して起動
-export LOCAL_IP="192.168.1.100"        # ローカル IP
-export ADVERTISED_IP="192.168.1.100"   # SDP に記載する IP
-export SIP_PORT=5060                   # SIP ポート
-export RTP_PORT=10000                  # RTP ポート
-export GEMINI_API_KEY="your-api-key"   # LLM 用
-
-cargo run --release
+# Gemini API を使う場合は追加で設定
+GEMINI_API_KEY=your-api-key ADVERTISED_IP=192.168.1.100 bash run_uas.sh
 ```
 
-### 4. SIP Registrar への登録（キャリア接続時）
+---
 
-NTT Docomo 等のキャリアから着信を受けるには REGISTER が必要です。
+### Raspberry Pi 向けセットアップ
+
+ラズパイでは Gemini API キーなし・Ollama + `llama3.2:1b` でローカル完結させます。
+
+#### 1. Ollama のインストールとモデル取得
 
 ```bash
-# 追加の環境変数
-export REGISTRAR_HOST="sip.example.com"
-export REGISTRAR_PORT=5061
-export REGISTRAR_TRANSPORT=tls
-export REGISTER_USER="your-sip-user"
-export REGISTER_DOMAIN="example.com"
-export REGISTER_AUTH_USER="auth-user"
-export REGISTER_AUTH_PASSWORD="password"
+# Ollama インストール（ARM64 対応）
+curl -fsSL https://ollama.com/install.sh | sh
 
-# TLS 証明書（TLS 接続時）
-export TLS_CERT_PATH="/path/to/cert.pem"
-export TLS_KEY_PATH="/path/to/key.pem"
+# ラズパイ推奨モデル（約 1.3 GB）
+ollama pull llama3.2:1b
+
+# 品質重視の場合（RAM 4GB 以上・約 2.0 GB）
+# ollama pull llama3.2:3b
 ```
+
+#### 2. Whisper ASR・VOICEVOX の起動
+
+```bash
+# Whisper ASR
+docker run -d -p 9000:9000 onerahmet/openai-whisper-asr-webservice:latest
+
+# VOICEVOX TTS
+docker run -d -p 50021:50021 voicevox/voicevox_engine:cpu-ubuntu20.04-latest
+```
+
+#### 3. Backend のビルドと起動
+
+```bash
+cd virtual-voicebot-backend
+cargo build --release
+
+# GEMINI_API_KEY は未設定 → call_gemini 失敗後に Ollama へフォールバック
+ADVERTISED_IP=192.168.1.xxx \
+OLLAMA_MODEL=llama3.2:1b \
+bash run_uas.sh
+```
+
+> `GEMINI_API_KEY` 未設定時は毎回 `call_gemini failed` の error ログが出てから Ollama を呼びます。これは正常動作です。
+> ラズパイ運用では `GEMINI_API_KEY` は**意図的に未設定**にするのが推奨です。
+
+---
+
+## 3モード実行
+
+### Mode 1: inbound-only（ローカルソフトフォンテスト）
+
+Registrar への登録なし。Zoiper 等のソフトフォンから直接 SIP INVITE を受ける構成。
+
+```bash
+cd virtual-voicebot-backend
+ADVERTISED_IP=192.168.1.100 bash run_uas.sh
+```
+
+### Mode 2: キャリア接続（REGISTER あり）
+
+NTT Docomo 等のキャリア SIP サーバーへ REGISTER して着信を受ける構成。
+
+```bash
+# .env.register ファイルを作成
+cat > virtual-voicebot-backend/.env.register << 'EOF'
+ADVERTISED_IP=203.0.113.10
+LOCAL_IP=192.168.1.100
+REGISTRAR_HOST=sip.carrier.example.com
+REGISTRAR_PORT=5060
+REGISTRAR_TRANSPORT=udp
+REGISTER_USER=09012345678
+REGISTER_DOMAIN=carrier.example.com
+REGISTER_AUTH_USER=09012345678
+REGISTER_AUTH_PASSWORD=yourpassword
+OLLAMA_MODEL=llama3.2:1b
+EOF
+
+cd virtual-voicebot-backend
+bash run_register.sh
+# .env.register を自動読み込みして起動します
+```
+
+> **現時点で outbound（発信側）TLS は未対応です**。外部 SIP トランク向け TLS 対応は別 Issue で対応予定です。
+
+### Mode 3: Outbound 発信
+
+```bash
+OUTBOUND_ENABLED=true \
+OUTBOUND_DOMAIN=sip.example.com \
+OUTBOUND_DEFAULT_NUMBER=09000000000 \
+ADVERTISED_IP=192.168.1.100 \
+bash virtual-voicebot-backend/run_uas.sh
+```
+
+> `OUTBOUND_ENABLED=true` のとき、着信 INVITE の To ユーザーが `REGISTER_USER` と一致しない場合に outbound 分岐します。
+> `OUTBOUND_DOMAIN` 未設定時は起動時に warn ログが出ます。
 
 ---
 
 ## 環境変数一覧
 
-### 必須
+### SIP/RTP
 
 | 変数名 | 説明 | デフォルト |
 |--------|------|-----------|
 | `LOCAL_IP` | ローカル IP アドレス | `0.0.0.0` |
 | `ADVERTISED_IP` | SDP に記載する外部 IP | `LOCAL_IP` と同じ |
-
-### SIP/RTP
-
-| 変数名 | 説明 | デフォルト |
-|--------|------|-----------|
 | `SIP_BIND_IP` | SIP バインド IP | `0.0.0.0` |
 | `SIP_PORT` | SIP UDP/TCP ポート | `5060` |
 | `SIP_TLS_PORT` | SIP TLS ポート | `5061` |
-| `RTP_PORT` | RTP ポート | `10000` |
-| `ADVERTISED_RTP_PORT` | 外部 RTP ポート | `RTP_PORT` と同じ |
+| `RTP_PORT` | RTP 受信ポート | `10000` |
+| `ADVERTISED_RTP_PORT` | SDP に記載する RTP ポート | `RTP_PORT` と同じ |
 
 ### REGISTER（キャリア接続）
 
 | 変数名 | 説明 | デフォルト |
 |--------|------|-----------|
-| `REGISTRAR_HOST` | Registrar ホスト名 | - |
-| `REGISTRAR_PORT` | Registrar ポート | `5060` (UDP/TCP), `5061` (TLS) |
+| `REGISTRAR_HOST` | Registrar ホスト名/IP | — |
+| `REGISTRAR_PORT` | Registrar ポート | `5060` |
 | `REGISTRAR_TRANSPORT` | トランスポート (`udp`/`tcp`/`tls`) | `udp` |
-| `REGISTER_USER` | SIP ユーザー | - |
+| `REGISTER_USER` | SIP ユーザー | — |
 | `REGISTER_DOMAIN` | SIP ドメイン | `REGISTRAR_HOST` と同じ |
-| `REGISTER_EXPIRES` | 登録有効期間（秒） | `3600` |
-| `REGISTER_CONTACT_HOST` | Contact URI のホスト | `ADVERTISED_IP` |
-| `REGISTER_CONTACT_PORT` | Contact URI のポート | `SIP_PORT` または `SIP_TLS_PORT` |
 | `REGISTER_AUTH_USER` | 認証ユーザー | `REGISTER_USER` と同じ |
-| `REGISTER_AUTH_PASSWORD` | 認証パスワード | - |
+| `REGISTER_AUTH_PASSWORD` | 認証パスワード | — |
+| `REGISTER_EXPIRES` | 登録有効期間（秒） | `3600` |
+| `REGISTER_CONTACT_HOST` | Contact URI ホスト | `ADVERTISED_IP` |
 
 ### TLS
 
 | 変数名 | 説明 | デフォルト |
 |--------|------|-----------|
-| `TLS_CERT_PATH` | サーバー証明書パス | - |
-| `TLS_KEY_PATH` | 秘密鍵パス | - |
-| `TLS_CA_PATH` | CA 証明書パス（クライアント認証用） | - |
+| `TLS_CERT_PATH` | サーバー証明書パス | — |
+| `TLS_KEY_PATH` | 秘密鍵パス | — |
+| `TLS_CA_PATH` | CA 証明書パス | — |
 
 ### AI サービス
 
-| 変数名 | 説明 | デフォルト |
-|--------|------|-----------|
-| `GEMINI_API_KEY` | Gemini API キー | - |
-| `GEMINI_MODEL` | Gemini モデル名 | `gemini-2.5-flash-lite` |
-| `USE_AWS_TRANSCRIBE` | AWS Transcribe を使用 | `false` |
-| `AWS_TRANSCRIBE_BUCKET` | S3 バケット名 | - |
-| `AWS_TRANSCRIBE_PREFIX` | S3 プレフィックス | `voicebot` |
+> AI エンドポイントはコード内で localhost 固定です（`:9000` / `:11434` / `:50021`）。URL 変数は現在参照されません。
 
-### タイムアウト
+| 変数名 | 説明 | デフォルト | ラズパイ推奨 |
+|--------|------|-----------|------------|
+| `GEMINI_API_KEY` | Gemini API キー（未設定で Ollama フォールバック） | — | 未設定 |
+| `GEMINI_MODEL` | Gemini モデル名 | `gemini-2.5-flash-lite` | — |
+| `OLLAMA_MODEL` | Ollama モデル名 | `gemma3:4b` | `llama3.2:1b` |
+| `OLLAMA_INTENT_MODEL` | 意図分類用 Ollama モデル | `OLLAMA_MODEL` と同値 | `llama3.2:1b` |
+| `USE_AWS_TRANSCRIBE` | AWS Transcribe を使用 | `false` | `false` |
+| `AWS_TRANSCRIBE_BUCKET` | S3 バケット名 | — | — |
+| `AWS_TRANSCRIBE_PREFIX` | S3 プレフィックス | `voicebot` | — |
 
-| 変数名 | 説明 | デフォルト |
-|--------|------|-----------|
-| `AI_HTTP_TIMEOUT_MS` | AI API タイムアウト | `20000` |
-| `INGEST_HTTP_TIMEOUT_MS` | Ingest タイムアウト | `5000` |
-| `RECORDING_IO_TIMEOUT_MS` | 録音 I/O タイムアウト | `5000` |
-| `SIP_TCP_IDLE_TIMEOUT_MS` | SIP TCP アイドルタイムアウト | `30000` |
-
-### Session Timer（RFC 4028）
+### Outbound
 
 | 変数名 | 説明 | デフォルト |
 |--------|------|-----------|
-| `SESSION_TIMEOUT_SEC` | デフォルトセッションタイムアウト（秒）。INVITE に Session-Expires がない場合に使用。`0` で無制限。 | `1800` |
-| `SESSION_MIN_SE` | 最小セッション時間（秒）。相手の Min-SE より小さい場合は相手の値を使用。 | `90` |
+| `OUTBOUND_ENABLED` | Outbound 発信を有効化 | `false` |
+| `OUTBOUND_DOMAIN` | 発信先 SIP ドメイン | — |
+| `OUTBOUND_DEFAULT_NUMBER` | デフォルト発信番号 | — |
 
-### RTP
+### Session / VAD / タイムアウト
 
 | 変数名 | 説明 | デフォルト |
 |--------|------|-----------|
-| `RTP_JITTER_MAX_REORDER` | ジッタバッファ最大並び替え数 | `5` |
-| `RTCP_INTERVAL_MS` | RTCP 送信間隔 | `5000` |
+| `SESSION_TIMEOUT_SEC` | セッションタイムアウト（秒）。`0` で無制限 | `1800` |
+| `SESSION_MIN_SE` | 最小セッション時間（秒） | `90` |
+| `IVR_TIMEOUT_SEC` | IVR タイムアウト（秒） | `10` |
+| `VAD_ENERGY_THRESHOLD` | 発話検出エネルギー閾値 | `500` |
+| `VAD_END_SILENCE_MS` | 発話終了判定の無音時間（ms） | `800` |
+| `AI_HTTP_TIMEOUT_MS` | AI API タイムアウト（ms） | `20000` |
 
 ### ログ
 
@@ -192,8 +253,22 @@ export TLS_KEY_PATH="/path/to/key.pem"
 | `RUST_LOG` | ログレベル | `info` |
 | `LOG_MODE` | 出力先 (`stdout`/`file`) | `stdout` |
 | `LOG_FORMAT` | フォーマット (`text`/`json`) | `text` |
-| `LOG_DIR` | ログディレクトリ | `logs` |
+| `LOG_DIR` | ログディレクトリ（`file` 時） | `logs` |
 | `LOG_FILE_NAME` | ログファイル名 | `app.log` |
+
+---
+
+## ソフトフォン設定（SIP クライアント側）
+
+SIP クライアント（Zoiper / Linphone 等）のコーデック設定で **PCMU（PT 0）または PCMA（PT 8）を優先**に設定してください。
+
+| 設定項目 | 推奨値 |
+|---------|--------|
+| コーデック優先順位 | PCMU（G.711 µ-law）> PCMA（G.711 a-law） |
+| 動的 PT（96〜127） | 優先度を下げる（または無効化） |
+
+> **注意**: SDP 先頭コーデックが動的 PT（例: 95）の場合、`unsupported payload type` となり音声が届きません。
+> PCMU/PCMA を SDP の先頭に配置するようクライアント側で設定してください。
 
 ---
 
@@ -201,52 +276,16 @@ export TLS_KEY_PATH="/path/to/key.pem"
 
 ```
 1. INVITE 受信 → 180 Ringing → 200 OK
-2. RTP 音声受信開始
-3. 無音検出 → 発話区間を WAV 保存
-4. ASR: WAV → テキスト変換
-5. LLM: テキスト → 回答生成
-6. TTS: 回答 → WAV 生成
+2. RTP 音声受信開始（PCMU/PCMA のみ対応）
+3. VAD: 発話区間を検出 → WAV 保存
+4. ASR: WAV → テキスト変換（Whisper または AWS Transcribe）
+5. LLM: テキスト → 回答生成（Gemini → Ollama フォールバック）
+6. TTS: 回答 → WAV 生成（VOICEVOX）
 7. RTP 音声送信（回答再生）
-8. BYE 受信 → 通話終了
+8. BYE 受信 → 通話終了・録音保存
 ```
 
----
-
-## トラブルシューティング
-
-### SIP 接続できない
-
-```bash
-# SIP ポートの確認
-netstat -an | grep 5060
-
-# tcpdump で SIP パケット確認
-sudo tcpdump -i any port 5060 -vvv
-```
-
-### REGISTER が失敗する
-
-```bash
-# 環境変数の確認
-env | grep -E "REGISTRAR|REGISTER|TLS"
-
-# TLS 証明書の確認
-openssl s_client -connect sip.example.com:5061
-```
-
-### TTS が動作しない
-
-```bash
-# VOICEVOX の動作確認
-curl -X POST "http://localhost:50021/audio_query?speaker=3&text=テスト" | jq
-```
-
-### ASR が動作しない
-
-```bash
-# Whisper の動作確認
-curl -X POST -F "file=@test.wav" http://localhost:9000/transcribe
-```
+同時着信の2コール目は **486 Busy Here** で拒否されます（同時1コールの制限）。
 
 ---
 
@@ -254,25 +293,97 @@ curl -X POST -F "file=@test.wav" http://localhost:9000/transcribe
 
 ```
 virtual_voicebot/
-├── README.md                 # 本ファイル
-├── virtual-voicebot-backend/ # Rust バックエンド
+├── README.md                        # 本ファイル
+├── .env.example                     # 環境変数サンプル（参考用・実装と一部未整合）
+├── virtual-voicebot-backend/        # Rust バックエンド
 │   ├── src/
-│   │   ├── main.rs          # エントリポイント
-│   │   ├── sip/             # SIP プロトコル実装
-│   │   ├── rtp/             # RTP/RTCP 実装
-│   │   ├── session/         # セッション管理
-│   │   ├── ai/              # ASR/LLM/TTS クライアント
-│   │   ├── app/             # アプリケーションロジック
-│   │   ├── transport/       # UDP/TCP/TLS トランスポート
-│   │   └── config.rs        # 設定管理
-│   └── docs/
-│       └── impl/PLAN.md     # 実装計画
-└── virtual-voicebot-frontend/ # （将来）
+│   │   ├── main.rs                  # エントリポイント
+│   │   ├── protocol/
+│   │   │   ├── sip/                 # SIP プロトコル実装
+│   │   │   ├── rtp/                 # RTP/RTCP 実装
+│   │   │   ├── session/             # セッション管理
+│   │   │   └── transport/           # UDP/TCP/TLS トランスポート
+│   │   ├── service/
+│   │   │   ├── ai/                  # ASR/LLM/TTS クライアント
+│   │   │   ├── call_control/        # 対話制御
+│   │   │   └── recording/           # 録音生成
+│   │   └── shared/
+│   │       └── config/              # 設定（環境変数）
+│   ├── run_uas.sh                   # inbound-only 起動スクリプト
+│   └── run_register.sh              # キャリア接続起動スクリプト（.env.register 自動読込）
+└── virtual-voicebot-frontend/       # フロントエンド
+```
+
+---
+
+## トラブルシューティング
+
+### `unsupported payload type` が出て音声が届かない
+
+SDP 先頭のコーデックが PCMU/PCMA 以外（動的 PT）になっています。
+
+```bash
+# SIP パケットで SDP を確認
+sudo tcpdump -i any port 5060 -A | grep -A5 "m=audio"
+```
+
+ソフトフォン側で PCMU/PCMA を優先コーデックに設定してください。
+
+### 503 Service Unavailable が返る
+
+OUTBOUND_ENABLED=true のとき必須条件が不足しています。
+
+```bash
+env | grep -E "OUTBOUND|REGISTER"
+```
+
+`OUTBOUND_DOMAIN` が未設定の場合は起動ログに warn が出ます。
+
+### 486 Busy Here が返る
+
+すでに別コールが接続中です。VoiceBot は同時1コールのみ対応です。既存コールを終了してから再着信してください。
+
+### REGISTER が失敗する
+
+```bash
+env | grep -E "REGISTRAR|REGISTER|TLS"
+# TLS の場合
+openssl s_client -connect sip.example.com:5061
+```
+
+`REGISTRAR_TRANSPORT=tls` の場合は `TLS_CERT_PATH` / `TLS_KEY_PATH` が必要です。
+
+### LLM（Ollama）が応答しない
+
+```bash
+# Ollama の動作確認
+curl http://localhost:11434/api/tags
+
+# モデルが取得されているか確認
+ollama list
+
+# ラズパイ: llama3.2:1b が未取得の場合
+ollama pull llama3.2:1b
+```
+
+> `GEMINI_API_KEY` 未設定時は毎回 `call_gemini failed` の error ログが出てから Ollama を呼びます。これは正常動作です。
+
+### TTS（VOICEVOX）が動作しない
+
+```bash
+curl -X POST "http://localhost:50021/audio_query?speaker=3&text=テスト" | jq
+```
+
+### ASR（Whisper）が動作しない
+
+```bash
+curl -X POST -F "file=@test.wav" http://localhost:9000/transcribe
 ```
 
 ---
 
 ## 関連ドキュメント
 
-- [実装計画 (PLAN.md)](virtual-voicebot-backend/docs/impl/PLAN.md)
 - [Backend README](virtual-voicebot-backend/README.md)
+- [設計書（AI モジュール）](virtual-voicebot-backend/docs/design/detail/DD-006_ai.md)
+- [プロセス定義書](virtual-voicebot-backend/docs/process/v-model.md)
