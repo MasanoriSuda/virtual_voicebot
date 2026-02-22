@@ -94,6 +94,10 @@ function normalizeDb(input: unknown): ScenariosDatabase {
     }
   }
 
+  if (scenarios.length === 0) {
+    return createDefaultScenariosDatabase()
+  }
+
   return { scenarios }
 }
 
