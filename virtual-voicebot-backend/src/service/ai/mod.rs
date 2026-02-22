@@ -123,6 +123,21 @@ impl LlmStage {
     }
 }
 
+#[derive(Clone, Copy)]
+enum TtsStage {
+    Local,
+    Raspi,
+}
+
+impl TtsStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Raspi => "raspi",
+        }
+    }
+}
+
 fn asr_stage_count(ai_cfg: &config::AiConfig) -> usize {
     usize::from(ai_cfg.use_aws_transcribe)
         + usize::from(ai_cfg.asr_local_server_enabled)
@@ -141,6 +156,10 @@ fn llm_stage_count(ai_cfg: &config::AiConfig) -> usize {
     usize::from(llm_cloud_enabled(ai_cfg))
         + usize::from(ai_cfg.llm_local_server_enabled)
         + usize::from(ai_cfg.llm_raspi_enabled)
+}
+
+fn tts_stage_count(ai_cfg: &config::AiConfig) -> usize {
+    usize::from(ai_cfg.tts_local_server_enabled) + usize::from(ai_cfg.tts_raspi_enabled)
 }
 
 fn log_asr_startup_warnings() {
@@ -167,6 +186,18 @@ fn log_llm_startup_warnings() {
     if ai_cfg.llm_raspi_enabled && ai_cfg.llm_raspi_url.is_none() {
         log::warn!(
             "[llm] LLM_RASPI_ENABLED=1 but LLM_RASPI_URL is not set; raspi stage will be skipped"
+        );
+    }
+}
+
+fn log_tts_startup_warnings() {
+    let ai_cfg = config::ai_config();
+    if tts_stage_count(ai_cfg) == 0 {
+        log::warn!("[tts] no TTS stages enabled (TTS_LOCAL_SERVER_ENABLED=0, TTS_RASPI_ENABLED=0)");
+    }
+    if ai_cfg.tts_raspi_enabled && ai_cfg.tts_raspi_base_url.is_none() {
+        log::warn!(
+            "[tts] TTS_RASPI_ENABLED=1 but TTS_RASPI_BASE_URL is not set; raspi stage will be skipped"
         );
     }
 }
@@ -309,6 +340,51 @@ where
     Some(text)
 }
 
+async fn try_tts_stage<F, Fut>(
+    call_id: &str,
+    stage: TtsStage,
+    stage_timeout: Duration,
+    run: F,
+) -> Option<Vec<u8>>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Vec<u8>>>,
+{
+    let stage_name = stage.as_str();
+    log::debug!(
+        "[tts {call_id}] TTS stage start: tts_stage={} timeout_ms={}",
+        stage_name,
+        stage_timeout.as_millis()
+    );
+
+    let wav_bytes = match timeout(stage_timeout, run()).await {
+        Ok(Ok(wav_bytes)) => wav_bytes,
+        Ok(Err(err)) => {
+            log::warn!(
+                "[tts {call_id}] TTS stage failed: tts_stage={} reason={}",
+                stage_name,
+                err
+            );
+            return None;
+        }
+        Err(_) => {
+            log::warn!(
+                "[tts {call_id}] TTS stage failed: tts_stage={} reason=timeout timeout_ms={}",
+                stage_name,
+                stage_timeout.as_millis()
+            );
+            return None;
+        }
+    };
+
+    info!(
+        "[tts {call_id}] TTS stage success: tts_stage={} wav_size={}",
+        stage_name,
+        wav_bytes.len()
+    );
+    Some(wav_bytes)
+}
+
 /// ASR 実行（現行実装を拡張）: cloud(AWS) -> local server -> raspi server の3段フォールバック。
 pub async fn transcribe_and_log(call_id: &str, wav_path: &str) -> Result<String> {
     let ai_cfg = config::ai_config();
@@ -377,7 +453,7 @@ pub async fn handle_user_question_from_whisper(messages: Vec<ChatMessage>) -> Re
 
     // 一時WAVファイル経由のまま（責務は ai モジュール内に閉じ込める）
     let answer_wav = "/tmp/ollama_answer.wav";
-    synth_zundamon_wav(&answer, answer_wav).await?;
+    synth_zundamon_wav("standalone", &answer, answer_wav).await?;
 
     Ok(answer_wav.to_string())
 }
@@ -557,6 +633,7 @@ impl DefaultAiPort {
     pub fn new() -> Self {
         log_asr_startup_warnings();
         log_llm_startup_warnings();
+        log_tts_startup_warnings();
         Self
     }
 }
@@ -641,11 +718,12 @@ impl WeatherPort for DefaultAiPort {
 impl TtsPort for DefaultAiPort {
     fn synth_to_wav(
         &self,
+        call_id: String,
         text: String,
         path: Option<String>,
     ) -> AiFuture<Result<std::path::PathBuf, TtsError>> {
         Box::pin(async move {
-            tts::synth_to_wav(&text, path.as_deref())
+            tts::synth_to_wav(&call_id, &text, path.as_deref())
                 .await
                 .map(std::path::PathBuf::from)
                 .map_err(|e| TtsError::SynthesisFailed(e.to_string()))
@@ -663,12 +741,76 @@ impl SerPort for DefaultAiPort {
 }
 
 /// ずんだもん TTS の呼び出し。I/F はテキストと出力 WAV パス（従来どおり）。
-pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
-    let client = http_client(config::timeouts().ai_http)?;
+pub async fn synth_zundamon_wav(call_id: &str, text: &str, out_path: &str) -> Result<()> {
+    let ai_cfg = config::ai_config();
+
+    if tts_stage_count(ai_cfg) == 0 {
+        log::error!("[tts {call_id}] TTS failed: reason=all TTS stages disabled");
+        anyhow::bail!("all TTS stages failed");
+    }
+
+    if ai_cfg.tts_local_server_enabled {
+        let local_base_url = ai_cfg.tts_local_server_base_url.clone();
+        if let Some(wav_bytes) =
+            try_tts_stage(call_id, TtsStage::Local, ai_cfg.tts_local_timeout, || {
+                synth_zundamon_for_stage(&local_base_url, call_id, text, ai_cfg.tts_local_timeout)
+            })
+            .await
+        {
+            tokio::fs::write(out_path, &wav_bytes).await?;
+            info!("[tts {call_id}] Zundamon TTS written to {}", out_path);
+            return Ok(());
+        }
+    }
+
+    if ai_cfg.tts_raspi_enabled {
+        if let Some(raspi_base_url) = ai_cfg.tts_raspi_base_url.clone() {
+            if let Some(wav_bytes) =
+                try_tts_stage(call_id, TtsStage::Raspi, ai_cfg.tts_raspi_timeout, || {
+                    synth_zundamon_for_stage(
+                        &raspi_base_url,
+                        call_id,
+                        text,
+                        ai_cfg.tts_raspi_timeout,
+                    )
+                })
+                .await
+            {
+                tokio::fs::write(out_path, &wav_bytes).await?;
+                info!("[tts {call_id}] Zundamon TTS written to {}", out_path);
+                return Ok(());
+            }
+        } else {
+            log::warn!(
+                "[tts {call_id}] TTS stage failed: tts_stage=raspi reason=TTS_RASPI_BASE_URL missing"
+            );
+        }
+    }
+
+    log::error!("[tts {call_id}] TTS failed: reason=all TTS stages failed");
+    anyhow::bail!("all TTS stages failed")
+}
+
+fn tts_endpoint_url(base_url: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
+async fn synth_zundamon_for_stage(
+    base_url: &str,
+    _call_id: &str,
+    text: &str,
+    http_timeout: Duration,
+) -> Result<Vec<u8>> {
+    let client = http_client(http_timeout)?;
     let speaker_id = 3; // ずんだもん ノーマル
 
+    let query_url = tts_endpoint_url(base_url, "/audio_query");
     let query_resp = client
-        .post("http://localhost:50021/audio_query")
+        .post(query_url)
         .query(&[("text", text), ("speaker", &speaker_id.to_string())])
         .send()
         .await?;
@@ -676,11 +818,12 @@ pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
     let status = query_resp.status();
     let query_body = query_resp.text().await?;
     if !status.is_success() {
-        anyhow::bail!("audio_query error {}: {}", status, query_body);
+        anyhow::bail!("audio_query error {} ({} bytes)", status, query_body.len());
     }
 
+    let synth_url = tts_endpoint_url(base_url, "/synthesis");
     let synth_resp = client
-        .post("http://localhost:50021/synthesis")
+        .post(synth_url)
         .query(&[("speaker", &speaker_id.to_string())])
         .header("Content-Type", "application/json")
         .body(query_body)
@@ -693,10 +836,7 @@ pub async fn synth_zundamon_wav(text: &str, out_path: &str) -> Result<()> {
         anyhow::bail!("synthesis error {} ({} bytes)", status, wav_bytes.len());
     }
 
-    tokio::fs::write(out_path, &wav_bytes).await?;
-    info!("Zundamon TTS written to {}", out_path);
-
-    Ok(())
+    Ok(wav_bytes.to_vec())
 }
 
 /// Call Google's Gemini (Generative Language) API with a sequence of chat messages and return the model's reply.
@@ -976,4 +1116,21 @@ fn prepare_wav_for_transcribe(wav_path: &str) -> Result<Vec<u8>> {
         writer.finalize()?;
     }
     Ok(cursor.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tts_endpoint_url;
+
+    #[test]
+    fn tts_endpoint_url_handles_slashes() {
+        assert_eq!(
+            tts_endpoint_url("http://localhost:50021/", "/audio_query"),
+            "http://localhost:50021/audio_query"
+        );
+        assert_eq!(
+            tts_endpoint_url("http://localhost:50021", "synthesis"),
+            "http://localhost:50021/synthesis"
+        );
+    }
 }

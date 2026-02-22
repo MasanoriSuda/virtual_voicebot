@@ -877,6 +877,12 @@ pub struct AiConfig {
     pub asr_cloud_timeout: Duration,
     pub asr_local_timeout: Duration,
     pub asr_raspi_timeout: Duration,
+    pub tts_local_server_base_url: String,
+    pub tts_local_server_enabled: bool,
+    pub tts_raspi_base_url: Option<String>,
+    pub tts_raspi_enabled: bool,
+    pub tts_local_timeout: Duration,
+    pub tts_raspi_timeout: Duration,
     pub aws_transcribe_bucket: Option<String>,
     pub aws_transcribe_prefix: String,
     pub ser_url: Option<String>,
@@ -907,6 +913,12 @@ impl AiConfig {
     /// - `ASR_CLOUD_TIMEOUT_MS`: overall cloud ASR timeout in milliseconds; defaults to `5000`.
     /// - `ASR_LOCAL_TIMEOUT_MS`: local ASR server timeout in milliseconds; defaults to `3000`.
     /// - `ASR_RASPI_TIMEOUT_MS`: Raspberry Pi ASR timeout in milliseconds; defaults to `8000`.
+    /// - `TTS_LOCAL_SERVER_BASE_URL`: local TTS server base URL; defaults to `"http://localhost:50021"`.
+    /// - `TTS_LOCAL_SERVER_ENABLED`: enables local TTS server fallback; defaults to `true`.
+    /// - `TTS_RASPI_BASE_URL`: optional Raspberry Pi TTS server base URL (required only when `TTS_RASPI_ENABLED=1`).
+    /// - `TTS_RASPI_ENABLED`: enables Raspberry Pi TTS fallback; defaults to `false`.
+    /// - `TTS_LOCAL_TIMEOUT_MS`: local TTS stage timeout in milliseconds; defaults to `5000`.
+    /// - `TTS_RASPI_TIMEOUT_MS`: Raspberry Pi TTS stage timeout in milliseconds; defaults to `10000`.
     /// - `AWS_TRANSCRIBE_BUCKET`: optional S3 bucket name for AWS Transcribe.
     /// - `AWS_TRANSCRIBE_PREFIX`: prefix for transcribe objects; defaults to `"voicebot"`.
     /// - `SER_URL`: optional SER service URL.
@@ -939,6 +951,12 @@ impl AiConfig {
     /// env::remove_var("ASR_CLOUD_TIMEOUT_MS");
     /// env::remove_var("ASR_LOCAL_TIMEOUT_MS");
     /// env::remove_var("ASR_RASPI_TIMEOUT_MS");
+    /// env::remove_var("TTS_LOCAL_SERVER_BASE_URL");
+    /// env::remove_var("TTS_LOCAL_SERVER_ENABLED");
+    /// env::remove_var("TTS_RASPI_BASE_URL");
+    /// env::remove_var("TTS_RASPI_ENABLED");
+    /// env::remove_var("TTS_LOCAL_TIMEOUT_MS");
+    /// env::remove_var("TTS_RASPI_TIMEOUT_MS");
     /// env::remove_var("AWS_TRANSCRIBE_BUCKET");
     /// env::remove_var("AWS_TRANSCRIBE_PREFIX");
     /// env::remove_var("SER_URL");
@@ -983,6 +1001,13 @@ impl AiConfig {
             asr_cloud_timeout: env_duration_ms("ASR_CLOUD_TIMEOUT_MS", 5_000),
             asr_local_timeout: env_duration_ms("ASR_LOCAL_TIMEOUT_MS", 3_000),
             asr_raspi_timeout: env_duration_ms("ASR_RASPI_TIMEOUT_MS", 8_000),
+            tts_local_server_base_url: env_non_empty("TTS_LOCAL_SERVER_BASE_URL")
+                .unwrap_or_else(|| "http://localhost:50021".to_string()),
+            tts_local_server_enabled: env_bool("TTS_LOCAL_SERVER_ENABLED", true),
+            tts_raspi_base_url: env_non_empty("TTS_RASPI_BASE_URL"),
+            tts_raspi_enabled: env_bool("TTS_RASPI_ENABLED", false),
+            tts_local_timeout: env_duration_ms("TTS_LOCAL_TIMEOUT_MS", 5_000),
+            tts_raspi_timeout: env_duration_ms("TTS_RASPI_TIMEOUT_MS", 10_000),
             aws_transcribe_bucket: std::env::var("AWS_TRANSCRIBE_BUCKET").ok(),
             aws_transcribe_prefix: std::env::var("AWS_TRANSCRIBE_PREFIX")
                 .unwrap_or_else(|_| "voicebot".to_string()),

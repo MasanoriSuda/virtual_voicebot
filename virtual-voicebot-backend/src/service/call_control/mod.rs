@@ -430,7 +430,11 @@ impl AppWorker {
                 mask_pii(trimmed)
             );
             let answer_text = system_info_response();
-            match self.ai_port.synth_to_wav(answer_text, None).await {
+            match self
+                .ai_port
+                .synth_to_wav(call_id.to_string(), answer_text, None)
+                .await
+            {
                 Ok(bot_wav) => {
                     let _ = self
                         .session_out_tx
@@ -509,7 +513,7 @@ impl AppWorker {
                     let confirm_message = self.router.transfer_confirm_message();
                     match self
                         .ai_port
-                        .synth_to_wav(confirm_message.clone(), None)
+                        .synth_to_wav(call_id.to_string(), confirm_message.clone(), None)
                         .await
                     {
                         Ok(bot_wav) => {
@@ -536,7 +540,11 @@ impl AppWorker {
                         .await;
                 } else {
                     let not_found = self.router.transfer_not_found_message();
-                    match self.ai_port.synth_to_wav(not_found.clone(), None).await {
+                    match self
+                        .ai_port
+                        .synth_to_wav(call_id.to_string(), not_found.clone(), None)
+                        .await
+                    {
                         Ok(bot_wav) => {
                             let _ = self
                                 .session_out_tx
@@ -572,7 +580,11 @@ impl AppWorker {
         }
 
         // TTS
-        match self.ai_port.synth_to_wav(answer_text, None).await {
+        match self
+            .ai_port
+            .synth_to_wav(call_id.to_string(), answer_text, None)
+            .await
+        {
             Ok(bot_wav) => {
                 let _ = self
                     .session_out_tx
