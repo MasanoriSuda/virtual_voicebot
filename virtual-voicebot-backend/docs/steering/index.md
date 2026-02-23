@@ -43,6 +43,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-143](STEER-143_recording-enhancement.md) | Backend 録音実装強化（Phase 5） | Approved | #143 | P2 | 録音フラグ連動・録音メタデータ管理・Frontend 同期の整合実装 |
 | [STEER-203](STEER-203_fix-bleg-rtp-timestamp-double-add.md) | B-leg → A-leg RTP タイムスタンプ二重加算バグ修正 | Approved | #203 | P0 | B2BUA 転送時に align_rtp_clock() と send_payload() でタイムスタンプが二重加算される問題を修正 |
 | [STEER-206](STEER-206_fix-bye-during-announce-triggers-transfer.md) | アナウンス送信中の BYE 受信後に転送が誤起動するバグ修正 | Approved | #206 | P0 | cancel_playback() 経由で AppTransferRequest が誤 enqueue される問題を修正 |
+| [STEER-224](STEER-224_weather-llm-local.md) | 天気要約 LLM をローカルサーバー設定対応に変更 | Draft | #224 | P1 | weather 要約の LLM 呼び出しを localhost 固定から LLM_LOCAL_SERVER_URL / LLM_LOCAL_MODEL / LLM_LOCAL_TIMEOUT_MS 設定に変更 |
 
 ---
 
@@ -89,3 +90,4 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-20 | 1.5 | STEER-203 追加（B-leg RTP タイムスタンプ二重加算バグ修正） | Claude Code |
 | 2026-02-21 | 1.6 | STEER-206 追加（アナウンス中 BYE 後の転送誤起動バグ修正） | Claude Code |
 | 2026-02-21 | 1.7 | STEER-206 ステータス Draft → Approved | Claude Code |
+| 2026-02-23 | 1.8 | STEER-224 追加（天気要約 LLM ローカルサーバー設定対応） | Claude Code |
