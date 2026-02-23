@@ -128,6 +128,7 @@ const OPENAI_ASR_MODEL: &str = "gpt-4o-mini-transcribe";
 const OPENAI_LLM_MODEL: &str = "gpt-4o-mini";
 const OPENAI_TTS_MODEL: &str = "gpt-4o-mini-tts";
 const OPENAI_TTS_VOICE: &str = "alloy";
+const OPENAI_TTS_PCM_SAMPLE_RATE: u32 = 24_000;
 
 fn openai_endpoint_url(base_url: &str, path: &str) -> String {
     format!(
@@ -462,6 +463,43 @@ fn validate_openai_tts_wav_bytes(wav_bytes: &[u8]) -> Result<()> {
     }
 }
 
+fn wrap_openai_tts_pcm_as_wav(pcm_bytes: &[u8]) -> Result<Vec<u8>> {
+    if !pcm_bytes.len().is_multiple_of(2) {
+        anyhow::bail!(
+            "OpenAI TTS PCM byte length is not aligned to 16-bit samples: {}",
+            pcm_bytes.len()
+        );
+    }
+
+    let data_len =
+        u32::try_from(pcm_bytes.len()).map_err(|_| anyhow!("OpenAI TTS PCM response too large"))?;
+    let riff_chunk_len = data_len
+        .checked_add(36)
+        .ok_or_else(|| anyhow!("OpenAI TTS PCM response too large"))?;
+
+    let channels: u16 = 1;
+    let bits_per_sample: u16 = 16;
+    let block_align: u16 = channels * (bits_per_sample / 8);
+    let byte_rate: u32 = OPENAI_TTS_PCM_SAMPLE_RATE * u32::from(block_align);
+
+    let mut wav = Vec::with_capacity(44 + pcm_bytes.len());
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&riff_chunk_len.to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes()); // PCM fmt chunk size
+    wav.extend_from_slice(&1u16.to_le_bytes()); // audio_format=PCM
+    wav.extend_from_slice(&channels.to_le_bytes());
+    wav.extend_from_slice(&OPENAI_TTS_PCM_SAMPLE_RATE.to_le_bytes());
+    wav.extend_from_slice(&byte_rate.to_le_bytes());
+    wav.extend_from_slice(&block_align.to_le_bytes());
+    wav.extend_from_slice(&bits_per_sample.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.extend_from_slice(pcm_bytes);
+    Ok(wav)
+}
+
 async fn synth_openai_tts_for_stage(
     base_url: &str,
     api_key: &str,
@@ -474,7 +512,7 @@ async fn synth_openai_tts_for_stage(
         model: OPENAI_TTS_MODEL.to_string(),
         voice: OPENAI_TTS_VOICE.to_string(),
         input: text.to_string(),
-        response_format: "wav".to_string(),
+        response_format: "pcm".to_string(),
     };
 
     let resp = client
@@ -484,13 +522,13 @@ async fn synth_openai_tts_for_stage(
         .send()
         .await?;
     let status = resp.status();
-    let wav_bytes = resp.bytes().await?;
+    let audio_bytes = resp.bytes().await?;
     if !status.is_success() {
-        let body_len = wav_bytes.len();
+        let body_len = audio_bytes.len();
         anyhow::bail!("OpenAI TTS HTTP error {} (body_len={})", status, body_len);
     }
 
-    let wav = wav_bytes.to_vec();
+    let wav = wrap_openai_tts_pcm_as_wav(audio_bytes.as_ref())?;
     validate_openai_tts_wav_bytes(&wav)?;
     Ok(wav)
 }
@@ -1621,8 +1659,8 @@ mod tests {
 
     use super::{
         call_ollama_for_weather, call_openai_chat_for_stage, openai_endpoint_url,
-        transcribe_with_openai_for_stage, tts_endpoint_url, validate_openai_tts_wav_bytes,
-        ChatMessage, Role,
+        synth_openai_tts_for_stage, transcribe_with_openai_for_stage, tts_endpoint_url,
+        validate_openai_tts_wav_bytes, wrap_openai_tts_pcm_as_wav, ChatMessage, Role,
     };
 
     async fn read_http_request(
@@ -1859,5 +1897,51 @@ mod tests {
     fn validate_openai_tts_wav_bytes_rejects_unsupported_sample_rate() {
         let wav = make_test_wav(16_000);
         assert!(validate_openai_tts_wav_bytes(&wav).is_err());
+    }
+
+    #[test]
+    fn wrap_openai_tts_pcm_as_wav_rejects_odd_length() {
+        let pcm = vec![0x00, 0x01, 0x02];
+        assert!(wrap_openai_tts_pcm_as_wav(&pcm).is_err());
+    }
+
+    #[tokio::test]
+    async fn synth_openai_tts_for_stage_requests_pcm_and_wraps_response() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("get local addr");
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept client");
+            let (mut socket, request) = read_http_request(socket).await;
+            let pcm: [u8; 8] = [0x00, 0x00, 0x10, 0x00, 0xf0, 0xff, 0x00, 0x00];
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                pcm.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write headers");
+            socket.write_all(&pcm).await.expect("write pcm");
+            request
+        });
+
+        let wav = synth_openai_tts_for_stage(
+            &format!("http://{addr}"),
+            "sk-test",
+            "こんにちは",
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("openai tts helper should wrap pcm as wav");
+
+        let request = server.await.expect("join server task");
+        assert!(request.starts_with("POST /audio/speech HTTP/1.1"));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-test"));
+        assert!(request.contains("\"response_format\":\"pcm\""));
+        validate_openai_tts_wav_bytes(&wav).expect("wrapped wav should be valid");
     }
 }
