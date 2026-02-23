@@ -875,6 +875,11 @@ pub fn logging_config() -> &'static LoggingConfig {
 
 #[derive(Clone, Debug)]
 pub struct AiConfig {
+    pub openai_api_key: Option<String>,
+    pub openai_base_url: String,
+    pub openai_asr_enabled: bool,
+    pub openai_llm_enabled: bool,
+    pub openai_tts_enabled: bool,
     pub gemini_api_key: Option<String>,
     pub gemini_model: String,
     pub ollama_model: String,
@@ -908,6 +913,7 @@ pub struct AiConfig {
     pub tts_local_server_enabled: bool,
     pub tts_raspi_base_url: Option<String>,
     pub tts_raspi_enabled: bool,
+    pub tts_cloud_timeout: Duration,
     pub tts_local_timeout: Duration,
     pub tts_raspi_timeout: Duration,
     pub aws_transcribe_bucket: Option<String>,
@@ -919,6 +925,11 @@ impl AiConfig {
     /// Constructs an AI-related configuration from environment variables, using sensible defaults when variables are absent.
     ///
     /// The following environment variables are read:
+    /// - `OPENAI_API_KEY`: optional API key for OpenAI cloud provider (kept as `None` if unset).
+    /// - `OPENAI_BASE_URL`: OpenAI API base URL; defaults to `"https://api.openai.com/v1"`.
+    /// - `OPENAI_ASR_ENABLED`: enables OpenAI ASR cloud provider; defaults to `true`.
+    /// - `OPENAI_LLM_ENABLED`: enables OpenAI LLM cloud provider; defaults to `true`.
+    /// - `OPENAI_TTS_ENABLED`: enables OpenAI TTS cloud provider; defaults to `true`.
     /// - `GEMINI_API_KEY`: optional API key for Gemini (kept as `None` if unset).
     /// - `GEMINI_MODEL`: model name for Gemini; defaults to `"gemini-2.5-flash-lite"`.
     /// - `OLLAMA_MODEL`: model name for Ollama; defaults to `"gemma3:4b"`.
@@ -952,6 +963,7 @@ impl AiConfig {
     /// - `TTS_LOCAL_SERVER_ENABLED`: enables local TTS server fallback; defaults to `true`.
     /// - `TTS_RASPI_BASE_URL`: optional Raspberry Pi TTS server base URL (required only when `TTS_RASPI_ENABLED=1`).
     /// - `TTS_RASPI_ENABLED`: enables Raspberry Pi TTS fallback; defaults to `false`.
+    /// - `TTS_CLOUD_TIMEOUT_MS`: cloud TTS stage timeout in milliseconds; defaults to `10000`.
     /// - `TTS_LOCAL_TIMEOUT_MS`: local TTS stage timeout in milliseconds; defaults to `5000`.
     /// - `TTS_RASPI_TIMEOUT_MS`: Raspberry Pi TTS stage timeout in milliseconds; defaults to `10000`.
     /// - `AWS_TRANSCRIBE_BUCKET`: optional S3 bucket name for AWS Transcribe.
@@ -965,6 +977,11 @@ impl AiConfig {
     /// ```ignore
     /// use std::env;
     /// // Ensure relevant vars are not set to exercise defaults in this example.
+    /// env::remove_var("OPENAI_API_KEY");
+    /// env::remove_var("OPENAI_BASE_URL");
+    /// env::remove_var("OPENAI_ASR_ENABLED");
+    /// env::remove_var("OPENAI_LLM_ENABLED");
+    /// env::remove_var("OPENAI_TTS_ENABLED");
     /// env::remove_var("GEMINI_API_KEY");
     /// env::remove_var("GEMINI_MODEL");
     /// env::remove_var("OLLAMA_MODEL");
@@ -998,6 +1015,7 @@ impl AiConfig {
     /// env::remove_var("TTS_LOCAL_SERVER_ENABLED");
     /// env::remove_var("TTS_RASPI_BASE_URL");
     /// env::remove_var("TTS_RASPI_ENABLED");
+    /// env::remove_var("TTS_CLOUD_TIMEOUT_MS");
     /// env::remove_var("TTS_LOCAL_TIMEOUT_MS");
     /// env::remove_var("TTS_RASPI_TIMEOUT_MS");
     /// env::remove_var("AWS_TRANSCRIBE_BUCKET");
@@ -1018,6 +1036,12 @@ impl AiConfig {
         let llm_local_model =
             env_non_empty("LLM_LOCAL_MODEL").unwrap_or_else(|| ollama_model.clone());
         Self {
+            openai_api_key: env_non_empty("OPENAI_API_KEY"),
+            openai_base_url: env_non_empty("OPENAI_BASE_URL")
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+            openai_asr_enabled: env_bool("OPENAI_ASR_ENABLED", true),
+            openai_llm_enabled: env_bool("OPENAI_LLM_ENABLED", true),
+            openai_tts_enabled: env_bool("OPENAI_TTS_ENABLED", true),
             gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
             gemini_model: std::env::var("GEMINI_MODEL")
                 .unwrap_or_else(|_| "gemini-2.5-flash-lite".to_string()),
@@ -1061,6 +1085,7 @@ impl AiConfig {
             tts_local_server_enabled: env_bool("TTS_LOCAL_SERVER_ENABLED", true),
             tts_raspi_base_url: env_non_empty("TTS_RASPI_BASE_URL"),
             tts_raspi_enabled: env_bool("TTS_RASPI_ENABLED", false),
+            tts_cloud_timeout: env_duration_ms("TTS_CLOUD_TIMEOUT_MS", 10_000),
             tts_local_timeout: env_duration_ms("TTS_LOCAL_TIMEOUT_MS", 5_000),
             tts_raspi_timeout: env_duration_ms("TTS_RASPI_TIMEOUT_MS", 10_000),
             aws_transcribe_bucket: std::env::var("AWS_TRANSCRIBE_BUCKET").ok(),

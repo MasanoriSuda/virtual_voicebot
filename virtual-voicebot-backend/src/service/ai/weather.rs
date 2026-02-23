@@ -64,6 +64,36 @@ async fn summarize_weather(report: &WeatherReport, call_id: &str) -> String {
         role: Role::User,
         content: payload.to_string(),
     }];
+    let openai_enabled = ai_cfg.openai_llm_enabled
+        && ai_cfg
+            .openai_api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|key| !key.is_empty());
+    if openai_enabled {
+        let timeout = ai_cfg.llm_cloud_timeout;
+        let base_url = ai_cfg.openai_base_url.clone();
+        let api_key = ai_cfg.openai_api_key.clone().unwrap_or_default();
+        match super::call_openai_chat_for_stage(
+            &messages,
+            &prompt,
+            "gpt-4o-mini",
+            &base_url,
+            &api_key,
+            timeout,
+        )
+        .await
+        {
+            Ok(text) => return text,
+            Err(err) => {
+                log::warn!(
+                    "[weather {call_id}] openai summarization failed: base_url={} timeout_ms={} err={err:?}",
+                    base_url,
+                    timeout.as_millis()
+                );
+            }
+        }
+    }
     if !ai_cfg.llm_local_server_enabled {
         log::debug!(
             "[weather {call_id}] LLM_LOCAL_SERVER_ENABLED=false, skipping LLM summarization"

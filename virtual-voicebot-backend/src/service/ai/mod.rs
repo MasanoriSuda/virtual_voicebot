@@ -73,6 +73,41 @@ struct GeminiContentOut {
     parts: Vec<GeminiPart>,
 }
 
+#[derive(Serialize)]
+struct OpenAiChatCompletionsRequest {
+    model: String,
+    messages: Vec<OpenAiChatMessage>,
+}
+
+#[derive(Serialize)]
+struct OpenAiChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct OpenAiChatCompletionsResponse {
+    choices: Vec<OpenAiChatChoice>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiChatChoice {
+    message: OpenAiChatMessageOut,
+}
+
+#[derive(Deserialize)]
+struct OpenAiChatMessageOut {
+    content: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OpenAiSpeechRequest {
+    model: String,
+    voice: String,
+    input: String,
+    response_format: String,
+}
+
 #[derive(Deserialize)]
 struct WhisperResponse {
     text: String,
@@ -87,6 +122,51 @@ pub mod weather;
 
 fn http_client(timeout: Duration) -> Result<Client> {
     Ok(Client::builder().timeout(timeout).build()?)
+}
+
+const OPENAI_ASR_MODEL: &str = "gpt-4o-mini-transcribe";
+const OPENAI_LLM_MODEL: &str = "gpt-4o-mini";
+const OPENAI_TTS_MODEL: &str = "gpt-4o-mini-tts";
+const OPENAI_TTS_VOICE: &str = "alloy";
+
+fn openai_endpoint_url(base_url: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
+fn openai_api_key(ai_cfg: &config::AiConfig) -> Option<&str> {
+    ai_cfg
+        .openai_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+}
+
+fn openai_asr_stage_enabled(ai_cfg: &config::AiConfig) -> bool {
+    ai_cfg.openai_asr_enabled && openai_api_key(ai_cfg).is_some()
+}
+
+fn openai_llm_stage_enabled(ai_cfg: &config::AiConfig) -> bool {
+    ai_cfg.openai_llm_enabled && openai_api_key(ai_cfg).is_some()
+}
+
+fn openai_tts_stage_enabled(ai_cfg: &config::AiConfig) -> bool {
+    ai_cfg.openai_tts_enabled && openai_api_key(ai_cfg).is_some()
+}
+
+fn asr_cloud_enabled(ai_cfg: &config::AiConfig) -> bool {
+    openai_asr_stage_enabled(ai_cfg) || ai_cfg.use_aws_transcribe
+}
+
+fn gemini_llm_enabled(ai_cfg: &config::AiConfig) -> bool {
+    ai_cfg
+        .gemini_api_key
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|key| !key.is_empty())
 }
 
 #[derive(Clone, Copy)]
@@ -125,6 +205,7 @@ impl LlmStage {
 
 #[derive(Clone, Copy)]
 enum TtsStage {
+    Cloud,
     Local,
     Raspi,
 }
@@ -132,6 +213,7 @@ enum TtsStage {
 impl TtsStage {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Cloud => "cloud",
             Self::Local => "local",
             Self::Raspi => "raspi",
         }
@@ -154,17 +236,13 @@ impl IntentStage {
 }
 
 fn asr_stage_count(ai_cfg: &config::AiConfig) -> usize {
-    usize::from(ai_cfg.use_aws_transcribe)
+    usize::from(asr_cloud_enabled(ai_cfg))
         + usize::from(ai_cfg.asr_local_server_enabled)
         + usize::from(ai_cfg.asr_raspi_enabled)
 }
 
 fn llm_cloud_enabled(ai_cfg: &config::AiConfig) -> bool {
-    ai_cfg
-        .gemini_api_key
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|key| !key.is_empty())
+    openai_llm_stage_enabled(ai_cfg) || gemini_llm_enabled(ai_cfg)
 }
 
 fn llm_stage_count(ai_cfg: &config::AiConfig) -> usize {
@@ -174,7 +252,9 @@ fn llm_stage_count(ai_cfg: &config::AiConfig) -> usize {
 }
 
 fn tts_stage_count(ai_cfg: &config::AiConfig) -> usize {
-    usize::from(ai_cfg.tts_local_server_enabled) + usize::from(ai_cfg.tts_raspi_enabled)
+    usize::from(openai_tts_stage_enabled(ai_cfg))
+        + usize::from(ai_cfg.tts_local_server_enabled)
+        + usize::from(ai_cfg.tts_raspi_enabled)
 }
 
 fn intent_stage_count(ai_cfg: &config::AiConfig) -> usize {
@@ -185,8 +265,11 @@ fn log_asr_startup_warnings() {
     let ai_cfg = config::ai_config();
     if asr_stage_count(ai_cfg) == 0 {
         log::warn!(
-            "[asr] no ASR stages enabled (USE_AWS_TRANSCRIBE=0, ASR_LOCAL_SERVER_ENABLED=0, ASR_RASPI_ENABLED=0)"
+            "[asr] no ASR stages enabled (OPENAI_ASR_ENABLED=0 or OPENAI_API_KEY missing, USE_AWS_TRANSCRIBE=0, ASR_LOCAL_SERVER_ENABLED=0, ASR_RASPI_ENABLED=0)"
         );
+    }
+    if ai_cfg.openai_asr_enabled && openai_api_key(ai_cfg).is_none() {
+        log::warn!("[asr] OPENAI_ASR_ENABLED=1 but OPENAI_API_KEY is not set; openai cloud provider will be skipped");
     }
     if ai_cfg.asr_raspi_enabled && ai_cfg.asr_raspi_url.is_none() {
         log::warn!(
@@ -199,8 +282,11 @@ fn log_llm_startup_warnings() {
     let ai_cfg = config::ai_config();
     if llm_stage_count(ai_cfg) == 0 {
         log::warn!(
-            "[llm] no LLM stages enabled (GEMINI_API_KEY missing, LLM_LOCAL_SERVER_ENABLED=0, LLM_RASPI_ENABLED=0)"
+            "[llm] no LLM stages enabled (OPENAI_LLM_ENABLED=0 or OPENAI_API_KEY missing, GEMINI_API_KEY missing, LLM_LOCAL_SERVER_ENABLED=0, LLM_RASPI_ENABLED=0)"
         );
+    }
+    if ai_cfg.openai_llm_enabled && openai_api_key(ai_cfg).is_none() {
+        log::warn!("[llm] OPENAI_LLM_ENABLED=1 but OPENAI_API_KEY is not set; openai cloud provider will be skipped");
     }
     if ai_cfg.llm_raspi_enabled && ai_cfg.llm_raspi_url.is_none() {
         log::warn!(
@@ -212,7 +298,10 @@ fn log_llm_startup_warnings() {
 fn log_tts_startup_warnings() {
     let ai_cfg = config::ai_config();
     if tts_stage_count(ai_cfg) == 0 {
-        log::warn!("[tts] no TTS stages enabled (TTS_LOCAL_SERVER_ENABLED=0, TTS_RASPI_ENABLED=0)");
+        log::warn!("[tts] no TTS stages enabled (OPENAI_TTS_ENABLED=0 or OPENAI_API_KEY missing, TTS_LOCAL_SERVER_ENABLED=0, TTS_RASPI_ENABLED=0)");
+    }
+    if ai_cfg.openai_tts_enabled && openai_api_key(ai_cfg).is_none() {
+        log::warn!("[tts] OPENAI_TTS_ENABLED=1 but OPENAI_API_KEY is not set; openai cloud provider will be skipped");
     }
     if ai_cfg.tts_raspi_enabled && ai_cfg.tts_raspi_base_url.is_none() {
         log::warn!(
@@ -259,6 +348,151 @@ async fn transcribe_with_http_asr(
 
     let result: WhisperResponse = resp.json().await?;
     Ok(result.text)
+}
+
+fn build_openai_chat_messages(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+) -> Vec<OpenAiChatMessage> {
+    let mut openai_messages = Vec::with_capacity(messages.len() + 1);
+    openai_messages.push(OpenAiChatMessage {
+        role: "system".to_string(),
+        content: system_prompt.to_string(),
+    });
+    for msg in messages {
+        let role = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        };
+        openai_messages.push(OpenAiChatMessage {
+            role: role.to_string(),
+            content: msg.content.clone(),
+        });
+    }
+    openai_messages
+}
+
+pub(super) async fn call_openai_chat_for_stage(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    model: &str,
+    base_url: &str,
+    api_key: &str,
+    http_timeout: Duration,
+) -> Result<String> {
+    let client = http_client(http_timeout)?;
+    let url = openai_endpoint_url(base_url, "/chat/completions");
+    let req = OpenAiChatCompletionsRequest {
+        model: model.to_string(),
+        messages: build_openai_chat_messages(messages, system_prompt),
+    };
+
+    let resp = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&req)
+        .send()
+        .await?;
+    let status = resp.status();
+    let body_text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "OpenAI chat HTTP error {} (body_len={})",
+            status,
+            body_text.len()
+        );
+    }
+
+    let body: OpenAiChatCompletionsResponse = serde_json::from_str(&body_text)?;
+    let answer = body
+        .choices
+        .first()
+        .and_then(|choice| choice.message.content.clone())
+        .unwrap_or_else(|| "<no response>".to_string());
+    Ok(answer)
+}
+
+async fn transcribe_with_openai_for_stage(
+    base_url: &str,
+    api_key: &str,
+    wav_path: &str,
+    http_timeout: Duration,
+) -> Result<String> {
+    let client = http_client(http_timeout)?;
+    let url = openai_endpoint_url(base_url, "/audio/transcriptions");
+    let bytes = tokio::fs::read(wav_path).await?;
+    let part = multipart::Part::bytes(bytes)
+        .file_name("question.wav")
+        .mime_str("audio/wav")?;
+    let form = multipart::Form::new()
+        .part("file", part)
+        .text("model", OPENAI_ASR_MODEL.to_string())
+        .text("response_format", "json".to_string())
+        .text("language", "ja".to_string());
+
+    let resp = client
+        .post(url)
+        .bearer_auth(api_key)
+        .multipart(form)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("OpenAI ASR HTTP error {} (body_len={})", status, body.len());
+    }
+    let result: WhisperResponse = resp.json().await?;
+    Ok(result.text)
+}
+
+fn validate_openai_tts_wav_bytes(wav_bytes: &[u8]) -> Result<()> {
+    let cursor = Cursor::new(wav_bytes);
+    let reader = hound::WavReader::new(cursor)?;
+    let spec = reader.spec();
+    if spec.channels != 1 || spec.bits_per_sample != 16 {
+        anyhow::bail!(
+            "unsupported wav format {}ch/{}bit (expected mono 16bit)",
+            spec.channels,
+            spec.bits_per_sample
+        );
+    }
+    match spec.sample_rate {
+        8_000 | 24_000 => Ok(()),
+        other => anyhow::bail!("unsupported sample rate {other}"),
+    }
+}
+
+async fn synth_openai_tts_for_stage(
+    base_url: &str,
+    api_key: &str,
+    text: &str,
+    http_timeout: Duration,
+) -> Result<Vec<u8>> {
+    let client = http_client(http_timeout)?;
+    let url = openai_endpoint_url(base_url, "/audio/speech");
+    let req = OpenAiSpeechRequest {
+        model: OPENAI_TTS_MODEL.to_string(),
+        voice: OPENAI_TTS_VOICE.to_string(),
+        input: text.to_string(),
+        response_format: "wav".to_string(),
+    };
+
+    let resp = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&req)
+        .send()
+        .await?;
+    let status = resp.status();
+    let wav_bytes = resp.bytes().await?;
+    if !status.is_success() {
+        let body_len = wav_bytes.len();
+        anyhow::bail!("OpenAI TTS HTTP error {} (body_len={})", status, body_len);
+    }
+
+    let wav = wav_bytes.to_vec();
+    validate_openai_tts_wav_bytes(&wav)?;
+    Ok(wav)
 }
 
 async fn try_asr_stage<F, Fut>(
@@ -418,7 +652,7 @@ where
     Some(wav_bytes)
 }
 
-/// ASR 実行（現行実装を拡張）: cloud(AWS) -> local server -> raspi server の3段フォールバック。
+/// ASR 実行（現行実装を拡張）: cloud(OpenAI/AWS) -> local server -> raspi server のフォールバック。
 pub async fn transcribe_and_log(call_id: &str, wav_path: &str) -> Result<String> {
     let ai_cfg = config::ai_config();
 
@@ -427,10 +661,44 @@ pub async fn transcribe_and_log(call_id: &str, wav_path: &str) -> Result<String>
         anyhow::bail!("all ASR stages failed");
     }
 
-    if ai_cfg.use_aws_transcribe {
+    let openai_asr_enabled = openai_asr_stage_enabled(ai_cfg);
+    let openai_api_key_owned = openai_api_key(ai_cfg).map(str::to_string);
+    let openai_base_url = ai_cfg.openai_base_url.clone();
+
+    if asr_cloud_enabled(ai_cfg) {
         if let Some(text) =
             try_asr_stage(call_id, AsrStage::Cloud, ai_cfg.asr_cloud_timeout, || {
-                transcribe_with_aws(wav_path)
+                let openai_api_key_owned = openai_api_key_owned.clone();
+                let openai_base_url = openai_base_url.clone();
+                async move {
+                    if openai_asr_enabled {
+                        let api_key = openai_api_key_owned
+                            .as_deref()
+                            .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
+                        match transcribe_with_openai_for_stage(
+                            &openai_base_url,
+                            api_key,
+                            wav_path,
+                            ai_cfg.asr_cloud_timeout,
+                        )
+                        .await
+                        {
+                            Ok(text) => return Ok(text),
+                            Err(err) => {
+                                log::warn!(
+                                    "[asr {call_id}] ASR cloud provider failed: provider=openai reason={}",
+                                    err
+                                );
+                            }
+                        }
+                    }
+
+                    if ai_cfg.use_aws_transcribe {
+                        return transcribe_with_aws(wav_path).await;
+                    }
+
+                    anyhow::bail!("no cloud ASR providers enabled")
+                }
             })
             .await
         {
@@ -471,7 +739,7 @@ pub async fn transcribe_and_log(call_id: &str, wav_path: &str) -> Result<String>
     anyhow::bail!("all ASR stages failed")
 }
 
-/// LLM + TTS 実行（現行実装: Gemini→Ollama fallback→ずんだもんTTS）。挙動は変更なし。
+/// LLM + TTS 実行（現行実装を拡張: OpenAI/Gemini→Ollama fallback→TTS）。挙動は従来I/F維持。
 /// I/F はテキスト入力→WAVパス出力（将来はチャネル/PCM化予定、現状は一時ファイルのまま）。
 pub async fn handle_user_question_from_whisper(messages: Vec<ChatMessage>) -> Result<String> {
     let answer = match handle_user_question_from_whisper_llm_only("standalone", messages).await {
@@ -509,18 +777,58 @@ pub async fn handle_user_question_from_whisper_llm_only(
         anyhow::bail!("all LLM stages failed");
     }
 
+    let system_prompt = llm::system_prompt();
+    let openai_llm_enabled = openai_llm_stage_enabled(ai_cfg);
+    let openai_api_key_owned = openai_api_key(ai_cfg).map(str::to_string);
+    let openai_base_url = ai_cfg.openai_base_url.clone();
     if llm_cloud_enabled(ai_cfg) {
         if let Some(text) =
             try_llm_stage(call_id, LlmStage::Cloud, ai_cfg.llm_cloud_timeout, || {
-                call_gemini_with_http_timeout(&messages, ai_cfg.llm_cloud_timeout)
+                let openai_api_key_owned = openai_api_key_owned.clone();
+                let openai_base_url = openai_base_url.clone();
+                let system_prompt = system_prompt.clone();
+                let cloud_messages = messages.clone();
+                async move {
+                    if openai_llm_enabled {
+                        let api_key = openai_api_key_owned
+                            .as_deref()
+                            .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
+                        match call_openai_chat_for_stage(
+                            &cloud_messages,
+                            &system_prompt,
+                            OPENAI_LLM_MODEL,
+                            &openai_base_url,
+                            api_key,
+                            ai_cfg.llm_cloud_timeout,
+                        )
+                        .await
+                        {
+                            Ok(text) => return Ok(text),
+                            Err(err) => {
+                                log::warn!(
+                                    "[llm {call_id}] LLM cloud provider failed: provider=openai reason={}",
+                                    err
+                                );
+                            }
+                        }
+                    }
+
+                    if gemini_llm_enabled(ai_cfg) {
+                        return call_gemini_with_http_timeout(
+                            &cloud_messages,
+                            ai_cfg.llm_cloud_timeout,
+                        )
+                            .await;
+                    }
+
+                    anyhow::bail!("no cloud LLM providers enabled")
+                }
             })
             .await
         {
             return Ok(text);
         }
     }
-
-    let system_prompt = llm::system_prompt();
 
     if ai_cfg.llm_local_server_enabled {
         let local_url = ai_cfg.llm_local_server_url.clone();
@@ -894,13 +1202,43 @@ impl SerPort for DefaultAiPort {
     }
 }
 
-/// ずんだもん TTS の呼び出し。I/F はテキストと出力 WAV パス（従来どおり）。
+/// TTS 呼び出し（OpenAI cloud / VoiceVox local / raspi）。I/F はテキストと出力 WAV パス（従来どおり）。
 pub async fn synth_zundamon_wav(call_id: &str, text: &str, out_path: &str) -> Result<()> {
     let ai_cfg = config::ai_config();
 
     if tts_stage_count(ai_cfg) == 0 {
         log::error!("[tts {call_id}] TTS failed: reason=all TTS stages disabled");
         anyhow::bail!("all TTS stages failed");
+    }
+
+    let openai_tts_enabled = openai_tts_stage_enabled(ai_cfg);
+    let openai_api_key_owned = openai_api_key(ai_cfg).map(str::to_string);
+    let openai_base_url = ai_cfg.openai_base_url.clone();
+
+    if openai_tts_enabled {
+        if let Some(wav_bytes) =
+            try_tts_stage(call_id, TtsStage::Cloud, ai_cfg.tts_cloud_timeout, || {
+                let openai_api_key_owned = openai_api_key_owned.clone();
+                let openai_base_url = openai_base_url.clone();
+                async move {
+                    let api_key = openai_api_key_owned
+                        .as_deref()
+                        .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
+                    synth_openai_tts_for_stage(
+                        &openai_base_url,
+                        api_key,
+                        text,
+                        ai_cfg.tts_cloud_timeout,
+                    )
+                    .await
+                }
+            })
+            .await
+        {
+            tokio::fs::write(out_path, &wav_bytes).await?;
+            info!("[tts {call_id}] TTS written to {}", out_path);
+            return Ok(());
+        }
     }
 
     if ai_cfg.tts_local_server_enabled {
@@ -912,7 +1250,7 @@ pub async fn synth_zundamon_wav(call_id: &str, text: &str, out_path: &str) -> Re
             .await
         {
             tokio::fs::write(out_path, &wav_bytes).await?;
-            info!("[tts {call_id}] Zundamon TTS written to {}", out_path);
+            info!("[tts {call_id}] TTS written to {}", out_path);
             return Ok(());
         }
     }
@@ -931,7 +1269,7 @@ pub async fn synth_zundamon_wav(call_id: &str, text: &str, out_path: &str) -> Re
                 .await
             {
                 tokio::fs::write(out_path, &wav_bytes).await?;
-                info!("[tts {call_id}] Zundamon TTS written to {}", out_path);
+                info!("[tts {call_id}] TTS written to {}", out_path);
                 return Ok(());
             }
         } else {
@@ -1274,12 +1612,72 @@ fn prepare_wav_for_transcribe(wav_path: &str) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
     use std::time::Duration;
 
+    use hound::{SampleFormat, WavSpec, WavWriter};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    use super::{call_ollama_for_weather, tts_endpoint_url, ChatMessage, Role};
+    use super::{
+        call_ollama_for_weather, call_openai_chat_for_stage, openai_endpoint_url,
+        transcribe_with_openai_for_stage, tts_endpoint_url, validate_openai_tts_wav_bytes,
+        ChatMessage, Role,
+    };
+
+    async fn read_http_request(
+        mut socket: tokio::net::TcpStream,
+    ) -> (tokio::net::TcpStream, String) {
+        let mut buf = [0u8; 1024];
+        let mut request = Vec::new();
+        let mut header_end = None;
+        let mut content_length = 0usize;
+
+        loop {
+            let n = socket.read(&mut buf).await.expect("read request");
+            if n == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..n]);
+            if header_end.is_none() {
+                if let Some(pos) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let end = pos + 4;
+                    header_end = Some(end);
+                    let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                    for line in headers.lines() {
+                        if let Some(value) = line.strip_prefix("content-length:") {
+                            content_length = value.trim().parse::<usize>().unwrap_or(0);
+                        }
+                    }
+                }
+            }
+            if let Some(end) = header_end {
+                if request.len() >= end + content_length {
+                    break;
+                }
+            }
+        }
+
+        (socket, String::from_utf8_lossy(&request).into_owned())
+    }
+
+    fn make_test_wav(sample_rate: u32) -> Vec<u8> {
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = WavWriter::new(&mut cursor, spec).expect("create wav");
+            for _ in 0..160 {
+                writer.write_sample::<i16>(0).expect("write sample");
+            }
+            writer.finalize().expect("finalize wav");
+        }
+        cursor.into_inner()
+    }
 
     #[test]
     fn tts_endpoint_url_handles_slashes() {
@@ -1348,5 +1746,118 @@ mod tests {
         let request_line = server.await.expect("join server task");
         assert_eq!(result, "晴れです");
         assert!(request_line.starts_with("POST /api/chat HTTP/1.1"));
+    }
+
+    #[test]
+    fn openai_endpoint_url_handles_slashes() {
+        assert_eq!(
+            openai_endpoint_url("https://api.openai.com/v1/", "/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_endpoint_url("https://proxy.example/v1", "audio/speech"),
+            "https://proxy.example/v1/audio/speech"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_openai_chat_for_stage_uses_supplied_endpoint_and_parses_response() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("get local addr");
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept client");
+            let (mut socket, request) = read_http_request(socket).await;
+            let body = r#"{"choices":[{"message":{"content":"承知しました"}}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            request
+        });
+
+        let endpoint_base = format!("http://{addr}");
+        let messages = vec![ChatMessage {
+            role: Role::User,
+            content: "こんにちは".to_string(),
+        }];
+        let result = call_openai_chat_for_stage(
+            &messages,
+            "system prompt",
+            "gpt-4o-mini",
+            &endpoint_base,
+            "sk-test",
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("openai helper should parse response");
+
+        let request = server.await.expect("join server task");
+        assert_eq!(result, "承知しました");
+        assert!(request.starts_with("POST /chat/completions HTTP/1.1"));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-test"));
+    }
+
+    #[tokio::test]
+    async fn transcribe_with_openai_for_stage_uses_supplied_endpoint_and_parses_response() {
+        let tmp = tempfile::NamedTempFile::new().expect("tmp wav");
+        std::fs::write(tmp.path(), make_test_wav(8_000)).expect("write wav");
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("get local addr");
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept client");
+            let (mut socket, request) = read_http_request(socket).await;
+            let body = r#"{"text":"テスト転写"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            request
+        });
+
+        let base_url = format!("http://{addr}");
+        let result = transcribe_with_openai_for_stage(
+            &base_url,
+            "sk-test",
+            tmp.path().to_str().expect("utf8 path"),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("openai asr helper should parse response");
+
+        let request = server.await.expect("join server task");
+        assert_eq!(result, "テスト転写");
+        assert!(request.starts_with("POST /audio/transcriptions HTTP/1.1"));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("content-type: multipart/form-data;"));
+    }
+
+    #[test]
+    fn validate_openai_tts_wav_bytes_accepts_24khz_mono_16bit() {
+        let wav = make_test_wav(24_000);
+        validate_openai_tts_wav_bytes(&wav).expect("24k mono 16bit should be accepted");
+    }
+
+    #[test]
+    fn validate_openai_tts_wav_bytes_rejects_unsupported_sample_rate() {
+        let wav = make_test_wav(16_000);
+        assert!(validate_openai_tts_wav_bytes(&wav).is_err());
     }
 }
