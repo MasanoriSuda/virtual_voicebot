@@ -716,6 +716,8 @@ async fn fetch_audio_to_temp(
     relative_url_path: &str,
     frontend_base_url: &str,
 ) -> anyhow::Result<tempfile::NamedTempFile> {
+    const MAX_REMOTE_ANNOUNCEMENT_AUDIO_BYTES: u64 = 8 * 1024 * 1024;
+
     debug_assert!(is_safe_announcement_url_path(relative_url_path));
 
     let full_url = format!(
@@ -726,11 +728,40 @@ async fn fetch_audio_to_temp(
     let client = reqwest::Client::builder()
         .timeout(config::timeouts().ai_http)
         .build()?;
-    let resp = client.get(&full_url).send().await?.error_for_status()?;
-    let bytes = resp.bytes().await?;
+    let mut resp = client.get(&full_url).send().await?.error_for_status()?;
+    if let Some(content_length) = resp
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        if content_length > MAX_REMOTE_ANNOUNCEMENT_AUDIO_BYTES {
+            return Err(anyhow::anyhow!(
+                "audio response too large: content-length={} max={} url={}",
+                content_length,
+                MAX_REMOTE_ANNOUNCEMENT_AUDIO_BYTES,
+                full_url
+            ));
+        }
+    }
+
     let mut tmp = tempfile::NamedTempFile::new()?;
     use std::io::Write as _;
-    tmp.write_all(&bytes)?;
+    let mut total_bytes = 0_u64;
+    while let Some(chunk) = resp.chunk().await? {
+        total_bytes = total_bytes
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(|| anyhow::anyhow!("audio response size overflow url={}", full_url))?;
+        if total_bytes > MAX_REMOTE_ANNOUNCEMENT_AUDIO_BYTES {
+            return Err(anyhow::anyhow!(
+                "audio response exceeded max size while streaming: size={} max={} url={}",
+                total_bytes,
+                MAX_REMOTE_ANNOUNCEMENT_AUDIO_BYTES,
+                full_url
+            ));
+        }
+        tmp.write_all(&chunk)?;
+    }
     Ok(tmp)
 }
 
@@ -753,9 +784,9 @@ fn is_safe_announcement_url_path(url_path: &str) -> bool {
     if rest.is_empty() {
         return false;
     }
-    !rest
-        .split('/')
-        .any(|seg| seg.is_empty() || seg == "." || seg == ".." || seg.contains('\\'))
+    !rest.split('/').any(|seg| {
+        seg.is_empty() || seg == "." || seg == ".." || seg.contains('%') || seg.contains('\\')
+    })
 }
 
 fn map_audio_file_url_to_local_path(audio_file_url: String) -> String {
@@ -1144,6 +1175,20 @@ mod tests {
     fn safe_announcement_url_path_rejects_parent_dir_segments() {
         assert!(!super::is_safe_announcement_url_path(
             "/audio/announcements/../../../etc/passwd"
+        ));
+    }
+
+    #[test]
+    fn safe_announcement_url_path_rejects_percent_encoded_parent_dir_segments() {
+        assert!(!super::is_safe_announcement_url_path(
+            "/audio/announcements/%2e%2e/secret.wav"
+        ));
+    }
+
+    #[test]
+    fn safe_announcement_url_path_rejects_mixed_case_percent_encoded_parent_dir_segments() {
+        assert!(!super::is_safe_announcement_url_path(
+            "/audio/announcements/%2E%2e/secret.wav"
         ));
     }
 
