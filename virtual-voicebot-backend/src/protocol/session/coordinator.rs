@@ -890,6 +890,7 @@ fn extract_user_from_to(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::protocol::session::types::SessionControlIn;
+    use crate::service::routing::{ActionConfig, ActionExecutor};
     use crate::shared::ports::call_log_port::CallLogPortError;
     use crate::shared::ports::ingest::IngestPayload;
     use crate::shared::ports::routing_port::NoopRoutingPort;
@@ -1064,6 +1065,28 @@ mod tests {
     fn build_test_session(storage_port: Arc<dyn StoragePort>) -> SessionCoordinator {
         let (session, _control_rx) = build_test_session_with_control(storage_port);
         session
+    }
+
+    fn make_vb_action(recording_enabled: bool) -> ActionConfig {
+        let mut action = ActionConfig::default_vr();
+        action.action_code = "VB".to_string();
+        action.recording_enabled = recording_enabled;
+        action
+    }
+
+    fn prepare_unique_recording(
+        session: &mut SessionCoordinator,
+        call_id_suffix: &str,
+    ) -> std::path::PathBuf {
+        session.recording = crate::protocol::session::recording_manager::RecordingManager::new(
+            format!("test-vb-recording-{call_id_suffix}"),
+        );
+        session
+            .recording
+            .mixed_file_path()
+            .parent()
+            .expect("recording directory should exist")
+            .to_path_buf()
     }
 
     #[tokio::test]
@@ -1260,6 +1283,52 @@ mod tests {
         assert_eq!(session.initial_action_code, Some("VR".to_string()));
         assert_eq!(session.final_action, Some("normal_call".to_string()));
         assert_eq!(session.call_disposition, "allowed");
+    }
+
+    #[tokio::test]
+    async fn vb_action_honors_recording_enabled_true() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let recording_dir = prepare_unique_recording(&mut session, "true");
+        let action = make_vb_action(true);
+
+        ActionExecutor::new()
+            .execute(&action, "test-call", &mut session)
+            .await
+            .expect("VB action should execute");
+
+        session
+            .recording
+            .start_main()
+            .expect("recording start should succeed when enabled");
+        assert!(
+            session.recording.is_started(),
+            "VB action with recording_enabled=true should keep recorder enabled"
+        );
+        session.recording.stop_and_merge();
+        let _ = std::fs::remove_dir_all(recording_dir);
+    }
+
+    #[tokio::test]
+    async fn vb_action_honors_recording_enabled_false() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let recording_dir = prepare_unique_recording(&mut session, "false");
+        let action = make_vb_action(false);
+
+        ActionExecutor::new()
+            .execute(&action, "test-call", &mut session)
+            .await
+            .expect("VB action should execute");
+
+        session
+            .recording
+            .start_main()
+            .expect("disabled recorder start should be a no-op");
+        assert!(
+            !session.recording.is_started(),
+            "VB action with recording_enabled=false should disable recorder"
+        );
+        session.recording.stop_and_merge();
+        let _ = std::fs::remove_dir_all(recording_dir);
     }
 
     #[tokio::test]

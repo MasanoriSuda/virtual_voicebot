@@ -45,6 +45,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-206](STEER-206_fix-bye-during-announce-triggers-transfer.md) | アナウンス送信中の BYE 受信後に転送が誤起動するバグ修正 | Approved | #206 | P0 | cancel_playback() 経由で AppTransferRequest が誤 enqueue される問題を修正 |
 | [STEER-224](STEER-224_weather-llm-local.md) | 天気要約 LLM をローカルサーバー設定対応に変更 | Approved | #224 | P1 | weather 要約の LLM 呼び出しを localhost 固定から LLM_LOCAL_SERVER_URL / LLM_LOCAL_MODEL / LLM_LOCAL_TIMEOUT_MS 設定に変更 |
 | [STEER-227](STEER-227_announce-remote-audio-fetch.md) | 別マシン構成でのアナウンス音声 HTTP 取得対応 | Approved | #227 | P1 | `map_audio_file_url_to_local_path()` を `FRONTEND_BASE_URL` 経由の HTTP 取得に置き換え、Frontend=PC / Backend=ラズパイ 構成でアナウンス再生を実現する |
+| [STEER-229](STEER-229_vb-recording-enabled.md) | VB 録音対応（recording_enabled フラグを尊重する） | Approved | #229 | P1 | `execute_vb()` の hardcoded `false` を `action.recording_enabled` に変更し、VB モードでもボイスボット会話の録音を可能にする |
 
 ---
 
@@ -94,3 +95,5 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-23 | 1.8 | STEER-224 追加（天気要約 LLM ローカルサーバー設定対応） | Claude Code |
 | 2026-02-23 | 1.9 | STEER-224 ステータス Draft → Approved | @MasanoriSuda |
 | 2026-02-23 | 2.0 | STEER-227 追加（別マシン構成アナウンス音声 HTTP 取得対応） | Claude Code |
+| 2026-02-24 | 2.1 | STEER-229 追加（VB 録音対応）、STEER-227 ステータス Approved に更新 | Claude Code |
+| 2026-02-24 | 2.2 | STEER-229 ステータス Draft → Approved | @MasanoriSuda |
