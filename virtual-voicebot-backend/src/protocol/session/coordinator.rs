@@ -21,7 +21,7 @@ use crate::protocol::session::capture::AudioCapture;
 use crate::protocol::session::timers::SessionTimers;
 use crate::protocol::sip::{parse_name_addr, parse_uri};
 use crate::service::routing::normalize_phone_number_e164;
-use crate::shared::config::SessionRuntimeConfig;
+use crate::shared::config::{self, SessionRuntimeConfig};
 use crate::shared::ports::app::AppEventTx;
 use crate::shared::ports::call_log_port::{
     CallLogPort, EndedCallLog, EndedIvrSessionEvent, EndedRecording,
@@ -126,6 +126,7 @@ pub struct SessionCoordinator {
     transfer_after_answer_pending: bool,
     announcement_id: Option<Uuid>,
     announcement_audio_file_url: Option<String>,
+    audio_tmp_files: Vec<tempfile::NamedTempFile>,
     ivr_flow_id: Option<Uuid>,
     ivr_menu_audio_file_url: Option<String>,
     ivr_keypad_node_id: Option<Uuid>,
@@ -225,6 +226,7 @@ impl SessionCoordinator {
             transfer_after_answer_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
+            audio_tmp_files: Vec::new(),
             ivr_flow_id: None,
             ivr_menu_audio_file_url: None,
             ivr_keypad_node_id: None,
@@ -508,9 +510,9 @@ impl SessionCoordinator {
         self.ivr_timeout_override = None;
     }
 
-    pub(crate) async fn resolve_announcement_playback_path(&self) -> Option<String> {
+    pub(crate) async fn resolve_announcement_playback_path(&mut self) -> Option<String> {
         if let Some(audio_file_url) = self.announcement_audio_file_url.clone() {
-            return Some(map_audio_file_url_to_local_path(audio_file_url));
+            return self.resolve_audio_file_url(audio_file_url).await;
         }
 
         let announcement_id = self.announcement_id?;
@@ -519,7 +521,7 @@ impl SessionCoordinator {
             .find_announcement_audio_file_url(announcement_id)
             .await
         {
-            Ok(Some(audio_file_url)) => Some(map_audio_file_url_to_local_path(audio_file_url)),
+            Ok(Some(audio_file_url)) => self.resolve_audio_file_url(audio_file_url).await,
             Ok(None) => {
                 log::warn!(
                     "[session {}] announcement not found id={}",
@@ -537,6 +539,40 @@ impl SessionCoordinator {
                 );
                 None
             }
+        }
+    }
+
+    async fn resolve_audio_file_url(&mut self, audio_file_url: String) -> Option<String> {
+        let cfg = config::announcement_config();
+        if let Some(base_url) = cfg.frontend_base_url.as_deref() {
+            let url_path = extract_url_path(&audio_file_url);
+            if !is_safe_announcement_url_path(&url_path) {
+                log::warn!(
+                    "[session {}] rejected unsafe audio url path: {}",
+                    self.call_id,
+                    url_path
+                );
+                return None;
+            }
+
+            match fetch_audio_to_temp(url_path.as_str(), base_url).await {
+                Ok(tmp_file) => {
+                    let path = tmp_file.path().to_string_lossy().to_string();
+                    self.audio_tmp_files.push(tmp_file);
+                    Some(path)
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[session {}] failed to fetch audio from {} err={:?}",
+                        self.call_id,
+                        base_url,
+                        err
+                    );
+                    None
+                }
+            }
+        } else {
+            Some(map_audio_file_url_to_local_path(audio_file_url))
         }
     }
 
@@ -676,20 +712,59 @@ impl SessionCoordinator {
     }
 }
 
-fn map_audio_file_url_to_local_path(audio_file_url: String) -> String {
+async fn fetch_audio_to_temp(
+    relative_url_path: &str,
+    frontend_base_url: &str,
+) -> anyhow::Result<tempfile::NamedTempFile> {
+    debug_assert!(is_safe_announcement_url_path(relative_url_path));
+
+    let full_url = format!(
+        "{}{}",
+        frontend_base_url.trim_end_matches('/'),
+        relative_url_path
+    );
+    let client = reqwest::Client::builder()
+        .timeout(config::timeouts().ai_http)
+        .build()?;
+    let resp = client.get(&full_url).send().await?.error_for_status()?;
+    let bytes = resp.bytes().await?;
+    let mut tmp = tempfile::NamedTempFile::new()?;
+    use std::io::Write as _;
+    tmp.write_all(&bytes)?;
+    Ok(tmp)
+}
+
+fn extract_url_path(audio_file_url: &str) -> String {
     let trimmed = audio_file_url.trim();
-    let url_path = if let Some(scheme_sep) = trimmed.find("://") {
+    if let Some(scheme_sep) = trimmed.find("://") {
         let after_scheme = &trimmed[scheme_sep + 3..];
         if let Some(path_pos) = after_scheme.find('/') {
-            &after_scheme[path_pos..]
-        } else {
-            "/"
+            return after_scheme[path_pos..].to_string();
         }
-    } else {
-        trimmed
-    };
+        return "/".to_string();
+    }
+    trimmed.to_string()
+}
 
-    if let Some(rest) = url_path.strip_prefix("/audio/announcements/") {
+fn is_safe_announcement_url_path(url_path: &str) -> bool {
+    let Some(rest) = url_path.strip_prefix("/audio/announcements/") else {
+        return false;
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    !rest
+        .split('/')
+        .any(|seg| seg.is_empty() || seg == "." || seg == ".." || seg.contains('\\'))
+}
+
+fn map_audio_file_url_to_local_path(audio_file_url: String) -> String {
+    let url_path = extract_url_path(&audio_file_url);
+
+    if is_safe_announcement_url_path(&url_path) {
+        let rest = url_path
+            .strip_prefix("/audio/announcements/")
+            .expect("validated prefix");
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .map(std::path::Path::to_path_buf)
@@ -707,7 +782,7 @@ fn map_audio_file_url_to_local_path(audio_file_url: String) -> String {
         return path.to_string();
     }
 
-    url_path.to_string()
+    url_path
 }
 
 fn normalize_action_code(action_code: &str) -> String {
@@ -930,6 +1005,7 @@ mod tests {
             transfer_after_answer_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
+            audio_tmp_files: Vec::new(),
             ivr_flow_id: None,
             ivr_menu_audio_file_url: None,
             ivr_keypad_node_id: None,
@@ -1050,6 +1126,32 @@ mod tests {
     fn relative_audio_announcement_url_is_mapped_to_frontend_public_file() {
         let mapped = super::map_audio_file_url_to_local_path("/audio/announcements/xyz.wav".into());
         assert!(mapped.ends_with("virtual-voicebot-frontend/public/audio/announcements/xyz.wav"));
+    }
+
+    #[test]
+    fn extract_url_path_strips_scheme_and_host() {
+        let path = super::extract_url_path("http://192.168.1.5:3000/audio/announcements/a.wav");
+        assert_eq!(path, "/audio/announcements/a.wav");
+    }
+
+    #[test]
+    fn extract_url_path_keeps_relative_path() {
+        let path = super::extract_url_path("/audio/announcements/b.wav");
+        assert_eq!(path, "/audio/announcements/b.wav");
+    }
+
+    #[test]
+    fn safe_announcement_url_path_rejects_parent_dir_segments() {
+        assert!(!super::is_safe_announcement_url_path(
+            "/audio/announcements/../../../etc/passwd"
+        ));
+    }
+
+    #[test]
+    fn safe_announcement_url_path_accepts_normal_announcement_path() {
+        assert!(super::is_safe_announcement_url_path(
+            "/audio/announcements/abc-123.wav"
+        ));
     }
 
     #[test]
