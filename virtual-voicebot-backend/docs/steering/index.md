@@ -46,6 +46,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-224](STEER-224_weather-llm-local.md) | 天気要約 LLM をローカルサーバー設定対応に変更 | Approved | #224 | P1 | weather 要約の LLM 呼び出しを localhost 固定から LLM_LOCAL_SERVER_URL / LLM_LOCAL_MODEL / LLM_LOCAL_TIMEOUT_MS 設定に変更 |
 | [STEER-227](STEER-227_announce-remote-audio-fetch.md) | 別マシン構成でのアナウンス音声 HTTP 取得対応 | Approved | #227 | P1 | `map_audio_file_url_to_local_path()` を `FRONTEND_BASE_URL` 経由の HTTP 取得に置き換え、Frontend=PC / Backend=ラズパイ 構成でアナウンス再生を実現する |
 | [STEER-229](STEER-229_vb-recording-enabled.md) | VB 録音対応（recording_enabled フラグを尊重する） | Approved | #229 | P1 | `execute_vb()` の hardcoded `false` を `action.recording_enabled` に変更し、VB モードでもボイスボット会話の録音を可能にする |
+| [STEER-231](STEER-231_openai-cloud-provider.md) | OpenAI クラウドプロバイダー追加（ASR / LLM / TTS / weather 要約） | Approved | #231 | P1 | OpenAI を cloud 最優先 provider として ASR/LLM/TTS/weather 要約に追加。既存フォールバック（AWS/Gemini/local/raspi）は維持。PoC = 軽量モデル固定 |
 
 ---
 
@@ -97,3 +98,5 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-23 | 2.0 | STEER-227 追加（別マシン構成アナウンス音声 HTTP 取得対応） | Claude Code |
 | 2026-02-24 | 2.1 | STEER-229 追加（VB 録音対応）、STEER-227 ステータス Approved に更新 | Claude Code |
 | 2026-02-24 | 2.2 | STEER-229 ステータス Draft → Approved | @MasanoriSuda |
+| 2026-02-24 | 2.3 | STEER-231 追加（OpenAI クラウドプロバイダー追加） | Claude Sonnet 4.6 |
+| 2026-02-24 | 2.4 | STEER-231 ステータス Draft → Approved | @MasanoriSuda |
