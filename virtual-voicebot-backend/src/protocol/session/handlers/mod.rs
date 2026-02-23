@@ -995,11 +995,14 @@ impl SessionCoordinator {
         self.ivr_max_retries = normalize_max_retries(menu.max_retries);
         self.ivr_timeout_override =
             Some(Duration::from_secs(normalize_timeout_sec(menu.timeout_sec)));
-        self.ivr_menu_audio_file_url = Some(
-            menu.audio_file_url
-                .map(super::map_audio_file_url_to_local_path)
+        let resolved_menu_path = match menu.audio_file_url.clone() {
+            Some(url) => self
+                .resolve_audio_file_url(url)
+                .await
                 .unwrap_or_else(|| super::IVR_INTRO_WAV_PATH.to_string()),
-        );
+            None => super::IVR_INTRO_WAV_PATH.to_string(),
+        };
+        self.ivr_menu_audio_file_url = Some(resolved_menu_path);
         let menu_path = self
             .ivr_menu_audio_file_url
             .as_ref()
@@ -1276,12 +1279,14 @@ impl SessionCoordinator {
                     Some("voicebot_started"),
                 );
                 let intro_path = if action.include_announcement.unwrap_or(false) {
-                    action
-                        .announcement_audio_file_url
-                        .as_ref()
-                        .cloned()
-                        .map(super::map_audio_file_url_to_local_path)
-                        .or_else(|| Some(super::VOICEBOT_INTRO_WAV_PATH.to_string()))
+                    match action.announcement_audio_file_url.clone() {
+                        Some(url) => Some(
+                            self.resolve_audio_file_url(url)
+                                .await
+                                .unwrap_or_else(|| super::VOICEBOT_INTRO_WAV_PATH.to_string()),
+                        ),
+                        None => Some(super::VOICEBOT_INTRO_WAV_PATH.to_string()),
+                    }
                 } else {
                     None
                 };
@@ -1701,6 +1706,7 @@ mod tests {
             transfer_after_answer_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
+            audio_tmp_files: Vec::new(),
             ivr_flow_id: None,
             ivr_menu_audio_file_url: None,
             ivr_keypad_node_id: None,

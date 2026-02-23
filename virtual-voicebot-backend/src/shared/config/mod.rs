@@ -525,6 +525,25 @@ impl SyncConfig {
 }
 
 #[derive(Clone, Debug)]
+pub struct AnnouncementConfig {
+    pub frontend_base_url: Option<String>,
+}
+
+impl AnnouncementConfig {
+    fn from_env() -> Self {
+        Self {
+            frontend_base_url: env_non_empty("FRONTEND_BASE_URL"),
+        }
+    }
+}
+
+static ANNOUNCEMENT_CONFIG: OnceLock<AnnouncementConfig> = OnceLock::new();
+
+pub fn announcement_config() -> &'static AnnouncementConfig {
+    ANNOUNCEMENT_CONFIG.get_or_init(AnnouncementConfig::from_env)
+}
+
+#[derive(Clone, Debug)]
 pub struct LineNotifyConfig {
     pub enabled: bool,
     pub channel_access_token: Option<String>,
