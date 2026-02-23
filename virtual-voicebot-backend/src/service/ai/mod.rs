@@ -643,6 +643,62 @@ pub(crate) async fn call_ollama_for_intent_stage(
     Ok(answer)
 }
 
+pub(super) async fn call_ollama_for_weather(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    model: &str,
+    endpoint_url: &str,
+    http_timeout: Duration,
+) -> Result<String> {
+    let client = http_client(http_timeout)?;
+
+    let mut ollama_messages = Vec::with_capacity(messages.len() + 1);
+    ollama_messages.push(OllamaMessage {
+        role: "system".to_string(),
+        content: system_prompt.to_string(),
+    });
+    for msg in messages {
+        let role = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        };
+        ollama_messages.push(OllamaMessage {
+            role: role.to_string(),
+            content: msg.content.clone(),
+        });
+    }
+
+    let req = OllamaChatRequest {
+        model: model.to_string(),
+        messages: ollama_messages,
+        stream: false,
+    };
+
+    let resp = client.post(endpoint_url).json(&req).send().await?;
+    let status = resp.status();
+    let body_text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "Ollama HTTP error {} (body_len={})",
+            status,
+            body_text.len()
+        );
+    }
+
+    #[derive(Deserialize)]
+    struct ChatResponse {
+        message: Option<OllamaMessage>,
+    }
+
+    let body: ChatResponse = serde_json::from_str(&body_text)?;
+    let answer = body
+        .message
+        .map(|m| m.content)
+        .unwrap_or_else(|| "<no response>".to_string());
+
+    Ok(answer)
+}
+
 pub(crate) async fn call_ollama_with_prompt(
     messages: &[ChatMessage],
     system_prompt: &str,
@@ -800,9 +856,13 @@ impl LlmPort for DefaultAiPort {
 }
 
 impl WeatherPort for DefaultAiPort {
-    fn handle_weather(&self, query: WeatherQuery) -> AiFuture<Result<String, WeatherError>> {
+    fn handle_weather(
+        &self,
+        call_id: String,
+        query: WeatherQuery,
+    ) -> AiFuture<Result<String, WeatherError>> {
         Box::pin(async move {
-            weather::handle_weather(query)
+            weather::handle_weather(&call_id, query)
                 .await
                 .map_err(|e| WeatherError::QueryFailed(e.to_string()))
         })
@@ -1214,7 +1274,12 @@ fn prepare_wav_for_transcribe(wav_path: &str) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::tts_endpoint_url;
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::{call_ollama_for_weather, tts_endpoint_url, ChatMessage, Role};
 
     #[test]
     fn tts_endpoint_url_handles_slashes() {
@@ -1226,5 +1291,62 @@ mod tests {
             tts_endpoint_url("http://localhost:50021", "synthesis"),
             "http://localhost:50021/synthesis"
         );
+    }
+
+    #[tokio::test]
+    async fn call_ollama_for_weather_uses_supplied_endpoint_and_parses_response() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("get local addr");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept client");
+            let mut buf = [0u8; 1024];
+            let mut request = Vec::new();
+
+            loop {
+                let n = socket.read(&mut buf).await.expect("read request");
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let body = r#"{"message":{"role":"assistant","content":"晴れです"}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+
+            String::from_utf8_lossy(&request).into_owned()
+        });
+
+        let endpoint = format!("http://{addr}/api/chat");
+        let messages = vec![ChatMessage {
+            role: Role::User,
+            content: "東京の天気".to_string(),
+        }];
+
+        let result = call_ollama_for_weather(
+            &messages,
+            "weather system prompt",
+            "test-weather-model",
+            &endpoint,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("weather helper should parse ollama response");
+
+        let request_line = server.await.expect("join server task");
+        assert_eq!(result, "晴れです");
+        assert!(request_line.starts_with("POST /api/chat HTTP/1.1"));
     }
 }

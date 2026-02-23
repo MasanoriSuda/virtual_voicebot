@@ -502,7 +502,8 @@ impl AppWorker {
                 date,
             } => {
                 let req = WeatherQuery { location, date };
-                let answer_text = match self.ai_port.handle_weather(req).await {
+                let answer_text = match self.ai_port.handle_weather(call_id.to_string(), req).await
+                {
                     Ok(text) => text,
                     Err(err) => {
                         log::warn!("[app {call_id}] weather failed: {err:?}");
