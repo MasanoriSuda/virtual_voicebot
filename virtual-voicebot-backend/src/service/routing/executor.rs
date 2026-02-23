@@ -115,12 +115,12 @@ impl ActionExecutor {
         session: &mut SessionCoordinator,
     ) -> Result<()> {
         info!(
-            "[ActionExecutor] call_id={} executing VB (voicebot mode, recording_enabled=false)",
-            call_id
+            "[ActionExecutor] call_id={} executing VB (voicebot mode, recording_enabled={})",
+            call_id, action.recording_enabled
         );
         session.set_outbound_mode(false);
         session.set_voicebot_direct_mode(true);
-        session.set_recording_enabled(false);
+        session.set_recording_enabled(action.recording_enabled);
         if action.announce_enabled {
             // VB should remain on voicebot path; prepend notice in legacy IVR path
             // and then continue to voicebot mode.
