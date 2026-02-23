@@ -47,6 +47,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-227](STEER-227_announce-remote-audio-fetch.md) | 別マシン構成でのアナウンス音声 HTTP 取得対応 | Approved | #227 | P1 | `map_audio_file_url_to_local_path()` を `FRONTEND_BASE_URL` 経由の HTTP 取得に置き換え、Frontend=PC / Backend=ラズパイ 構成でアナウンス再生を実現する |
 | [STEER-229](STEER-229_vb-recording-enabled.md) | VB 録音対応（recording_enabled フラグを尊重する） | Approved | #229 | P1 | `execute_vb()` の hardcoded `false` を `action.recording_enabled` に変更し、VB モードでもボイスボット会話の録音を可能にする |
 | [STEER-231](STEER-231_openai-cloud-provider.md) | OpenAI クラウドプロバイダー追加（ASR / LLM / TTS / weather 要約） | Approved | #231 | P1 | OpenAI を cloud 最優先 provider として ASR/LLM/TTS/weather 要約に追加。既存フォールバック（AWS/Gemini/local/raspi）は維持。PoC = 軽量モデル固定 |
+| [STEER-235](STEER-235_backend-systemd-service.md) | 通話本体の systemd 常駐化 | Approved | #235 | P1 | `virtual-voicebot-backend` を systemd unit で常駐管理。Rust コード無改修（`KillSignal=SIGINT` で graceful stop 維持）。unit ファイル + EnvironmentFile テンプレート追加 |
 
 ---
 
@@ -100,3 +101,5 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-24 | 2.2 | STEER-229 ステータス Draft → Approved | @MasanoriSuda |
 | 2026-02-24 | 2.3 | STEER-231 追加（OpenAI クラウドプロバイダー追加） | Claude Sonnet 4.6 |
 | 2026-02-24 | 2.4 | STEER-231 ステータス Draft → Approved | @MasanoriSuda |
+| 2026-02-24 | 2.5 | STEER-235 追加（通話本体 systemd 常駐化） | Claude Sonnet 4.6 |
+| 2026-02-24 | 2.6 | STEER-235 ステータス Draft → Approved | @MasanoriSuda |

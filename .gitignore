@@ -18,6 +18,7 @@ build/
 .env
 .env.*
 !.env.example
+!virtual-voicebot-backend/.env.systemd.example
 *.pem
 *.key
 
