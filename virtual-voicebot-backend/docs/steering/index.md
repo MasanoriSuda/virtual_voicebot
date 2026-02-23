@@ -91,4 +91,4 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-21 | 1.6 | STEER-206 追加（アナウンス中 BYE 後の転送誤起動バグ修正） | Claude Code |
 | 2026-02-21 | 1.7 | STEER-206 ステータス Draft → Approved | Claude Code |
 | 2026-02-23 | 1.8 | STEER-224 追加（天気要約 LLM ローカルサーバー設定対応） | Claude Code |
-| 2026-02-23 | 1.9 | STEER-224 ステータス Draft → Approved | Claude Code |
+| 2026-02-23 | 1.9 | STEER-224 ステータス Draft → Approved | @MasanoriSuda |
