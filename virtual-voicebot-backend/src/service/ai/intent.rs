@@ -78,14 +78,49 @@ pub async fn classify_intent(call_id: &str, text: String) -> Result<String> {
     let prompt = intent_prompt();
     let ai_cfg = config::ai_config();
     let text_len = text.chars().count();
+    let text_for_cloud = text.clone();
     let messages = vec![ChatMessage {
         role: Role::User,
         content: text,
     }];
 
-    if !ai_cfg.intent_local_server_enabled && !ai_cfg.intent_raspi_enabled {
+    if !ai_cfg.openai_intent_enabled
+        && !ai_cfg.intent_local_server_enabled
+        && !ai_cfg.intent_raspi_enabled
+    {
         log::error!("[intent {call_id}] intent failed: reason=all intent stages disabled");
         anyhow::bail!("all intent stages failed");
+    }
+
+    if ai_cfg.openai_intent_enabled {
+        if let Some(api_key) = ai_cfg.openai_api_key.clone() {
+            let base_url = ai_cfg.openai_base_url.clone();
+            let model = ai_cfg.openai_intent_model.clone();
+            if let Some(raw) = try_intent_stage(
+                call_id,
+                super::IntentStage::Cloud,
+                text_len,
+                ai_cfg.openai_intent_timeout,
+                || {
+                    super::call_openai_intent(
+                        text_for_cloud.as_str(),
+                        call_id,
+                        &api_key,
+                        &base_url,
+                        &model,
+                        ai_cfg.openai_intent_timeout,
+                    )
+                },
+            )
+            .await
+            {
+                return Ok(raw);
+            }
+        } else {
+            log::warn!(
+                "[intent {call_id}] intent stage failed: intent_stage=cloud reason=OPENAI_API_KEY missing"
+            );
+        }
     }
 
     if ai_cfg.intent_local_server_enabled {

@@ -158,6 +158,10 @@ fn openai_tts_stage_enabled(ai_cfg: &config::AiConfig) -> bool {
     ai_cfg.openai_tts_enabled && openai_api_key(ai_cfg).is_some()
 }
 
+fn openai_intent_stage_enabled(ai_cfg: &config::AiConfig) -> bool {
+    ai_cfg.openai_intent_enabled && openai_api_key(ai_cfg).is_some()
+}
+
 fn asr_cloud_enabled(ai_cfg: &config::AiConfig) -> bool {
     openai_asr_stage_enabled(ai_cfg) || ai_cfg.use_aws_transcribe
 }
@@ -223,6 +227,7 @@ impl TtsStage {
 
 #[derive(Clone, Copy)]
 enum IntentStage {
+    Cloud,
     Local,
     Raspi,
 }
@@ -230,6 +235,7 @@ enum IntentStage {
 impl IntentStage {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Cloud => "cloud",
             Self::Local => "local",
             Self::Raspi => "raspi",
         }
@@ -259,7 +265,9 @@ fn tts_stage_count(ai_cfg: &config::AiConfig) -> usize {
 }
 
 fn intent_stage_count(ai_cfg: &config::AiConfig) -> usize {
-    usize::from(ai_cfg.intent_local_server_enabled) + usize::from(ai_cfg.intent_raspi_enabled)
+    usize::from(openai_intent_stage_enabled(ai_cfg))
+        + usize::from(ai_cfg.intent_local_server_enabled)
+        + usize::from(ai_cfg.intent_raspi_enabled)
 }
 
 fn log_asr_startup_warnings() {
@@ -315,8 +323,11 @@ fn log_intent_startup_warnings() {
     let ai_cfg = config::ai_config();
     if intent_stage_count(ai_cfg) == 0 {
         log::warn!(
-            "[intent] no intent stages enabled (INTENT_LOCAL_SERVER_ENABLED=0, INTENT_RASPI_ENABLED=0)"
+            "[intent] no intent stages enabled (OPENAI_INTENT_ENABLED=0 or OPENAI_API_KEY missing, INTENT_LOCAL_SERVER_ENABLED=0, INTENT_RASPI_ENABLED=0)"
         );
+    }
+    if ai_cfg.openai_intent_enabled && openai_api_key(ai_cfg).is_none() {
+        log::warn!("[intent] OPENAI_INTENT_ENABLED=1 but OPENAI_API_KEY is not set; openai cloud provider will be skipped");
     }
     if ai_cfg.intent_raspi_enabled && ai_cfg.intent_raspi_url.is_none() {
         log::warn!(
@@ -411,6 +422,53 @@ pub(super) async fn call_openai_chat_for_stage(
         .and_then(|choice| choice.message.content.clone())
         .unwrap_or_else(|| "<no response>".to_string());
     Ok(answer)
+}
+
+pub(crate) async fn call_openai_intent(
+    text: &str,
+    _call_id: &str,
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    http_timeout: Duration,
+) -> Result<String> {
+    let client = http_client(http_timeout)?;
+    let url = openai_endpoint_url(base_url, "/chat/completions");
+    let messages = vec![ChatMessage {
+        role: Role::User,
+        content: text.to_string(),
+    }];
+    let req = serde_json::json!({
+        "model": model,
+        "messages": build_openai_chat_messages(&messages, &intent::intent_prompt()),
+        "response_format": { "type": "json_object" },
+    });
+
+    let resp = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&req)
+        .send()
+        .await?;
+    let status = resp.status();
+    let body_text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "OpenAI intent HTTP error {} (body_len={})",
+            status,
+            body_text.len()
+        );
+    }
+
+    let body: OpenAiChatCompletionsResponse = serde_json::from_str(&body_text)?;
+    let answer = body
+        .choices
+        .first()
+        .and_then(|choice| choice.message.content.as_deref())
+        .map(str::trim)
+        .filter(|content| !content.is_empty())
+        .ok_or_else(|| anyhow!("OpenAI intent response content missing"))?;
+    Ok(answer.to_string())
 }
 
 async fn transcribe_with_openai_for_stage(
@@ -1658,9 +1716,10 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::{
-        call_ollama_for_weather, call_openai_chat_for_stage, openai_endpoint_url,
-        synth_openai_tts_for_stage, transcribe_with_openai_for_stage, tts_endpoint_url,
-        validate_openai_tts_wav_bytes, wrap_openai_tts_pcm_as_wav, ChatMessage, Role,
+        call_ollama_for_weather, call_openai_chat_for_stage, call_openai_intent,
+        openai_endpoint_url, synth_openai_tts_for_stage, transcribe_with_openai_for_stage,
+        tts_endpoint_url, validate_openai_tts_wav_bytes, wrap_openai_tts_pcm_as_wav, ChatMessage,
+        Role,
     };
 
     async fn read_http_request(
@@ -1842,6 +1901,48 @@ mod tests {
         assert!(request
             .to_ascii_lowercase()
             .contains("authorization: bearer sk-test"));
+    }
+
+    #[tokio::test]
+    async fn call_openai_intent_requests_json_mode_and_returns_raw_json_string() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("get local addr");
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept client");
+            let (mut socket, request) = read_http_request(socket).await;
+            let body = r#"{"choices":[{"message":{"content":"{\"intent\":\"general_chat\",\"query\":\"こんにちは\"}"}}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            request
+        });
+
+        let result = call_openai_intent(
+            "こんにちは",
+            "call-test",
+            "sk-test",
+            &format!("http://{addr}"),
+            "gpt-4o-mini",
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("openai intent helper should return raw json string");
+
+        let request = server.await.expect("join server task");
+        assert!(request.starts_with("POST /chat/completions HTTP/1.1"));
+        assert!(request.contains("\"response_format\":{\"type\":\"json_object\"}"));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-test"));
+        assert!(result.contains("\"intent\":\"general_chat\""));
     }
 
     #[tokio::test]

@@ -49,6 +49,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-231](STEER-231_openai-cloud-provider.md) | OpenAI クラウドプロバイダー追加（ASR / LLM / TTS / weather 要約） | Approved | #231 | P1 | OpenAI を cloud 最優先 provider として ASR/LLM/TTS/weather 要約に追加。既存フォールバック（AWS/Gemini/local/raspi）は維持。PoC = 軽量モデル固定 |
 | [STEER-235](STEER-235_backend-systemd-service.md) | 通話本体の systemd 常駐化 | Approved | #235 | P1 | `virtual-voicebot-backend` を systemd unit で常駐管理。Rust コード無改修（`KillSignal=SIGINT` で graceful stop 維持）。unit ファイル + EnvironmentFile テンプレート追加 |
 | [STEER-236](STEER-236_serversync-systemd-service.md) | serversync の systemd 常駐化 | Approved | #236 | P1 | `serversync` を systemd unit で常駐管理。STEER-235 の設計を踏襲（KillSignal=SIGINT / @@OS_USER@@ / EnvironmentFile）。通話本体と同一 OS ユーザーで録音ファイル権限を揃える |
+| [STEER-241](STEER-241_intent-cloud-provider.md) | intent の OpenAI クラウドプロバイダー追加 | Approved | #241 | P1 | intent 分類に OpenAI Cloud ステージを追加（cloud → local → raspi）。STEER-231 の `openai_*_enabled` パターンを踏襲。local/raspi フォールバックは維持 |
 
 ---
 
@@ -106,3 +107,6 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-24 | 2.6 | STEER-235 ステータス Draft → Approved | @MasanoriSuda |
 | 2026-02-24 | 2.7 | STEER-236 追加（serversync systemd 常駐化） | Claude Sonnet 4.6 |
 | 2026-02-24 | 2.8 | STEER-236 ステータス Draft → Approved | @MasanoriSuda |
+| 2026-02-24 | 2.9 | STEER-241 追加（intent OpenAI クラウドプロバイダー追加） | Claude Sonnet 4.6 |
+| 2026-02-24 | 3.0 | STEER-241 ステータス Draft → Approved | @MasanoriSuda |
+| 2026-02-24 | 2.9 | STEER-241 追加（intent OpenAI クラウドプロバイダー追加） | Claude Sonnet 4.6 |

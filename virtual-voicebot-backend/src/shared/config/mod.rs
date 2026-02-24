@@ -880,6 +880,9 @@ pub struct AiConfig {
     pub openai_asr_enabled: bool,
     pub openai_llm_enabled: bool,
     pub openai_tts_enabled: bool,
+    pub openai_intent_enabled: bool,
+    pub openai_intent_timeout: Duration,
+    pub openai_intent_model: String,
     pub gemini_api_key: Option<String>,
     pub gemini_model: String,
     pub ollama_model: String,
@@ -930,6 +933,9 @@ impl AiConfig {
     /// - `OPENAI_ASR_ENABLED`: enables OpenAI ASR cloud provider; defaults to `true`.
     /// - `OPENAI_LLM_ENABLED`: enables OpenAI LLM cloud provider; defaults to `true`.
     /// - `OPENAI_TTS_ENABLED`: enables OpenAI TTS cloud provider; defaults to `true`.
+    /// - `OPENAI_INTENT_ENABLED`: enables OpenAI intent cloud provider; defaults to `false`.
+    /// - `OPENAI_INTENT_TIMEOUT_MS`: OpenAI intent timeout in milliseconds; defaults to `3000`.
+    /// - `OPENAI_INTENT_MODEL`: OpenAI model for intent classification; defaults to `"gpt-4o-mini"`.
     /// - `GEMINI_API_KEY`: optional API key for Gemini (kept as `None` if unset).
     /// - `GEMINI_MODEL`: model name for Gemini; defaults to `"gemini-2.5-flash-lite"`.
     /// - `OLLAMA_MODEL`: model name for Ollama; defaults to `"gemma3:4b"`.
@@ -982,6 +988,9 @@ impl AiConfig {
     /// env::remove_var("OPENAI_ASR_ENABLED");
     /// env::remove_var("OPENAI_LLM_ENABLED");
     /// env::remove_var("OPENAI_TTS_ENABLED");
+    /// env::remove_var("OPENAI_INTENT_ENABLED");
+    /// env::remove_var("OPENAI_INTENT_TIMEOUT_MS");
+    /// env::remove_var("OPENAI_INTENT_MODEL");
     /// env::remove_var("GEMINI_API_KEY");
     /// env::remove_var("GEMINI_MODEL");
     /// env::remove_var("OLLAMA_MODEL");
@@ -1042,6 +1051,10 @@ impl AiConfig {
             openai_asr_enabled: env_bool("OPENAI_ASR_ENABLED", true),
             openai_llm_enabled: env_bool("OPENAI_LLM_ENABLED", true),
             openai_tts_enabled: env_bool("OPENAI_TTS_ENABLED", true),
+            openai_intent_enabled: env_bool("OPENAI_INTENT_ENABLED", false),
+            openai_intent_timeout: env_duration_ms("OPENAI_INTENT_TIMEOUT_MS", 3_000),
+            openai_intent_model: env_non_empty("OPENAI_INTENT_MODEL")
+                .unwrap_or_else(|| "gpt-4o-mini".to_string()),
             gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
             gemini_model: std::env::var("GEMINI_MODEL")
                 .unwrap_or_else(|_| "gemini-2.5-flash-lite".to_string()),
