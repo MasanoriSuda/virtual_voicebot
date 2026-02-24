@@ -1,0 +1,37 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System dependencies for audio decoding and healthcheck.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsndfile1 \
+    curl \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install CPU torch from PyTorch index only.
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir torch --index-url ${TORCH_INDEX_URL}
+
+# Install the rest from PyPI.
+RUN pip install --no-cache-dir \
+    transformers \
+    fastapi \
+    "uvicorn[standard]" \
+    pykakasi \
+    python-multipart
+
+COPY script/whisper_server.py /app/whisper_server.py
+
+RUN groupadd -r whisper && useradd --no-log-init -r -g whisper whisper \
+    && mkdir -p /var/cache/huggingface \
+    && chown -R whisper:whisper /app /var/cache/huggingface
+
+USER whisper
+
+EXPOSE 9000
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=180s \
+    CMD curl -f http://localhost:9000/healthz || exit 1
+
+CMD ["python", "whisper_server.py"]
