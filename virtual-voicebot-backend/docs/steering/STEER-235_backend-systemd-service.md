@@ -136,7 +136,7 @@ So that 手動操作なしで VoIP サービスが復旧する
 | Rust コード改修 | **しない**（`KillSignal=SIGINT` で対応） | `main.rs:212` は `tokio::signal::ctrl_c()` = SIGINT 待ち。SIGINT を送れば既存 graceful stop（`sip_core.shutdown()` → unregister）が動作する |
 | env ファイル形式 | `EnvironmentFile=`（shell 構文なし） | `run_register.sh` は `export VAR=value` 形式だが `systemd` は `VAR=value` のみを解釈する。専用 example ファイルを用意する |
 | `WorkingDirectory` | `virtual-voicebot-backend` ディレクトリに固定 | 録音静的配信のパス（`src/main.rs:125`）、prompt override 読み込み（`src/service/ai/llm.rs:39`、`intent.rs:58`、`weather.rs:364`）が `current_dir()` 相対のため |
-| OS 実行ユーザー | **PoC: 既存ログインユーザー**（`User=msuda`/`Group=msuda`）。本番は専用サービスユーザー（例: `voicebot`）を推奨（CodeRabbit 指摘） | `SIP_PORT(5060)` / `RTP_PORT(10000)` はいずれも 1024 超のため root 権限不要。最小権限の原則により非 root ユーザーで実行する。テンプレートでは `@@OS_USER@@` プレースホルダーで吸収する |
+| OS 実行ユーザー | **非 root OS ユーザーを指定**（`@@OS_USER@@` プレースホルダーで吸収）。既存ログインユーザー（例: ラズパイのログインユーザー）または専用サービスユーザー（例: `voicebot`）を設定する（CodeRabbit 指摘: 最小権限の原則） | `SIP_PORT(5060)` / `RTP_PORT(10000)` はいずれも 1024 超のため root 権限不要。`systemd-analyze security` の「Service runs as root user」警告を回避するため `User=`/`Group=` を明示する |
 | serversync | **スコープ外** | 本 Issue は通話本体のみ |
 
 ### 5.2 systemd unit ファイル（`virtual-voicebot-backend/systemd/virtual-voicebot-backend.service`）
@@ -149,16 +149,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# @@INSTALL_DIR@@ / @@ENV_FILE@@ / @@OS_USER@@ を実際の値に置換してから使用すること（§5.4 の sed コマンド参照）
-# PoC: 既存ログインユーザーを使用。本番は専用ユーザー（voicebot 等）を推奨
+# Replace @@OS_USER@@ with a non-root OS user/group on the target machine.
 User=@@OS_USER@@
 Group=@@OS_USER@@
+# Replace @@INSTALL_DIR@@ with the absolute path to virtual-voicebot-backend.
 ExecStart=@@INSTALL_DIR@@/target/release/virtual-voicebot-backend
 WorkingDirectory=@@INSTALL_DIR@@
 EnvironmentFile=@@ENV_FILE@@
 Restart=always
 RestartSec=2
-# SIGTERM ではなく SIGINT を送ることで main.rs の ctrl_c() ハンドラ経由の graceful stop を保証する
+# Send SIGINT so the existing ctrl_c() handler performs graceful shutdown (REGISTER unregister).
 KillSignal=SIGINT
 TimeoutStopSec=10
 
@@ -166,7 +166,7 @@ TimeoutStopSec=10
 WantedBy=multi-user.target
 ```
 
-> **Note:** `@@INSTALL_DIR@@` は backend ディレクトリの絶対パス、`@@ENV_FILE@@` は EnvironmentFile の絶対パス、`@@OS_USER@@` は実行 OS ユーザー名に置換する（§5.4 参照）。PoC 環境では既存ログインユーザー（例: `msuda`）をそのまま使用可能。本番環境では専用サービスユーザーを作成して使用することを推奨（`systemd-analyze security` の「Service runs as root user」警告を回避）。
+> **Note:** `@@INSTALL_DIR@@` は backend ディレクトリの絶対パス、`@@ENV_FILE@@` は EnvironmentFile の絶対パス、`@@OS_USER@@` はターゲットマシン上の非 root OS ユーザー名に置換する（§5.4 参照）。ラズパイ等の既存ログインユーザーをそのまま使用することも、専用サービスユーザー（例: `voicebot`）を作成して使用することも可能。
 
 ### 5.3 EnvironmentFile テンプレート（`virtual-voicebot-backend/.env.systemd.example`）
 
@@ -235,10 +235,10 @@ cargo build --release
 cp .env.systemd.example .env.systemd
 vi .env.systemd  # 実際の値を設定
 
-# OS ユーザーの決定
-# PoC: 既存ログインユーザーをそのまま使用
+# @@OS_USER@@ に設定する非 root OS ユーザーを決定する
+# 選択肢A: ターゲットマシンの既存ログインユーザーをそのまま使用
 OS_USER=$(whoami)
-# 本番推奨: 専用サービスユーザーを作成（CodeRabbit 指摘: 最小権限の原則）
+# 選択肢B: 専用サービスユーザーを作成（最小権限の原則を徹底したい場合に推奨）
 # sudo useradd -r -s /sbin/nologin voicebot
 # sudo chown -R voicebot:voicebot ${INSTALL_DIR}
 # OS_USER=voicebot
@@ -334,3 +334,4 @@ sudo systemctl stop virtual-voicebot-backend
 | 2026-02-24 | §3.3 Round 1 NG 記録、①`DATABASE_URL` を PostgreSQL DSN に修正②`RECORDING_HTTP_ADDR` ポートを既定値 `18080` に修正 | Claude Sonnet 4.6 |
 | 2026-02-24 | §1 ステータス Draft → Approved、§3.4 承認者記録 | @MasanoriSuda |
 | 2026-02-24 | §5.1 OS ユーザー決定行追加、§5.2 `User=`/`Group=` ディレクティブ追加（`@@OS_USER@@` プレースホルダー）、§5.4 `@@OS_USER@@` 置換手順・専用ユーザー作成コメント追加（CodeRabbit 指摘対応） | Claude Sonnet 4.6 |
+| 2026-02-24 | §5.1 OS 実行ユーザー記述を `@@OS_USER@@` 中立化（PoC/msuda 固定表現を削除）、§5.2 テンプレートコメントを実ファイルと統一、§5.4 「PoC/本番」フレーミングを「選択肢A/B」に変更（Codex が unit ファイルを `@@OS_USER@@` プレースホルダー化したことを受けて反映） | Claude Sonnet 4.6 |

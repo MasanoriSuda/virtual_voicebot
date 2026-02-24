@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# PoC: run as the existing non-root login user on the Raspberry Pi.
-User=msuda
-Group=msuda
+# Replace @@OS_USER@@ with a non-root OS user/group on the target machine.
+User=@@OS_USER@@
+Group=@@OS_USER@@
 # Replace @@INSTALL_DIR@@ with the absolute path to virtual-voicebot-backend.
 ExecStart=@@INSTALL_DIR@@/target/release/virtual-voicebot-backend
 WorkingDirectory=@@INSTALL_DIR@@
