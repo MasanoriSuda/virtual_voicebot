@@ -1,0 +1,22 @@
+[Unit]
+Description=Virtual VoiceBot Backend (call service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace @@OS_USER@@ with a non-root OS user/group on the target machine.
+User=@@OS_USER@@
+Group=@@OS_USER@@
+# Replace @@INSTALL_DIR@@ with the absolute path to virtual-voicebot-backend.
+ExecStart=@@INSTALL_DIR@@/target/release/virtual-voicebot-backend
+WorkingDirectory=@@INSTALL_DIR@@
+EnvironmentFile=@@ENV_FILE@@
+Restart=always
+RestartSec=2
+# Send SIGINT so the existing ctrl_c() handler performs graceful shutdown (REGISTER unregister).
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

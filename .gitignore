@@ -17,7 +17,9 @@ build/
 # Env / secrets
 .env
 .env.*
+/virtual-voicebot-backend/.env.systemd
 !.env.example
+!virtual-voicebot-backend/.env.systemd.example
 *.pem
 *.key
 
