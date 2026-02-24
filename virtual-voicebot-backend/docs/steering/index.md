@@ -48,6 +48,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-229](STEER-229_vb-recording-enabled.md) | VB 録音対応（recording_enabled フラグを尊重する） | Approved | #229 | P1 | `execute_vb()` の hardcoded `false` を `action.recording_enabled` に変更し、VB モードでもボイスボット会話の録音を可能にする |
 | [STEER-231](STEER-231_openai-cloud-provider.md) | OpenAI クラウドプロバイダー追加（ASR / LLM / TTS / weather 要約） | Approved | #231 | P1 | OpenAI を cloud 最優先 provider として ASR/LLM/TTS/weather 要約に追加。既存フォールバック（AWS/Gemini/local/raspi）は維持。PoC = 軽量モデル固定 |
 | [STEER-235](STEER-235_backend-systemd-service.md) | 通話本体の systemd 常駐化 | Approved | #235 | P1 | `virtual-voicebot-backend` を systemd unit で常駐管理。Rust コード無改修（`KillSignal=SIGINT` で graceful stop 維持）。unit ファイル + EnvironmentFile テンプレート追加 |
+| [STEER-236](STEER-236_serversync-systemd-service.md) | serversync の systemd 常駐化 | Approved | #236 | P1 | `serversync` を systemd unit で常駐管理。STEER-235 の設計を踏襲（KillSignal=SIGINT / @@OS_USER@@ / EnvironmentFile）。通話本体と同一 OS ユーザーで録音ファイル権限を揃える |
 
 ---
 
@@ -103,3 +104,5 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-24 | 2.4 | STEER-231 ステータス Draft → Approved | @MasanoriSuda |
 | 2026-02-24 | 2.5 | STEER-235 追加（通話本体 systemd 常駐化） | Claude Sonnet 4.6 |
 | 2026-02-24 | 2.6 | STEER-235 ステータス Draft → Approved | @MasanoriSuda |
+| 2026-02-24 | 2.7 | STEER-236 追加（serversync systemd 常駐化） | Claude Sonnet 4.6 |
+| 2026-02-24 | 2.8 | STEER-236 ステータス Draft → Approved | @MasanoriSuda |
