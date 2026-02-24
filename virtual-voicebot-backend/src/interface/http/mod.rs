@@ -2,9 +2,11 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::SeekFrom;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use log::info;
+use reqwest::{Client, StatusCode};
 use serde::Serialize;
 use sqlx::PgPool;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -151,6 +153,24 @@ async fn handle_conn(
                     "Service Unavailable",
                     "SERVICE_UNAVAILABLE",
                     "Database not available",
+                )
+                .await;
+            }
+        };
+        return write_json_response(socket, 200, "OK", json.as_bytes()).await;
+    }
+
+    if method == "GET" && path == "/api/local-services/status" {
+        let json = match get_local_services_status_json(config::ai_config()).await {
+            Ok(json) => json,
+            Err(error) => {
+                log::warn!("[http] local services status probe failed: {}", error);
+                return write_sync_error_response(
+                    socket,
+                    500,
+                    "Internal Server Error",
+                    "INTERNAL_ERROR",
+                    "Local services probe failed",
                 )
                 .await;
             }
@@ -357,6 +377,29 @@ struct SyncErrorBody {
     message: &'static str,
 }
 
+const LOCAL_SERVICE_PROBE_TIMEOUT_MS: u64 = 2_000;
+
+#[derive(Serialize)]
+struct LocalServicesStatusResponse {
+    ok: bool,
+    #[serde(rename = "localServices")]
+    local_services: LocalServicesMap,
+}
+
+#[derive(Serialize)]
+struct LocalServicesMap {
+    asr: LocalServiceEntry,
+    llm: LocalServiceEntry,
+    tts: LocalServiceEntry,
+}
+
+#[derive(Serialize)]
+struct LocalServiceEntry {
+    status: &'static str,
+    #[serde(rename = "displayUrl")]
+    display_url: Option<String>,
+}
+
 async fn get_sync_status_json(pool: &PgPool) -> Result<String, std::io::Error> {
     let last_updated_at: Option<DateTime<Utc>> = tokio::time::timeout(
         config::timeouts().recording_io,
@@ -414,6 +457,110 @@ async fn get_sync_status_json(pool: &PgPool) -> Result<String, std::io::Error> {
     };
 
     serde_json::to_string(&response).map_err(std::io::Error::other)
+}
+
+async fn get_local_services_status_json(
+    ai_cfg: &config::AiConfig,
+) -> Result<String, std::io::Error> {
+    let client = Client::builder()
+        .timeout(Duration::from_millis(LOCAL_SERVICE_PROBE_TIMEOUT_MS))
+        .build()
+        .map_err(std::io::Error::other)?;
+
+    let asr_base = extract_base_url(&ai_cfg.asr_local_server_url);
+    let llm_base = extract_base_url(&ai_cfg.llm_local_server_url);
+    let tts_base = ai_cfg
+        .tts_local_server_base_url
+        .trim_end_matches('/')
+        .to_string();
+
+    let (asr, llm, tts) = tokio::join!(
+        probe_service_entry(
+            client.clone(),
+            ai_cfg.asr_local_server_enabled,
+            asr_base,
+            "/healthz",
+        ),
+        probe_service_entry(
+            client.clone(),
+            ai_cfg.llm_local_server_enabled,
+            llm_base,
+            "/api/tags",
+        ),
+        probe_service_entry(
+            client,
+            ai_cfg.tts_local_server_enabled,
+            tts_base,
+            "/speakers",
+        ),
+    );
+
+    let response = LocalServicesStatusResponse {
+        ok: true,
+        local_services: LocalServicesMap { asr, llm, tts },
+    };
+
+    serde_json::to_string(&response).map_err(std::io::Error::other)
+}
+
+fn disabled_local_service_entry() -> LocalServiceEntry {
+    LocalServiceEntry {
+        status: "disabled",
+        display_url: None,
+    }
+}
+
+async fn probe_service_entry(
+    client: Client,
+    enabled: bool,
+    base_url: String,
+    probe_path: &str,
+) -> LocalServiceEntry {
+    if !enabled {
+        return disabled_local_service_entry();
+    }
+
+    let probe_url = join_url_path(&base_url, probe_path);
+    let status = if probe_once(&client, &probe_url).await {
+        "ok"
+    } else {
+        "error"
+    };
+
+    LocalServiceEntry {
+        status,
+        display_url: Some(base_url),
+    }
+}
+
+async fn probe_once(client: &Client, url: &str) -> bool {
+    match client.get(url).send().await {
+        Ok(response) => response.status() == StatusCode::OK,
+        Err(_) => false,
+    }
+}
+
+fn extract_base_url(url: &str) -> String {
+    let url = url.trim_end_matches('/');
+    if let Some(after_scheme) = url.strip_prefix("https://") {
+        let host_part = after_scheme.split('/').next().unwrap_or(after_scheme);
+        return format!("https://{host_part}");
+    }
+    if let Some(after_scheme) = url.strip_prefix("http://") {
+        let host_part = after_scheme.split('/').next().unwrap_or(after_scheme);
+        return format!("http://{host_part}");
+    }
+
+    // AiConfig の URL は通常スキーム付き想定だが、防御的に path を除去して返す。
+    url.split('/').next().unwrap_or(url).to_string()
+}
+
+fn join_url_path(base_url: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
 }
 
 async fn write_json_response(
@@ -569,4 +716,86 @@ fn log_recording_response(status: u16, call_id: Option<&str>, path: &str, range:
         "recording_access status={} call_id={} path={} range={}",
         status, call_id, path, range
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_base_url, probe_once};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[test]
+    fn extract_base_url_strips_path() {
+        assert_eq!(
+            extract_base_url("http://whisper:9000/transcribe"),
+            "http://whisper:9000"
+        );
+        assert_eq!(
+            extract_base_url("https://ollama.local:11434/api/chat"),
+            "https://ollama.local:11434"
+        );
+    }
+
+    #[test]
+    fn extract_base_url_handles_existing_base() {
+        assert_eq!(
+            extract_base_url("http://voicevox:50021"),
+            "http://voicevox:50021"
+        );
+        assert_eq!(
+            extract_base_url("http://voicevox:50021/"),
+            "http://voicevox:50021"
+        );
+    }
+
+    #[test]
+    fn extract_base_url_defensively_strips_path_without_scheme() {
+        assert_eq!(
+            extract_base_url("example.com:8080/path/to/probe"),
+            "example.com:8080"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_once_returns_true_for_http_200() {
+        let url = spawn_status_server(200, "OK").await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .expect("client");
+
+        assert!(probe_once(&client, &url).await);
+    }
+
+    #[tokio::test]
+    async fn probe_once_returns_false_for_non_200() {
+        let url = spawn_status_server(204, "No Content").await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .expect("client");
+
+        assert!(!probe_once(&client, &url).await);
+    }
+
+    async fn spawn_status_server(status: u16, reason: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+
+        format!("http://{addr}/probe")
+    }
 }

@@ -49,6 +49,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-199](STEER-199_docker-compose-integration.md) | Docker Compose 統合（Backend + Frontend） | Approved | #199 | P1 | モノレポ構成（Backend + Frontend）を統合的に管理できる Docker 環境を構築する |
 | [STEER-213](STEER-213_fix-agent-doc-responsibility.md) | AI エージェントのドキュメント責務不整合の修正 | Approved | #213 | P0 | STEER-153 の変更によって生じた Claude Code のドキュメント責務に関する不整合を根本から修正する |
 | [STEER-226](STEER-226_frontend-backend-split-config.md) | Frontend/Backend 別マシン構成の環境変数対応 | Draft | #226 | P1 | `.env.example` を実態に合わせて更新し、Frontend と Backend が別マシンで動作する構成の環境変数を整備する |
+| [STEER-245](STEER-245_local-services-status-dashboard.md) | ローカルサービス死活監視ダッシュボード | Approved | #245 | P1 | Frontend のダッシュボードに ASR/LLM/TTS ローカルサービスの死活状態を表示する。Backend が probe を集約し、Frontend はウィジェットで可視化する |
 
 ---
 
@@ -86,3 +87,5 @@ STEER-{イシュー番号}_{slug}.md
 | 日付 | バージョン | 変更内容 | 作成者 |
 |------|-----------|---------|--------|
 | 2026-02-23 | 1.0 | 初版作成（既存横断ステアリング STEER-112〜STEER-213 を収録、STEER-226 追加） | Claude Code |
+| 2026-02-24 | 1.1 | STEER-245 追加（ローカルサービス死活監視ダッシュボード） | Claude Sonnet 4.6 |
+| 2026-02-25 | 1.2 | STEER-245 ステータス Draft → Approved | @MasanoriSuda |
