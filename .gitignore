@@ -18,8 +18,10 @@ build/
 .env
 .env.*
 /virtual-voicebot-backend/.env.systemd
+/virtual-voicebot-backend/.env.serversync.systemd
 !.env.example
 !virtual-voicebot-backend/.env.systemd.example
+!virtual-voicebot-backend/.env.serversync.systemd.example
 *.pem
 *.key
 

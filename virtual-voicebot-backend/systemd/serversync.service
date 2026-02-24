@@ -1,0 +1,25 @@
+[Unit]
+Description=Virtual VoiceBot Serversync (recording sync worker)
+After=network-online.target
+Wants=network-online.target
+# Prefer starting after the call backend, but allow independent operation.
+After=virtual-voicebot-backend.service
+
+[Service]
+Type=simple
+# Replace @@OS_USER@@ with a non-root OS user/group on the target machine.
+# Use the same OS user as virtual-voicebot-backend.service (recording file read/delete permissions).
+User=@@OS_USER@@
+Group=@@OS_USER@@
+# Replace @@INSTALL_DIR@@ with the absolute path to virtual-voicebot-backend.
+ExecStart=@@INSTALL_DIR@@/target/release/serversync
+WorkingDirectory=@@INSTALL_DIR@@
+EnvironmentFile=@@SERVERSYNC_ENV_FILE@@
+Restart=always
+RestartSec=2
+# Send SIGINT so the existing ctrl_c() handler performs graceful shutdown.
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
