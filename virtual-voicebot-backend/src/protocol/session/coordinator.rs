@@ -126,7 +126,6 @@ pub struct SessionCoordinator {
     transfer_after_answer_pending: bool,
     announcement_id: Option<Uuid>,
     announcement_audio_file_url: Option<String>,
-    audio_tmp_files: Vec<tempfile::NamedTempFile>,
     ivr_flow_id: Option<Uuid>,
     ivr_menu_audio_file_url: Option<String>,
     ivr_keypad_node_id: Option<Uuid>,
@@ -226,7 +225,6 @@ impl SessionCoordinator {
             transfer_after_answer_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
-            audio_tmp_files: Vec::new(),
             ivr_flow_id: None,
             ivr_menu_audio_file_url: None,
             ivr_keypad_node_id: None,
@@ -544,35 +542,37 @@ impl SessionCoordinator {
 
     async fn resolve_audio_file_url(&mut self, audio_file_url: String) -> Option<String> {
         let cfg = config::announcement_config();
-        if let Some(base_url) = cfg.frontend_base_url.as_deref() {
+        let Some(local_path) =
+            map_audio_file_url_to_cache_path(cfg.audio_dir.as_str(), &audio_file_url)
+        else {
             let url_path = extract_url_path(&audio_file_url);
-            if !is_safe_announcement_url_path(&url_path) {
-                log::warn!(
-                    "[session {}] rejected unsafe audio url path: {}",
-                    self.call_id,
-                    url_path
-                );
-                return None;
-            }
+            log::warn!(
+                "[session {}] rejected unsafe audio url path: {}",
+                self.call_id,
+                url_path
+            );
+            return None;
+        };
 
-            match fetch_audio_to_temp(url_path.as_str(), base_url).await {
-                Ok(tmp_file) => {
-                    let path = tmp_file.path().to_string_lossy().to_string();
-                    self.audio_tmp_files.push(tmp_file);
-                    Some(path)
-                }
-                Err(err) => {
-                    log::warn!(
-                        "[session {}] failed to fetch audio from {} err={:?}",
-                        self.call_id,
-                        base_url,
-                        err
-                    );
-                    None
-                }
+        match tokio::fs::metadata(&local_path).await {
+            Ok(_) => Some(local_path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                log::warn!(
+                    "[session {}] local audio cache not found: {} (has serversync run?)",
+                    self.call_id,
+                    local_path
+                );
+                None
             }
-        } else {
-            Some(map_audio_file_url_to_local_path(audio_file_url))
+            Err(err) => {
+                log::warn!(
+                    "[session {}] failed to check local audio cache {}: {}",
+                    self.call_id,
+                    local_path,
+                    err
+                );
+                None
+            }
         }
     }
 
@@ -712,69 +712,21 @@ impl SessionCoordinator {
     }
 }
 
-async fn fetch_audio_to_temp(
-    relative_url_path: &str,
-    frontend_base_url: &str,
-) -> anyhow::Result<tempfile::NamedTempFile> {
-    const MAX_REMOTE_ANNOUNCEMENT_AUDIO_BYTES: u64 = 8 * 1024 * 1024;
-
-    debug_assert!(is_safe_announcement_url_path(relative_url_path));
-
-    let full_url = format!(
-        "{}{}",
-        frontend_base_url.trim_end_matches('/'),
-        relative_url_path
-    );
-    let client = reqwest::Client::builder()
-        .timeout(config::timeouts().ai_http)
-        .build()?;
-    let mut resp = client.get(&full_url).send().await?.error_for_status()?;
-    if let Some(content_length) = resp
-        .headers()
-        .get(reqwest::header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-    {
-        if content_length > MAX_REMOTE_ANNOUNCEMENT_AUDIO_BYTES {
-            return Err(anyhow::anyhow!(
-                "audio response too large: content-length={} max={} url={}",
-                content_length,
-                MAX_REMOTE_ANNOUNCEMENT_AUDIO_BYTES,
-                full_url
-            ));
-        }
-    }
-
-    let mut tmp = tempfile::NamedTempFile::new()?;
-    use std::io::Write as _;
-    let mut total_bytes = 0_u64;
-    while let Some(chunk) = resp.chunk().await? {
-        total_bytes = total_bytes
-            .checked_add(chunk.len() as u64)
-            .ok_or_else(|| anyhow::anyhow!("audio response size overflow url={}", full_url))?;
-        if total_bytes > MAX_REMOTE_ANNOUNCEMENT_AUDIO_BYTES {
-            return Err(anyhow::anyhow!(
-                "audio response exceeded max size while streaming: size={} max={} url={}",
-                total_bytes,
-                MAX_REMOTE_ANNOUNCEMENT_AUDIO_BYTES,
-                full_url
-            ));
-        }
-        tmp.write_all(&chunk)?;
-    }
-    Ok(tmp)
-}
-
 fn extract_url_path(audio_file_url: &str) -> String {
     let trimmed = audio_file_url.trim();
-    if let Some(scheme_sep) = trimmed.find("://") {
-        let after_scheme = &trimmed[scheme_sep + 3..];
+    let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
+    if let Some(scheme_sep) = without_query.find("://") {
+        let after_scheme = &without_query[scheme_sep + 3..];
         if let Some(path_pos) = after_scheme.find('/') {
             return after_scheme[path_pos..].to_string();
         }
         return "/".to_string();
     }
-    trimmed.to_string()
+    without_query.to_string()
 }
 
 fn is_safe_announcement_url_path(url_path: &str) -> bool {
@@ -784,36 +736,24 @@ fn is_safe_announcement_url_path(url_path: &str) -> bool {
     if rest.is_empty() {
         return false;
     }
-    !rest.split('/').any(|seg| {
-        seg.is_empty() || seg == "." || seg == ".." || seg.contains('%') || seg.contains('\\')
-    })
+    !rest.contains('/')
+        && rest != "."
+        && rest != ".."
+        && !rest.contains('%')
+        && !rest.contains('\\')
 }
 
-fn map_audio_file_url_to_local_path(audio_file_url: String) -> String {
-    let url_path = extract_url_path(&audio_file_url);
-
-    if is_safe_announcement_url_path(&url_path) {
-        let rest = url_path
-            .strip_prefix("/audio/announcements/")
-            .expect("validated prefix");
-        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-        let path = repo_root
-            .join("virtual-voicebot-frontend")
-            .join("public")
-            .join("audio")
-            .join("announcements")
-            .join(rest);
-        return path.to_string_lossy().to_string();
+fn map_audio_file_url_to_cache_path(audio_dir: &str, audio_file_url: &str) -> Option<String> {
+    let url_path = extract_url_path(audio_file_url);
+    if !is_safe_announcement_url_path(&url_path) {
+        return None;
     }
-
-    if let Some(path) = url_path.strip_prefix("file://") {
-        return path.to_string();
-    }
-
-    url_path
+    let filename = url_path
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())?;
+    let path = std::path::Path::new(audio_dir).join(filename);
+    Some(path.to_string_lossy().to_string())
 }
 
 fn normalize_action_code(action_code: &str) -> String {
@@ -1037,7 +977,6 @@ mod tests {
             transfer_after_answer_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
-            audio_tmp_files: Vec::new(),
             ivr_flow_id: None,
             ivr_menu_audio_file_url: None,
             ivr_keypad_node_id: None,
@@ -1169,17 +1108,22 @@ mod tests {
     }
 
     #[test]
-    fn audio_announcement_url_is_mapped_to_frontend_public_file() {
-        let mapped = super::map_audio_file_url_to_local_path(
-            "http://localhost:3000/audio/announcements/abc.wav".to_string(),
-        );
-        assert!(mapped.ends_with("virtual-voicebot-frontend/public/audio/announcements/abc.wav"));
+    fn audio_announcement_url_is_mapped_to_local_cache_dir() {
+        let mapped = super::map_audio_file_url_to_cache_path(
+            "/tmp/announcements",
+            "http://localhost:3000/audio/announcements/abc.wav",
+        )
+        .expect("valid cache path");
+        assert_eq!(mapped, "/tmp/announcements/abc.wav");
     }
 
     #[test]
-    fn relative_audio_announcement_url_is_mapped_to_frontend_public_file() {
-        let mapped = super::map_audio_file_url_to_local_path("/audio/announcements/xyz.wav".into());
-        assert!(mapped.ends_with("virtual-voicebot-frontend/public/audio/announcements/xyz.wav"));
+    fn invalid_audio_announcement_url_is_rejected_for_local_cache() {
+        let mapped = super::map_audio_file_url_to_cache_path(
+            "/tmp/announcements",
+            "/audio/announcements/../../../etc/passwd",
+        );
+        assert!(mapped.is_none());
     }
 
     #[test]
@@ -1192,6 +1136,13 @@ mod tests {
     fn extract_url_path_keeps_relative_path() {
         let path = super::extract_url_path("/audio/announcements/b.wav");
         assert_eq!(path, "/audio/announcements/b.wav");
+    }
+
+    #[test]
+    fn extract_url_path_strips_query_and_fragment() {
+        let path =
+            super::extract_url_path("http://192.168.1.5:3000/audio/announcements/a.wav?v=2#x");
+        assert_eq!(path, "/audio/announcements/a.wav");
     }
 
     #[test]
@@ -1219,6 +1170,13 @@ mod tests {
     fn safe_announcement_url_path_accepts_normal_announcement_path() {
         assert!(super::is_safe_announcement_url_path(
             "/audio/announcements/abc-123.wav"
+        ));
+    }
+
+    #[test]
+    fn safe_announcement_url_path_rejects_subdirectories() {
+        assert!(!super::is_safe_announcement_url_path(
+            "/audio/announcements/morning/greeting.wav"
         ));
     }
 

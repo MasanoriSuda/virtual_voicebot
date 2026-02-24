@@ -1,19 +1,25 @@
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 use tokio::time::{interval, MissedTickBehavior};
+use uuid::Uuid;
 
 use crate::interface::sync::converters::{
     apply_frontend_snapshot, default_anonymous_action, default_default_action, CallActionsPayload,
     CallerGroup, ConverterError, FrontendAnnouncement, IvrFlowDefinition, StoredAction,
 };
-use crate::shared::config::SyncConfig;
+use crate::shared::config::{self, SyncConfig};
 
 const FRONTEND_PULL_MAX_CONNECTIONS: u32 = 5;
+const MAX_ANNOUNCEMENT_AUDIO_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct FrontendPullWorker {
@@ -73,6 +79,12 @@ struct AnnouncementsResponse {
     error: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct ExistingAnnouncementAudioState {
+    audio_file_url: Option<String>,
+    updated_at: DateTime<Utc>,
+}
+
 impl FrontendPullWorker {
     pub async fn new(database_url: String, config: SyncConfig) -> Result<Self, FrontendPullError> {
         let timeout = Duration::from_secs(config.timeout_sec);
@@ -127,6 +139,12 @@ impl FrontendPullWorker {
             "[serversync] GET /api/ivr-flows/export: success flows={}",
             flows.len()
         );
+        if let Err(error) = self.sync_announcement_audio_cache(&announcements).await {
+            log::warn!(
+                "[serversync] announcement audio cache sync failed: {}",
+                error
+            );
+        }
 
         self.save_snapshot(&groups, &actions, &announcements, &flows)
             .await?;
@@ -254,11 +272,270 @@ impl FrontendPullWorker {
         tx.commit().await?;
         Ok(())
     }
+
+    async fn sync_announcement_audio_cache(
+        &self,
+        announcements: &[FrontendAnnouncement],
+    ) -> Result<(), FrontendPullError> {
+        let cfg = config::announcement_config();
+        if cfg.frontend_base_url.is_none() {
+            log::info!(
+                "[serversync] announcement audio cache sync skipped: FRONTEND_BASE_URL not set"
+            );
+            return Ok(());
+        }
+
+        let existing = self.load_existing_announcement_audio_state().await?;
+        let frontend_ids: HashSet<Uuid> = announcements
+            .iter()
+            .map(|announcement| announcement.id)
+            .collect();
+        let audio_dir = Path::new(cfg.audio_dir.as_str());
+
+        for (id, state) in &existing {
+            if frontend_ids.contains(id) {
+                continue;
+            }
+            let Some(audio_file_url) = state.audio_file_url.as_deref() else {
+                continue;
+            };
+            let url_path = extract_url_path(audio_file_url);
+            if !is_safe_announcement_url_path(url_path.as_str()) {
+                log::warn!(
+                    "[serversync] skip deleting cached audio for removed announcement id={} invalid audio_file_url={}",
+                    id,
+                    audio_file_url
+                );
+                continue;
+            }
+            let local_path = announcement_cache_local_path(audio_dir, url_path.as_str());
+            if let Err(err) = remove_file_if_exists(local_path.as_path()).await {
+                log::warn!(
+                    "[serversync] failed to delete cached audio for removed announcement id={} path={} err={}",
+                    id,
+                    local_path.display(),
+                    err
+                );
+            }
+        }
+
+        for announcement in announcements {
+            let Some(audio_file_url) = announcement.audio_file_url.as_deref() else {
+                continue;
+            };
+            let url_path = extract_url_path(audio_file_url);
+            if !is_safe_announcement_url_path(url_path.as_str()) {
+                log::warn!(
+                    "[serversync] skip cached audio sync for announcement id={} invalid audio_file_url={}",
+                    announcement.id,
+                    audio_file_url
+                );
+                continue;
+            }
+
+            let local_path = announcement_cache_local_path(audio_dir, url_path.as_str());
+            if !should_download_announcement_audio(
+                local_path.as_path(),
+                announcement.updated_at.as_deref(),
+                existing.get(&announcement.id),
+            ) {
+                continue;
+            }
+
+            if let Err(err) = download_audio_file(
+                &self.http_client,
+                self.frontend_base_url.as_str(),
+                url_path.as_str(),
+                local_path.as_path(),
+            )
+            .await
+            {
+                log::warn!(
+                    "[serversync] failed to cache announcement audio id={} url={} path={} err={:?}",
+                    announcement.id,
+                    url_path,
+                    local_path.display(),
+                    err
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn load_existing_announcement_audio_state(
+        &self,
+    ) -> Result<HashMap<Uuid, ExistingAnnouncementAudioState>, FrontendPullError> {
+        let rows = sqlx::query("SELECT id, audio_file_url, updated_at FROM announcements")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut map = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let id: Uuid = row.try_get("id")?;
+            let audio_file_url: Option<String> = row.try_get("audio_file_url")?;
+            let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
+            map.insert(
+                id,
+                ExistingAnnouncementAudioState {
+                    audio_file_url,
+                    updated_at,
+                },
+            );
+        }
+        Ok(map)
+    }
+}
+
+fn should_download_announcement_audio(
+    local_path: &Path,
+    frontend_updated_at_raw: Option<&str>,
+    existing: Option<&ExistingAnnouncementAudioState>,
+) -> bool {
+    if !local_path.exists() {
+        return true;
+    }
+
+    let Some(frontend_updated_at) = frontend_updated_at_raw.and_then(parse_frontend_updated_at)
+    else {
+        return false;
+    };
+
+    match existing {
+        Some(state) => state.updated_at != frontend_updated_at,
+        None => true,
+    }
+}
+
+fn parse_frontend_updated_at(raw: &str) -> Option<DateTime<Utc>> {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+}
+
+async fn download_audio_file(
+    http_client: &reqwest::Client,
+    frontend_base_url: &str,
+    url_path: &str,
+    local_path: &Path,
+) -> anyhow::Result<()> {
+    debug_assert!(is_safe_announcement_url_path(url_path));
+
+    let full_url = format!("{}{}", frontend_base_url.trim_end_matches('/'), url_path);
+    let mut resp = http_client
+        .get(&full_url)
+        .send()
+        .await?
+        .error_for_status()?;
+    if let Some(content_length) = resp
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        if content_length > MAX_ANNOUNCEMENT_AUDIO_BYTES {
+            return Err(anyhow::anyhow!(
+                "audio response too large: content-length={} max={} url={}",
+                content_length,
+                MAX_ANNOUNCEMENT_AUDIO_BYTES,
+                full_url
+            ));
+        }
+    }
+
+    let parent = local_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("local_path has no parent: {}", local_path.display()))?;
+    tokio::fs::create_dir_all(parent).await?;
+
+    let tmp_path = local_path.with_extension("tmp");
+    let write_result: anyhow::Result<()> = async {
+        let mut file = tokio::fs::File::create(&tmp_path).await?;
+        let mut total_bytes = 0_u64;
+        while let Some(chunk) = resp.chunk().await? {
+            total_bytes = total_bytes
+                .checked_add(chunk.len() as u64)
+                .ok_or_else(|| anyhow::anyhow!("audio response size overflow url={}", full_url))?;
+            if total_bytes > MAX_ANNOUNCEMENT_AUDIO_BYTES {
+                return Err(anyhow::anyhow!(
+                    "audio response exceeded max size while streaming: size={} max={} url={}",
+                    total_bytes,
+                    MAX_ANNOUNCEMENT_AUDIO_BYTES,
+                    full_url
+                ));
+            }
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        Ok(())
+    }
+    .await;
+
+    if let Err(err) = write_result {
+        tokio::fs::remove_file(&tmp_path).await.ok();
+        return Err(err);
+    }
+
+    if let Err(err) = tokio::fs::rename(&tmp_path, local_path).await {
+        tokio::fs::remove_file(&tmp_path).await.ok();
+        return Err(err.into());
+    }
+    Ok(())
+}
+
+async fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn extract_url_path(audio_file_url: &str) -> String {
+    let trimmed = audio_file_url.trim();
+    let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
+    if let Some(scheme_sep) = without_query.find("://") {
+        let after_scheme = &without_query[scheme_sep + 3..];
+        if let Some(path_pos) = after_scheme.find('/') {
+            return after_scheme[path_pos..].to_string();
+        }
+        return "/".to_string();
+    }
+    without_query.to_string()
+}
+
+fn is_safe_announcement_url_path(url_path: &str) -> bool {
+    let Some(rest) = url_path.strip_prefix("/audio/announcements/") else {
+        return false;
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    !rest.contains('/')
+        && rest != "."
+        && rest != ".."
+        && !rest.contains('%')
+        && !rest.contains('\\')
+}
+
+fn announcement_cache_local_path(audio_dir: &Path, url_path: &str) -> PathBuf {
+    let filename = url_path
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or("invalid.wav");
+    audio_dir.join(filename)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AnnouncementsResponse, CallActionsResponse, NumberGroupsResponse};
+    use super::{
+        extract_url_path, is_safe_announcement_url_path, AnnouncementsResponse,
+        CallActionsResponse, NumberGroupsResponse,
+    };
 
     #[test]
     fn number_groups_response_accepts_camel_case_fields() {
@@ -279,9 +556,23 @@ mod tests {
 
     #[test]
     fn announcements_response_accepts_announcement_list() {
-        let raw = r#"{"ok":true,"announcements":[{"id":"11111111-1111-4111-8111-111111111111","name":"greeting","announcementType":"custom","isActive":true,"audioFileUrl":"/audio/announcements/a.wav"}]}"#;
+        let raw = r#"{"ok":true,"announcements":[{"id":"11111111-1111-4111-8111-111111111111","name":"greeting","announcementType":"custom","isActive":true,"audioFileUrl":"/audio/announcements/a.wav","updatedAt":"2026-02-24T12:34:56.000Z"}]}"#;
         let parsed: AnnouncementsResponse = serde_json::from_str(raw).expect("valid response");
         assert!(parsed.ok);
         assert_eq!(parsed.announcements.len(), 1);
+        assert!(parsed.announcements[0].updated_at.is_some());
+    }
+
+    #[test]
+    fn extract_url_path_strips_query_and_fragment() {
+        let path = extract_url_path("http://localhost:3000/audio/announcements/a.wav?v=2#section");
+        assert_eq!(path, "/audio/announcements/a.wav");
+    }
+
+    #[test]
+    fn safe_announcement_url_path_rejects_subdirectories() {
+        assert!(!is_safe_announcement_url_path(
+            "/audio/announcements/morning/greeting.wav"
+        ));
     }
 }

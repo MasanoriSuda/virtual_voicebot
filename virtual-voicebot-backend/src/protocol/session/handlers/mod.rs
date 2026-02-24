@@ -1706,7 +1706,6 @@ mod tests {
             transfer_after_answer_pending: false,
             announcement_id: None,
             announcement_audio_file_url: None,
-            audio_tmp_files: Vec::new(),
             ivr_flow_id: None,
             ivr_menu_audio_file_url: None,
             ivr_keypad_node_id: None,

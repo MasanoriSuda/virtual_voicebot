@@ -527,12 +527,22 @@ impl SyncConfig {
 #[derive(Clone, Debug)]
 pub struct AnnouncementConfig {
     pub frontend_base_url: Option<String>,
+    pub audio_dir: String,
 }
 
 impl AnnouncementConfig {
     fn from_env() -> Self {
+        let audio_dir = env_non_empty("ANNOUNCEMENT_AUDIO_DIR")
+            .unwrap_or_else(|| "data/announcements".to_string());
+        if !std::path::Path::new(&audio_dir).is_absolute() {
+            log::info!(
+                "[config] ANNOUNCEMENT_AUDIO_DIR is a relative path: '{}' (resolved against CWD)",
+                audio_dir
+            );
+        }
         Self {
             frontend_base_url: env_non_empty("FRONTEND_BASE_URL"),
+            audio_dir,
         }
     }
 }
