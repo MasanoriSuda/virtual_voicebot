@@ -242,6 +242,15 @@ vi .env.systemd  # 実際の値を設定
 # @@OS_USER@@ に設定する非 root OS ユーザーを決定する
 # 選択肢A: ターゲットマシンの既存ログインユーザーをそのまま使用
 OS_USER=$(whoami)
+# root セッションで実行した場合は User=root になり非 root 要件を違反するため中断する
+if [ "${OS_USER}" = "root" ]; then
+  echo "ERROR: OS_USER=root は使用できません。非 root ユーザーで再実行してください。" >&2
+  echo "       専用ユーザーを使う場合は以下を実行してから OS_USER を設定してください:" >&2
+  echo "         sudo useradd -r -s /sbin/nologin voicebot" >&2
+  echo "         sudo chown -R voicebot:voicebot \${INSTALL_DIR}" >&2
+  echo "         OS_USER=voicebot" >&2
+  exit 1
+fi
 # 選択肢B: 専用サービスユーザーを作成（最小権限の原則を徹底したい場合に推奨）
 # sudo useradd -r -s /sbin/nologin voicebot
 # sudo chown -R voicebot:voicebot ${INSTALL_DIR}
@@ -340,3 +349,4 @@ sudo systemctl stop virtual-voicebot-backend
 | 2026-02-24 | §5.1 OS ユーザー決定行追加、§5.2 `User=`/`Group=` ディレクティブ追加（`@@OS_USER@@` プレースホルダー）、§5.4 `@@OS_USER@@` 置換手順・専用ユーザー作成コメント追加（CodeRabbit 指摘対応） | Claude Sonnet 4.6 |
 | 2026-02-24 | §5.1 OS 実行ユーザー記述を `@@OS_USER@@` 中立化（PoC/msuda 固定表現を削除）、§5.2 テンプレートコメントを実ファイルと統一、§5.4 「PoC/本番」フレーミングを「選択肢A/B」に変更（Codex が unit ファイルを `@@OS_USER@@` プレースホルダー化したことを受けて反映） | Claude Sonnet 4.6 |
 | 2026-02-24 | §5.4 `cp .env.systemd.example .env.systemd` 直後に `chmod 600 .env.systemd` を必須手順として追加（`cp` は umask 022 を引き継ぎ world-readable になるため、`REGISTER_AUTH_PASSWORD`/`DATABASE_URL`/`OPENAI_API_KEY` 等の機密情報が露出する問題に対処） | Claude Sonnet 4.6 |
+| 2026-02-24 | §5.4 `OS_USER=$(whoami)` 直後に root 検出ガードを追加（root セッション実行時に `User=root` が unit ファイルへ埋め込まれ非 root 要件を違反する問題に対処。`exit 1` で中断し専用ユーザー作成コマンドをエラー出力に表示） | Claude Sonnet 4.6 |
