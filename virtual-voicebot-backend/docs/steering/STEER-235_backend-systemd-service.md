@@ -233,6 +233,10 @@ cargo build --release
 
 # EnvironmentFile の準備
 cp .env.systemd.example .env.systemd
+# cp は umask（通常 022）を引き継ぐため生成直後は 644（world-readable）になる。
+# REGISTER_AUTH_PASSWORD / DATABASE_URL / OPENAI_API_KEY 等の機密情報を保護するため
+# 必ず以下の chmod を実行すること（owner のみ読み書き可能に制限）。
+chmod 600 .env.systemd
 vi .env.systemd  # 実際の値を設定
 
 # @@OS_USER@@ に設定する非 root OS ユーザーを決定する
@@ -335,3 +339,4 @@ sudo systemctl stop virtual-voicebot-backend
 | 2026-02-24 | §1 ステータス Draft → Approved、§3.4 承認者記録 | @MasanoriSuda |
 | 2026-02-24 | §5.1 OS ユーザー決定行追加、§5.2 `User=`/`Group=` ディレクティブ追加（`@@OS_USER@@` プレースホルダー）、§5.4 `@@OS_USER@@` 置換手順・専用ユーザー作成コメント追加（CodeRabbit 指摘対応） | Claude Sonnet 4.6 |
 | 2026-02-24 | §5.1 OS 実行ユーザー記述を `@@OS_USER@@` 中立化（PoC/msuda 固定表現を削除）、§5.2 テンプレートコメントを実ファイルと統一、§5.4 「PoC/本番」フレーミングを「選択肢A/B」に変更（Codex が unit ファイルを `@@OS_USER@@` プレースホルダー化したことを受けて反映） | Claude Sonnet 4.6 |
+| 2026-02-24 | §5.4 `cp .env.systemd.example .env.systemd` 直後に `chmod 600 .env.systemd` を必須手順として追加（`cp` は umask 022 を引き継ぎ world-readable になるため、`REGISTER_AUTH_PASSWORD`/`DATABASE_URL`/`OPENAI_API_KEY` 等の機密情報が露出する問題に対処） | Claude Sonnet 4.6 |
