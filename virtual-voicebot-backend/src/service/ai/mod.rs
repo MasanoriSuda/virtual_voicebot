@@ -5,7 +5,7 @@
 
 use anyhow::{anyhow, Result};
 use log::info;
-use reqwest::{multipart, Client};
+use reqwest::{multipart, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -122,6 +122,130 @@ pub mod weather;
 
 fn http_client(timeout: Duration) -> Result<Client> {
     Ok(Client::builder().timeout(timeout).build()?)
+}
+
+const LOCAL_SERVICE_PROBE_TIMEOUT_MS: u64 = 2_000;
+
+#[derive(Serialize)]
+pub struct LocalServicesStatusResponse {
+    ok: bool,
+    #[serde(rename = "localServices")]
+    local_services: LocalServicesMap,
+}
+
+#[derive(Serialize)]
+struct LocalServicesMap {
+    asr: LocalServiceEntry,
+    llm: LocalServiceEntry,
+    tts: LocalServiceEntry,
+}
+
+#[derive(Serialize)]
+struct LocalServiceEntry {
+    status: &'static str,
+    #[serde(rename = "displayUrl")]
+    display_url: Option<String>,
+}
+
+pub async fn probe_local_services_status(
+    ai_cfg: &config::AiConfig,
+) -> Result<LocalServicesStatusResponse> {
+    let client = Client::builder()
+        .timeout(Duration::from_millis(LOCAL_SERVICE_PROBE_TIMEOUT_MS))
+        .build()?;
+
+    let asr_base = extract_base_url(&ai_cfg.asr_local_server_url);
+    let llm_base = extract_base_url(&ai_cfg.llm_local_server_url);
+    let tts_base = ai_cfg
+        .tts_local_server_base_url
+        .trim_end_matches('/')
+        .to_string();
+
+    let (asr, llm, tts) = tokio::join!(
+        probe_service_entry(
+            client.clone(),
+            ai_cfg.asr_local_server_enabled,
+            asr_base,
+            "/healthz",
+        ),
+        probe_service_entry(
+            client.clone(),
+            ai_cfg.llm_local_server_enabled,
+            llm_base,
+            "/api/tags",
+        ),
+        probe_service_entry(
+            client,
+            ai_cfg.tts_local_server_enabled,
+            tts_base,
+            "/speakers",
+        ),
+    );
+
+    Ok(LocalServicesStatusResponse {
+        ok: true,
+        local_services: LocalServicesMap { asr, llm, tts },
+    })
+}
+
+fn disabled_local_service_entry() -> LocalServiceEntry {
+    LocalServiceEntry {
+        status: "disabled",
+        display_url: None,
+    }
+}
+
+async fn probe_service_entry(
+    client: Client,
+    enabled: bool,
+    base_url: String,
+    probe_path: &str,
+) -> LocalServiceEntry {
+    if !enabled {
+        return disabled_local_service_entry();
+    }
+
+    let probe_url = join_url_path(&base_url, probe_path);
+    let status = if probe_once(&client, &probe_url).await {
+        "ok"
+    } else {
+        "error"
+    };
+
+    LocalServiceEntry {
+        status,
+        display_url: Some(base_url),
+    }
+}
+
+async fn probe_once(client: &Client, url: &str) -> bool {
+    match client.get(url).send().await {
+        Ok(response) => response.status() == StatusCode::OK,
+        Err(_) => false,
+    }
+}
+
+fn extract_base_url(url: &str) -> String {
+    let url = url.trim_end_matches('/');
+    if let Some(after_scheme) = url.strip_prefix("https://") {
+        let host_part = after_scheme.split('/').next().unwrap_or(after_scheme);
+        return format!("https://{host_part}");
+    }
+    if let Some(after_scheme) = url.strip_prefix("http://") {
+        let host_part = after_scheme.split('/').next().unwrap_or(after_scheme);
+        return format!("http://{host_part}");
+    }
+
+    // AiConfig の URL は通常スキーム付き想定だが、防御的に path を除去して返す。
+    url.split('/').next().unwrap_or(url).to_string()
+}
+
+fn join_url_path(base_url: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
 }
 
 const OPENAI_ASR_MODEL: &str = "gpt-4o-mini-transcribe";
@@ -1716,10 +1840,10 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::{
-        call_ollama_for_weather, call_openai_chat_for_stage, call_openai_intent,
-        openai_endpoint_url, synth_openai_tts_for_stage, transcribe_with_openai_for_stage,
-        tts_endpoint_url, validate_openai_tts_wav_bytes, wrap_openai_tts_pcm_as_wav, ChatMessage,
-        Role,
+        call_ollama_for_weather, call_openai_chat_for_stage, call_openai_intent, extract_base_url,
+        openai_endpoint_url, probe_once, synth_openai_tts_for_stage,
+        transcribe_with_openai_for_stage, tts_endpoint_url, validate_openai_tts_wav_bytes,
+        wrap_openai_tts_pcm_as_wav, ChatMessage, Role,
     };
 
     async fn read_http_request(
@@ -1855,6 +1979,80 @@ mod tests {
             openai_endpoint_url("https://proxy.example/v1", "audio/speech"),
             "https://proxy.example/v1/audio/speech"
         );
+    }
+
+    #[test]
+    fn extract_base_url_strips_path() {
+        assert_eq!(
+            extract_base_url("http://whisper:9000/transcribe"),
+            "http://whisper:9000"
+        );
+        assert_eq!(
+            extract_base_url("https://ollama.local:11434/api/chat"),
+            "https://ollama.local:11434"
+        );
+    }
+
+    #[test]
+    fn extract_base_url_handles_existing_base() {
+        assert_eq!(
+            extract_base_url("http://voicevox:50021"),
+            "http://voicevox:50021"
+        );
+        assert_eq!(
+            extract_base_url("http://voicevox:50021/"),
+            "http://voicevox:50021"
+        );
+    }
+
+    #[test]
+    fn extract_base_url_defensively_strips_path_without_scheme() {
+        assert_eq!(
+            extract_base_url("example.com:8080/path/to/probe"),
+            "example.com:8080"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_once_returns_true_for_http_200() {
+        let url = spawn_status_server(200, "OK").await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .expect("client");
+
+        assert!(probe_once(&client, &url).await);
+    }
+
+    #[tokio::test]
+    async fn probe_once_returns_false_for_non_200() {
+        let url = spawn_status_server(204, "No Content").await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .expect("client");
+
+        assert!(!probe_once(&client, &url).await);
+    }
+
+    async fn spawn_status_server(status: u16, reason: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+
+        format!("http://{addr}/probe")
     }
 
     #[tokio::test]
