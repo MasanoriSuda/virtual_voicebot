@@ -10,6 +10,9 @@ app = FastAPI()
 
 MAX_UPLOAD_SIZE = int(os.environ.get("ASR_MAX_UPLOAD_SIZE_BYTES", str(25 * 1024 * 1024)))
 UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
+ASR_INFERENCE_CONCURRENCY = int(os.environ.get("ASR_INFERENCE_CONCURRENCY", "1"))
+ASR_INFERENCE_TIMEOUT_SECONDS = float(os.environ.get("ASR_INFERENCE_TIMEOUT_SECONDS", "120"))
+ASR_INFERENCE_SEMAPHORE = asyncio.Semaphore(max(1, ASR_INFERENCE_CONCURRENCY))
 
 ASR_OUTPUT_SCRIPT = os.environ.get("ASR_OUTPUT_SCRIPT", "hiragana").lower()
 KANA_CONVERTER = None
@@ -152,7 +155,17 @@ async def transcribe(file: UploadFile = File(...)):
                 tmp.write(chunk)
 
         # ASR 文字起こし（CPU/GPU-bound のため event loop 外で実行）
-        text = apply_output_script(await asyncio.to_thread(transcribe_audio, tmp_path))
+        # グローバルモデルへの同時アクセスを抑制し、推論ハングを timeout で遮断する。
+        try:
+            async with ASR_INFERENCE_SEMAPHORE:
+                raw_text = await asyncio.wait_for(
+                    asyncio.to_thread(transcribe_audio, tmp_path),
+                    timeout=ASR_INFERENCE_TIMEOUT_SECONDS,
+                )
+        except asyncio.TimeoutError as e:
+            raise HTTPException(status_code=504, detail="ASR inference timeout") from e
+
+        text = apply_output_script(raw_text)
         return {"text": text}
     finally:
         await file.close()

@@ -2055,9 +2055,9 @@ mod tests {
 
     use super::{
         call_ollama_for_weather, call_openai_chat_for_stage, call_openai_intent, extract_base_url,
-        openai_endpoint_url, probe_once, sanitized_display_url, synth_openai_tts_for_stage,
-        transcribe_with_openai_for_stage, tts_endpoint_url, validate_openai_tts_wav_bytes,
-        wrap_openai_tts_pcm_as_wav, ChatMessage, Role,
+        openai_endpoint_url, parse_ollama_stream_line, probe_once, sanitized_display_url,
+        synth_openai_tts_for_stage, transcribe_with_openai_for_stage, tts_endpoint_url,
+        validate_openai_tts_wav_bytes, wrap_openai_tts_pcm_as_wav, ChatMessage, LlmError, Role,
     };
 
     async fn read_http_request(
@@ -2124,6 +2124,53 @@ mod tests {
             tts_endpoint_url("http://localhost:50021", "synthesis"),
             "http://localhost:50021/synthesis"
         );
+    }
+
+    #[test]
+    fn parse_ollama_stream_line_emits_normal_token() {
+        let line = br#"{"message":{"role":"assistant","content":"hello"},"done":false}"#;
+
+        let parsed = parse_ollama_stream_line(line).expect("parse normal stream token");
+
+        assert_eq!(parsed, (Some("hello".to_string()), false));
+    }
+
+    #[test]
+    fn parse_ollama_stream_line_handles_done_chunk() {
+        let line = br#"{"message":{"role":"assistant","content":""},"done":true}"#;
+
+        let parsed = parse_ollama_stream_line(line).expect("parse final done chunk");
+
+        assert_eq!(parsed, (None, true));
+    }
+
+    #[test]
+    fn parse_ollama_stream_line_returns_error_for_ollama_error_payload() {
+        let line = br#"{"error":"model not found","done":true}"#;
+
+        let err = parse_ollama_stream_line(line).expect_err("ollama error payload should fail");
+
+        match err {
+            LlmError::GenerationFailed(msg) => {
+                assert!(msg.contains("Ollama stream returned error"));
+                assert!(msg.contains("model not found"));
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_ollama_stream_line_returns_error_for_invalid_json() {
+        let line = br#"{"message":{"role":"assistant","content":"x"}"#;
+
+        let err = parse_ollama_stream_line(line).expect_err("invalid ndjson should fail");
+
+        match err {
+            LlmError::GenerationFailed(msg) => {
+                assert!(msg.contains("failed to parse Ollama NDJSON"));
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
     }
 
     #[tokio::test]
