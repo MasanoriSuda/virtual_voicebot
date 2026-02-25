@@ -104,6 +104,8 @@ const APP_HISTORY_MAX_MESSAGES: usize = 20;
 ///     session_tx,
 ///     ai_port,
 ///     None,
+///     None,
+///     None,
 ///     phone_lookup,
 ///     notification_port,
 ///     AppRuntimeConfig::from_env(),
