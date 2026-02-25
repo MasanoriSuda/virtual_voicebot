@@ -1,8 +1,6 @@
-use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio_stream::Stream;
 
 use crate::shared::error::ai::AsrError;
 
@@ -27,8 +25,6 @@ pub enum AsrStreamEvent {
     Partial(String),
     Final(String),
 }
-
-pub type AsrStream = Pin<Box<dyn Stream<Item = Result<AsrStreamEvent, AsrError>> + Send>>;
 
 #[derive(Clone)]
 pub struct AsrAudioTx {

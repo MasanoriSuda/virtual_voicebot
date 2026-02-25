@@ -260,6 +260,11 @@ async def transcribe_stream(websocket: WebSocket):
                 await websocket.send_json({"type": "partial", "text": ""})
                 sent_first_partial = True
 
+            if not pcm_mulaw:
+                await websocket.send_json({"type": "final", "text": ""})
+                await websocket.close()
+                return
+
             tmp_path = None
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -269,7 +274,7 @@ async def transcribe_stream(websocket: WebSocket):
                 await websocket.send_json({"type": "final", "text": text})
             except HTTPException as e:
                 await websocket.send_json({"type": "error", "error": str(e.detail)})
-            except Exception as e:
+            except Exception:
                 logger.exception("transcribe_stream internal error")
                 await websocket.send_json(
                     {"type": "error", "error": "internal server error"}

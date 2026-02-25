@@ -10,7 +10,7 @@ pub mod types;
 pub mod weather;
 
 pub use asr::{
-    asr_audio_channel, AsrAudioMsg, AsrAudioRx, AsrAudioTx, AsrPort, AsrStream, AsrStreamEvent,
+    asr_audio_channel, AsrAudioMsg, AsrAudioRx, AsrAudioTx, AsrPort, AsrStreamEvent,
     AsrStreamHandle, AsrStreamPort,
 };
 pub use intent::IntentPort;

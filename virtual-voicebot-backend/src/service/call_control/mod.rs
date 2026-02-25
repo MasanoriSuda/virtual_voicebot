@@ -113,6 +113,7 @@ const APP_HISTORY_MAX_MESSAGES: usize = 20;
 ///     caller: None,
 /// });
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_app_worker(
     call_id: CallId,
     session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
