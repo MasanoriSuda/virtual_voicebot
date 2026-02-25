@@ -1183,7 +1183,9 @@ fn spawn_ollama_stream_parser(resp: reqwest::Response) -> LlmStream {
     tokio::spawn(async move {
         let mut bytes_stream = resp.bytes_stream();
         let mut buf = Vec::<u8>::new();
-        // Parser task leak防止用の read timeout。呼び出し側の first-token/chunk-idle timeout より緩くはしない。
+        // Parser task leak防止用の read timeout。
+        // 上位の厳密なタイムアウト制御（first-token / chunk-idle / total）は consumer 側で行う。
+        // ここで短すぎる値を使うと first-token timeout を実質的に短縮してしまうため、より緩い方を使う。
         let read_timeout =
             config::llm_streaming_first_token_timeout().max(config::sentence_max_wait());
 

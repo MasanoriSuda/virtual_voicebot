@@ -1,10 +1,15 @@
-from fastapi import FastAPI, UploadFile, File
+import asyncio
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
 import uvicorn
 import tempfile
 import os
 import torch
 
 app = FastAPI()
+
+MAX_UPLOAD_SIZE = int(os.environ.get("ASR_MAX_UPLOAD_SIZE_BYTES", str(25 * 1024 * 1024)))
+UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
 
 ASR_OUTPUT_SCRIPT = os.environ.get("ASR_OUTPUT_SCRIPT", "hiragana").lower()
 KANA_CONVERTER = None
@@ -121,16 +126,41 @@ async def healthz():
 
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
-    # 一時ファイルに保存
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-        data = await file.read()
-        tmp.write(data)
-        tmp_path = tmp.name
+    tmp_path = None
+    try:
+        content_type = (file.content_type or "").lower()
+        if not (content_type.startswith("audio/") or content_type == "application/octet-stream"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"unsupported content_type: {file.content_type}",
+            )
 
-    # ASR 文字起こし
-    text = apply_output_script(transcribe_audio(tmp_path))
+        # 一時ファイルに保存
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp_path = tmp.name
+            total_size = 0
+            while True:
+                chunk = await file.read(UPLOAD_READ_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > MAX_UPLOAD_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"upload too large: max={MAX_UPLOAD_SIZE} bytes",
+                    )
+                tmp.write(chunk)
 
-    return {"text": text}
+        # ASR 文字起こし（CPU/GPU-bound のため event loop 外で実行）
+        text = apply_output_script(await asyncio.to_thread(transcribe_audio, tmp_path))
+        return {"text": text}
+    finally:
+        await file.close()
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=9010)
