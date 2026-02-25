@@ -585,6 +585,14 @@ impl SessionCoordinator {
                     );
                 }
             }
+            (SessState::Established, SessionControlIn::AppBotAudioFileEnqueue { path }) => {
+                if let Err(e) = self.enqueue_playback(&path).await {
+                    warn!(
+                        "[session {}] failed to enqueue app audio: {:?}",
+                        self.call_id, e
+                    );
+                }
+            }
             (_, SessionControlIn::AppHangup) => {
                 warn!("[session {}] app requested hangup", self.call_id);
                 self.stop_ring_delay();
@@ -1683,6 +1691,7 @@ mod tests {
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             playback: None,
+            playback_queue: std::collections::VecDeque::new(),
             speaking: false,
             capture: AudioCapture::new(runtime_cfg.vad.clone()),
             intro_sent: false,

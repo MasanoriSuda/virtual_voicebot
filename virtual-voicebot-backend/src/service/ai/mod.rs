@@ -12,7 +12,10 @@ use std::fs;
 use std::future::Future;
 use std::io::Cursor;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
 
 use aws_config::meta::region::RegionProviderChain;
 use aws_config::{BehaviorVersion, SdkConfig};
@@ -23,8 +26,8 @@ use aws_sdk_transcribe as transcribe;
 use crate::shared::config;
 use crate::shared::error::ai::{AsrError, IntentError, LlmError, TtsError, WeatherError};
 use crate::shared::ports::ai::{
-    AiFuture, AsrChunk, AsrPort, ChatMessage, IntentPort, LlmPort, Role, SerInputPcm, SerOutcome,
-    SerPort, TtsPort, WeatherPort, WeatherQuery,
+    AiFuture, AsrChunk, AsrPort, ChatMessage, IntentPort, LlmPort, LlmStream, LlmStreamPort, Role,
+    SerInputPcm, SerOutcome, SerPort, TtsPort, WeatherPort, WeatherQuery,
 };
 use crate::shared::utils::mask_pii;
 
@@ -33,6 +36,13 @@ struct OllamaChatRequest {
     model: String,
     messages: Vec<OllamaMessage>,
     stream: bool,
+}
+
+#[derive(Deserialize)]
+struct OllamaChatStreamResponse {
+    message: Option<OllamaMessage>,
+    done: Option<bool>,
+    error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -122,6 +132,10 @@ pub mod weather;
 
 fn http_client(timeout: Duration) -> Result<Client> {
     Ok(Client::builder().timeout(timeout).build()?)
+}
+
+fn http_client_for_stream(connect_timeout: Duration) -> Result<Client> {
+    Ok(Client::builder().connect_timeout(connect_timeout).build()?)
 }
 
 const LOCAL_SERVICE_PROBE_TIMEOUT_MS: u64 = 2_000;
@@ -1141,6 +1155,141 @@ async fn call_ollama_for_stage(
         .await
 }
 
+const OLLAMA_STREAM_CHANNEL_CAPACITY: usize = 32;
+
+fn parse_ollama_stream_line(line: &[u8]) -> std::result::Result<(Option<String>, bool), LlmError> {
+    let parsed: OllamaChatStreamResponse = serde_json::from_slice(line)
+        .map_err(|e| LlmError::GenerationFailed(format!("failed to parse Ollama NDJSON: {e}")))?;
+    if let Some(err) = parsed.error {
+        return Err(LlmError::GenerationFailed(format!(
+            "Ollama stream returned error: {err}"
+        )));
+    }
+
+    let token = parsed.message.and_then(|m| {
+        if m.content.is_empty() {
+            None
+        } else {
+            Some(m.content)
+        }
+    });
+    let done = parsed.done.unwrap_or(false);
+    Ok((token, done))
+}
+
+fn spawn_ollama_stream_parser(resp: reqwest::Response) -> LlmStream {
+    let (tx, rx) = mpsc::channel::<Result<String, LlmError>>(OLLAMA_STREAM_CHANNEL_CAPACITY);
+    tokio::spawn(async move {
+        let mut bytes_stream = resp.bytes_stream();
+        let mut buf = Vec::<u8>::new();
+
+        loop {
+            let Some(item) = bytes_stream.next().await else {
+                break;
+            };
+            let chunk = match item {
+                Ok(chunk) => chunk,
+                Err(e) => {
+                    let _ = tx
+                        .send(Err(LlmError::GenerationFailed(e.to_string())))
+                        .await;
+                    return;
+                }
+            };
+            buf.extend_from_slice(&chunk);
+
+            while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+                let line = buf.drain(..=pos).collect::<Vec<u8>>();
+                let line = line.trim_ascii();
+                if line.is_empty() {
+                    continue;
+                }
+                match parse_ollama_stream_line(line) {
+                    Ok((token, done)) => {
+                        if let Some(token) = token {
+                            if tx.send(Ok(token)).await.is_err() {
+                                return;
+                            }
+                        }
+                        if done {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        return;
+                    }
+                }
+            }
+        }
+
+        let tail = buf.trim_ascii();
+        if tail.is_empty() {
+            return;
+        }
+        match parse_ollama_stream_line(tail) {
+            Ok((token, _done)) => {
+                if let Some(token) = token {
+                    let _ = tx.send(Ok(token)).await;
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(Err(e)).await;
+            }
+        }
+    });
+    Box::pin(ReceiverStream::new(rx))
+}
+
+pub(super) async fn call_ollama_for_chat_stream(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    model: &str,
+    endpoint_url: &str,
+    connect_timeout: Duration,
+    response_header_timeout: Duration,
+) -> std::result::Result<LlmStream, LlmError> {
+    let client = http_client_for_stream(connect_timeout)
+        .map_err(|e| LlmError::GenerationFailed(e.to_string()))?;
+
+    let mut ollama_messages = Vec::with_capacity(messages.len() + 1);
+    ollama_messages.push(OllamaMessage {
+        role: "system".to_string(),
+        content: system_prompt.to_string(),
+    });
+    for msg in messages {
+        let role = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        };
+        ollama_messages.push(OllamaMessage {
+            role: role.to_string(),
+            content: msg.content.clone(),
+        });
+    }
+
+    let req = OllamaChatRequest {
+        model: model.to_string(),
+        messages: ollama_messages,
+        stream: true,
+    };
+
+    let send_fut = client.post(endpoint_url).json(&req).send();
+    let resp = timeout(response_header_timeout, send_fut)
+        .await
+        .map_err(|_| LlmError::Timeout("response header timeout".into()))?
+        .map_err(|e| LlmError::GenerationFailed(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        return Err(LlmError::GenerationFailed(format!(
+            "Ollama HTTP error {}",
+            resp.status()
+        )));
+    }
+
+    Ok(spawn_ollama_stream_parser(resp))
+}
+
 pub(crate) async fn call_ollama_for_intent_stage(
     messages: &[ChatMessage],
     system_prompt: &str,
@@ -1406,6 +1555,16 @@ impl LlmPort for DefaultAiPort {
                 .await
                 .map_err(|e| LlmError::GenerationFailed(e.to_string()))
         })
+    }
+}
+
+impl LlmStreamPort for DefaultAiPort {
+    fn generate_answer_stream(
+        &self,
+        call_id: String,
+        messages: Vec<ChatMessage>,
+    ) -> AiFuture<Result<LlmStream, LlmError>> {
+        Box::pin(async move { llm::generate_answer_stream(&call_id, messages).await })
     }
 }
 

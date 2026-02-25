@@ -87,6 +87,10 @@ pub enum SessionControlIn {
     AppBotAudioFile {
         path: String,
     },
+    /// app から返ってきたボット応答音声（WAVファイルパス、enqueue 再生）
+    AppBotAudioFileEnqueue {
+        path: String,
+    },
     /// app からの終了指示
     AppHangup,
     /// app からの転送指示
@@ -218,6 +222,10 @@ pub enum SessionOut {
     AppSessionTimeout,
     /// app が生成したボット音声（WAVパス）を session へ戻す
     AppSendBotAudioFile {
+        path: String,
+    },
+    /// app が生成したボット音声（WAVパス）を session へ戻す（enqueue 再生）
+    AppEnqueueBotAudioFile {
         path: String,
     },
     /// app からの切断指示

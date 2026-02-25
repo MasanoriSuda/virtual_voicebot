@@ -241,6 +241,11 @@ async fn main() -> anyhow::Result<()> {
                                 call_id.clone(),
                                 session_out_tx.clone(),
                                 ai_port.clone(),
+                                if config::voicebot_streaming_enabled() {
+                                    Some(ai_port.clone())
+                                } else {
+                                    None
+                                },
                                 phone_lookup.clone(),
                                 notification_port.clone(),
                                 app_cfg.clone(),
@@ -428,6 +433,14 @@ async fn main() -> anyhow::Result<()> {
                             let _ = sess_tx
                                 .control_tx
                                 .send(SessionControlIn::AppBotAudioFile { path })
+                                .await;
+                        }
+                    }
+                    SessionOut::AppEnqueueBotAudioFile { path } => {
+                        if let Some(sess_tx) = session_registry.get(&call_id).await {
+                            let _ = sess_tx
+                                .control_tx
+                                .send(SessionControlIn::AppBotAudioFileEnqueue { path })
                                 .await;
                         }
                     }

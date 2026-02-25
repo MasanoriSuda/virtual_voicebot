@@ -4,19 +4,22 @@
 //! transport/sip/rtp には依存せず、SessionOut 経由のイベントのみを返す。
 
 mod router;
+mod sentence_accumulator;
 
 use std::sync::Arc;
-
 use tokio::sync::mpsc;
+use tokio::time::{sleep, timeout};
+use tokio_stream::StreamExt;
 
 use crate::protocol::session::types::CallId;
 use crate::protocol::session::SessionOut;
 use crate::service::call_control::router::{
     parse_intent_json, router_config, system_info_response, RouteAction, Router,
 };
-use crate::shared::config::AppRuntimeConfig;
+use crate::service::call_control::sentence_accumulator::SentenceAccumulator;
+use crate::shared::config::{self, AppRuntimeConfig};
 use crate::shared::ports::ai::{
-    AiServices, AsrChunk, ChatMessage, Role, SerInputPcm, WeatherQuery,
+    AiServices, AsrChunk, ChatMessage, LlmStreamPort, Role, SerInputPcm, WeatherQuery,
 };
 use crate::shared::ports::notification::{
     NotificationFuture, NotificationService as NotificationPort,
@@ -97,6 +100,7 @@ const APP_HISTORY_MAX_MESSAGES: usize = 20;
 ///     CallId::new("call-123").unwrap(),
 ///     session_tx,
 ///     ai_port,
+///     None,
 ///     phone_lookup,
 ///     notification_port,
 ///     AppRuntimeConfig::from_env(),
@@ -110,6 +114,7 @@ pub fn spawn_app_worker(
     call_id: CallId,
     session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
     ai_port: Arc<dyn AiServices>,
+    llm_stream_port: Option<Arc<dyn LlmStreamPort>>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
     notification_port: Arc<dyn NotificationPort>,
     app_cfg: AppRuntimeConfig,
@@ -120,6 +125,7 @@ pub fn spawn_app_worker(
         session_out_tx,
         rx,
         ai_port,
+        llm_stream_port,
         phone_lookup,
         notification_port,
         app_cfg,
@@ -135,6 +141,7 @@ struct AppWorker {
     active: bool,
     history: Vec<ChatMessage>,
     ai_port: Arc<dyn AiServices>,
+    llm_stream_port: Option<Arc<dyn LlmStreamPort>>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
     router: Router,
     notification_port: Arc<dyn NotificationPort>,
@@ -204,6 +211,7 @@ impl AppWorker {
         session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
         rx: AppEventRx,
         ai_port: Arc<dyn AiServices>,
+        llm_stream_port: Option<Arc<dyn LlmStreamPort>>,
         phone_lookup: Arc<dyn PhoneLookupPort>,
         notification_port: Arc<dyn NotificationPort>,
         app_cfg: AppRuntimeConfig,
@@ -215,6 +223,7 @@ impl AppWorker {
             active: false,
             history: Vec::new(),
             ai_port,
+            llm_stream_port,
             phone_lookup,
             router: Router::new(),
             notification_port,
@@ -482,19 +491,14 @@ impl AppWorker {
                     role: Role::User,
                     content: query.clone(),
                 });
-
-                let answer_text = match self
-                    .ai_port
-                    .generate_answer(call_id.to_string(), messages)
-                    .await
-                {
-                    Ok(ans) => ans,
-                    Err(e) => {
-                        log::warn!("[app {call_id}] LLM failed: {e:?}");
-                        "すみません、うまく答えを用意できませんでした。".to_string()
-                    }
-                };
-                (answer_text, query)
+                if config::voicebot_streaming_enabled() && self.llm_stream_port.is_some() {
+                    return self
+                        .handle_user_text_streaming(call_id, query, messages)
+                        .await;
+                }
+                return self
+                    .handle_user_text_sequential(call_id, query, messages)
+                    .await;
             }
             RouteAction::Weather {
                 query,
@@ -570,19 +574,7 @@ impl AppWorker {
             }
         };
 
-        // 履歴に追加
-        self.history.push(ChatMessage {
-            role: Role::User,
-            content: user_query,
-        });
-        self.history.push(ChatMessage {
-            role: Role::Assistant,
-            content: answer_text.clone(),
-        });
-        if self.history.len() > APP_HISTORY_MAX_MESSAGES {
-            let excess = self.history.len() - APP_HISTORY_MAX_MESSAGES;
-            self.history.drain(0..excess);
-        }
+        self.push_history(user_query, answer_text.clone());
 
         // TTS
         match self
@@ -604,6 +596,217 @@ impl AppWorker {
             Err(e) => {
                 log::warn!("[app {call_id}] TTS failed: {e:?}");
             }
+        }
+        Ok(())
+    }
+
+    fn push_history(&mut self, user_query: String, answer_text: String) {
+        self.history.push(ChatMessage {
+            role: Role::User,
+            content: user_query,
+        });
+        self.history.push(ChatMessage {
+            role: Role::Assistant,
+            content: answer_text,
+        });
+        if self.history.len() > APP_HISTORY_MAX_MESSAGES {
+            let excess = self.history.len() - APP_HISTORY_MAX_MESSAGES;
+            self.history.drain(0..excess);
+        }
+    }
+
+    async fn handle_user_text_sequential(
+        &mut self,
+        call_id: &CallId,
+        user_query: String,
+        messages: Vec<ChatMessage>,
+    ) -> anyhow::Result<()> {
+        let answer_text = match self
+            .ai_port
+            .generate_answer(call_id.to_string(), messages)
+            .await
+        {
+            Ok(ans) => ans,
+            Err(e) => {
+                log::warn!("[app {call_id}] LLM failed: {e:?}");
+                "すみません、うまく答えを用意できませんでした。".to_string()
+            }
+        };
+
+        self.push_history(user_query, answer_text.clone());
+
+        match self
+            .ai_port
+            .synth_to_wav(call_id.to_string(), answer_text, None)
+            .await
+        {
+            Ok(bot_wav) => {
+                let _ = self
+                    .session_out_tx
+                    .send((
+                        self.call_id.clone(),
+                        SessionOut::AppSendBotAudioFile {
+                            path: bot_wav.to_string_lossy().to_string(),
+                        },
+                    ))
+                    .await;
+            }
+            Err(e) => {
+                log::warn!("[app {call_id}] TTS failed: {e:?}");
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_user_text_streaming(
+        &mut self,
+        call_id: &CallId,
+        user_query: String,
+        messages: Vec<ChatMessage>,
+    ) -> anyhow::Result<()> {
+        let Some(llm_stream_port) = self.llm_stream_port.clone() else {
+            return self
+                .handle_user_text_sequential(call_id, user_query, messages)
+                .await;
+        };
+
+        let stream = match llm_stream_port
+            .generate_answer_stream(call_id.to_string(), messages.clone())
+            .await
+        {
+            Ok(stream) => stream,
+            Err(e) => {
+                log::warn!("[app {call_id}] LLM stream start failed: {e}, fallback to sequential");
+                return self
+                    .handle_user_text_sequential(call_id, user_query, messages)
+                    .await;
+            }
+        };
+
+        let (sentence_tx, mut sentence_rx) =
+            mpsc::channel::<String>(config::sentence_channel_capacity());
+        let first_token_timeout = config::llm_streaming_first_token_timeout();
+        let idle_timeout = config::sentence_max_wait();
+        let total_timeout = config::llm_streaming_total_timeout();
+        let max_chars = config::sentence_max_chars();
+        let call_id_for_consumer = call_id.to_string();
+
+        let consumer = tokio::spawn(async move {
+            tokio::pin!(stream);
+            let mut acc = SentenceAccumulator::new(max_chars);
+            let mut first_token_received = false;
+            let mut full_answer = String::new();
+            let mut sentences_sent = 0usize;
+            let mut had_error = false;
+
+            let timed = timeout(total_timeout, async {
+                loop {
+                    let wait_duration = if first_token_received {
+                        idle_timeout
+                    } else {
+                        first_token_timeout
+                    };
+                    tokio::select! {
+                        item = stream.next() => {
+                            match item {
+                                Some(Ok(token)) => {
+                                    first_token_received = true;
+                                    full_answer.push_str(&token);
+                                    if let Some(sentence) = acc.push(&token) {
+                                        sentences_sent += 1;
+                                        if sentence_tx.send(sentence).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Some(Err(e)) => {
+                                    log::warn!("[app stream] LLM stream error: {e}");
+                                    had_error = true;
+                                    if let Some(tail) = acc.flush() {
+                                        sentences_sent += 1;
+                                        let _ = sentence_tx.send(tail).await;
+                                    }
+                                    break;
+                                }
+                                None => {
+                                    if let Some(tail) = acc.flush() {
+                                        sentences_sent += 1;
+                                        let _ = sentence_tx.send(tail).await;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        _ = sleep(wait_duration) => {
+                            log::warn!(
+                                "[app {}] LLM stream timeout: phase={}",
+                                call_id_for_consumer,
+                                if first_token_received { "chunk-idle" } else { "first-token" }
+                            );
+                            had_error = true;
+                            if let Some(flushed) = acc.flush() {
+                                sentences_sent += 1;
+                                let _ = sentence_tx.send(flushed).await;
+                            }
+                            break;
+                        }
+                    }
+                }
+            })
+            .await;
+
+            if timed.is_err() {
+                log::warn!("[app {}] LLM stream total timeout", call_id_for_consumer);
+                had_error = true;
+                if let Some(flushed) = acc.flush() {
+                    sentences_sent += 1;
+                    let _ = sentence_tx.send(flushed).await;
+                }
+            }
+
+            (full_answer, sentences_sent, had_error)
+        });
+
+        while let Some(sentence) = sentence_rx.recv().await {
+            match self
+                .ai_port
+                .synth_to_wav(call_id.to_string(), sentence, None)
+                .await
+            {
+                Ok(wav_path) => {
+                    let _ = self
+                        .session_out_tx
+                        .send((
+                            self.call_id.clone(),
+                            SessionOut::AppEnqueueBotAudioFile {
+                                path: wav_path.to_string_lossy().to_string(),
+                            },
+                        ))
+                        .await;
+                }
+                Err(e) => {
+                    log::warn!("[app {call_id}] TTS failed: {e:?}");
+                }
+            }
+        }
+
+        let (full_answer, sentences_sent, had_error) = match consumer.await {
+            Ok(result) => result,
+            Err(e) => {
+                log::warn!("[app {call_id}] LLM stream consumer join failed: {e}");
+                (String::new(), 0, true)
+            }
+        };
+
+        if had_error && sentences_sent == 0 {
+            log::warn!("[app {call_id}] streaming failed with 0 sentences, fallback to sequential");
+            return self
+                .handle_user_text_sequential(call_id, user_query, messages)
+                .await;
+        }
+
+        if !full_answer.trim().is_empty() {
+            self.push_history(user_query, full_answer);
         }
         Ok(())
     }

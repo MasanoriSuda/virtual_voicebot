@@ -25,20 +25,9 @@ impl SessionCoordinator {
         };
         self.cancel_playback();
         self.stop_ivr_timeout();
-        let io_timeout = config::timeouts().recording_io;
         let mut frames = Vec::new();
         for path in paths {
-            let storage_port = self.storage_port.clone();
-            let path = (*path).to_string();
-            let load = spawn_blocking(move || storage_port.load_wav_as_pcmu_frames(&path));
-            let mut loaded = match timeout(io_timeout, load).await {
-                Ok(joined) => {
-                    joined.map_err(|e| anyhow!("load_wav_as_pcmu_frames task failed: {}", e))??
-                }
-                Err(_) => {
-                    return Err(anyhow!("load_wav_as_pcmu_frames timed out"));
-                }
-            };
+            let mut loaded = self.load_frames_with_timeout(path).await?;
             frames.append(&mut loaded);
         }
         if frames.is_empty() {
@@ -48,6 +37,19 @@ impl SessionCoordinator {
         self.playback = Some(PlaybackState { frames, index: 0 });
         self.sending_audio = true;
         Ok(())
+    }
+
+    pub(crate) async fn enqueue_playback(&mut self, path: &str) -> Result<(), Error> {
+        if self.playback.is_some() {
+            let frames = self.load_frames_with_timeout(path).await?;
+            if frames.is_empty() {
+                anyhow::bail!("no frames");
+            }
+            self.playback_queue.push_back(frames);
+            return Ok(());
+        }
+
+        self.start_playback(&[path]).await
     }
 
     pub(crate) fn step_playback(&mut self) {
@@ -71,6 +73,15 @@ impl SessionCoordinator {
     }
 
     pub(crate) fn finish_playback(&mut self, restart_ivr_timeout: bool) {
+        if let Some(next_frames) = self.playback_queue.pop_front() {
+            self.align_rtp_clock();
+            self.playback = Some(PlaybackState {
+                frames: next_frames,
+                index: 0,
+            });
+            self.sending_audio = true;
+            return;
+        }
         self.clear_playback_state();
 
         if self.announce_mode {
@@ -117,14 +128,28 @@ impl SessionCoordinator {
     }
 
     pub(crate) fn cancel_playback(&mut self) {
-        if self.playback.is_none() {
+        if self.playback.is_none() && self.playback_queue.is_empty() {
             self.sending_audio = false;
             return;
         }
         info!("[session {}] playback cancelled", self.call_id);
         self.clear_playback_state();
+        self.playback_queue.clear();
         self.announce_mode = false;
         self.recording_notice_pending = false;
+    }
+
+    async fn load_frames_with_timeout(&self, path: &str) -> Result<Vec<Vec<u8>>, Error> {
+        let io_timeout = config::timeouts().recording_io;
+        let storage_port = self.storage_port.clone();
+        let path = path.to_string();
+        let load = spawn_blocking(move || storage_port.load_wav_as_pcmu_frames(&path));
+        match timeout(io_timeout, load).await {
+            Ok(joined) => {
+                Ok(joined.map_err(|e| anyhow!("load_wav_as_pcmu_frames task failed: {}", e))??)
+            }
+            Err(_) => Err(anyhow!("load_wav_as_pcmu_frames timed out")),
+        }
     }
 
     fn clear_playback_state(&mut self) {

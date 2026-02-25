@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 // session.rs
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -102,6 +103,7 @@ pub struct SessionCoordinator {
     timers: SessionTimers,
     sending_audio: bool,
     playback: Option<PlaybackState>,
+    playback_queue: VecDeque<Vec<Vec<u8>>>,
     // バッファ/タイマ
     speaking: bool,
     capture: AudioCapture,
@@ -202,6 +204,7 @@ impl SessionCoordinator {
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             playback: None,
+            playback_queue: VecDeque::new(),
             speaking: false,
             capture: AudioCapture::new(runtime_cfg.vad.clone()),
             intro_sent: false,
@@ -954,6 +957,7 @@ mod tests {
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             playback: None,
+            playback_queue: VecDeque::new(),
             speaking: false,
             capture: AudioCapture::new(runtime_cfg.vad.clone()),
             intro_sent: false,
