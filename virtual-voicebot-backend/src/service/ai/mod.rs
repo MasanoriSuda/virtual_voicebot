@@ -154,30 +154,36 @@ pub async fn probe_local_services_status(
         .timeout(Duration::from_millis(LOCAL_SERVICE_PROBE_TIMEOUT_MS))
         .build()?;
 
-    let asr_base = extract_base_url(&ai_cfg.asr_local_server_url);
-    let llm_base = extract_base_url(&ai_cfg.llm_local_server_url);
-    let tts_base = ai_cfg
+    let asr_probe_base = extract_base_url(&ai_cfg.asr_local_server_url);
+    let asr_display_base = sanitized_display_url(&asr_probe_base);
+    let llm_probe_base = extract_base_url(&ai_cfg.llm_local_server_url);
+    let llm_display_base = sanitized_display_url(&llm_probe_base);
+    let tts_probe_base = ai_cfg
         .tts_local_server_base_url
         .trim_end_matches('/')
         .to_string();
+    let tts_display_base = sanitized_display_url(&tts_probe_base);
 
     let (asr, llm, tts) = tokio::join!(
         probe_service_entry(
             client.clone(),
             ai_cfg.asr_local_server_enabled,
-            asr_base,
+            asr_probe_base,
+            asr_display_base,
             "/healthz",
         ),
         probe_service_entry(
             client.clone(),
             ai_cfg.llm_local_server_enabled,
-            llm_base,
+            llm_probe_base,
+            llm_display_base,
             "/api/tags",
         ),
         probe_service_entry(
             client,
             ai_cfg.tts_local_server_enabled,
-            tts_base,
+            tts_probe_base,
+            tts_display_base,
             "/speakers",
         ),
     );
@@ -198,14 +204,15 @@ fn disabled_local_service_entry() -> LocalServiceEntry {
 async fn probe_service_entry(
     client: Client,
     enabled: bool,
-    base_url: String,
+    probe_base_url: String,
+    display_url: String,
     probe_path: &str,
 ) -> LocalServiceEntry {
     if !enabled {
         return disabled_local_service_entry();
     }
 
-    let probe_url = join_url_path(&base_url, probe_path);
+    let probe_url = join_url_path(&probe_base_url, probe_path);
     let status = if probe_once(&client, &probe_url).await {
         "ok"
     } else {
@@ -214,7 +221,7 @@ async fn probe_service_entry(
 
     LocalServiceEntry {
         status,
-        display_url: Some(base_url),
+        display_url: Some(display_url),
     }
 }
 
@@ -238,6 +245,25 @@ fn extract_base_url(url: &str) -> String {
 
     // AiConfig の URL は通常スキーム付き想定だが、防御的に path を除去して返す。
     url.split('/').next().unwrap_or(url).to_string()
+}
+
+fn sanitized_display_url(base_url: &str) -> String {
+    let base_url = base_url.trim_end_matches('/');
+    if let Ok(mut parsed) = reqwest::Url::parse(base_url) {
+        let _ = parsed.set_username("");
+        let _ = parsed.set_password(None);
+        return parsed.to_string().trim_end_matches('/').to_string();
+    }
+
+    if let Some((scheme, rest)) = base_url.split_once("://") {
+        let host_part = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
+        return format!("{scheme}://{host_part}");
+    }
+
+    base_url
+        .rsplit_once('@')
+        .map_or(base_url, |(_, host)| host)
+        .to_string()
 }
 
 fn join_url_path(base_url: &str, path: &str) -> String {
@@ -1841,7 +1867,7 @@ mod tests {
 
     use super::{
         call_ollama_for_weather, call_openai_chat_for_stage, call_openai_intent, extract_base_url,
-        openai_endpoint_url, probe_once, synth_openai_tts_for_stage,
+        openai_endpoint_url, probe_once, sanitized_display_url, synth_openai_tts_for_stage,
         transcribe_with_openai_for_stage, tts_endpoint_url, validate_openai_tts_wav_bytes,
         wrap_openai_tts_pcm_as_wav, ChatMessage, Role,
     };
@@ -2010,6 +2036,26 @@ mod tests {
         assert_eq!(
             extract_base_url("example.com:8080/path/to/probe"),
             "example.com:8080"
+        );
+    }
+
+    #[test]
+    fn extract_base_url_keeps_userinfo_for_probe_use() {
+        assert_eq!(
+            extract_base_url("http://user:pass@whisper:9000/transcribe"),
+            "http://user:pass@whisper:9000"
+        );
+    }
+
+    #[test]
+    fn sanitized_display_url_strips_userinfo() {
+        assert_eq!(
+            sanitized_display_url("http://user:pass@whisper:9000"),
+            "http://whisper:9000"
+        );
+        assert_eq!(
+            sanitized_display_url("https://user@ollama.local:11434"),
+            "https://ollama.local:11434"
         );
     }
 
