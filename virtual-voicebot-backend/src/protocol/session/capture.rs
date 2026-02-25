@@ -59,6 +59,10 @@ impl AudioCapture {
         self.reset_state();
     }
 
+    pub fn is_in_speech(&self) -> bool {
+        self.active && matches!(self.state, CaptureState::InSpeech)
+    }
+
     /// Processes a single mu-law audio frame for voice activity detection, accumulating frames into a speech segment and emitting the captured speech when configured end conditions are met.
     ///
     /// This method uses the capture configuration (VAD threshold, start/end silence windows, and min/max speech durations) to decide whether a frame contains voice, to start or continue a speech segment, and to finish and return the collected payload when the segment ends and satisfies the minimum speech duration.

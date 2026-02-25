@@ -6,6 +6,7 @@
 mod router;
 mod sentence_accumulator;
 
+use std::future::pending;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
@@ -19,8 +20,8 @@ use crate::service::call_control::router::{
 use crate::service::call_control::sentence_accumulator::SentenceAccumulator;
 use crate::shared::config::{self, AppRuntimeConfig};
 use crate::shared::ports::ai::{
-    AiServices, AsrChunk, ChatMessage, LlmStreamEvent, LlmStreamPort, Role, SerInputPcm,
-    WeatherQuery,
+    AiServices, AsrChunk, AsrStreamHandle, AsrStreamPort, ChatMessage, LlmStreamEvent,
+    LlmStreamPort, Role, SerInputPcm, WeatherQuery,
 };
 use crate::shared::ports::notification::{
     NotificationFuture, NotificationService as NotificationPort,
@@ -29,7 +30,8 @@ use crate::shared::ports::phone_lookup::PhoneLookupPort;
 use crate::shared::utils::{mask_phone, mask_pii};
 
 pub use crate::shared::ports::app::{
-    app_event_channel, AppEvent, AppEventRx, AppEventTx, EndReason,
+    app_event_channel, audio_chunk_channel, AppEvent, AppEventRx, AppEventTx, AudioChunkRx,
+    AudioChunkTx, EndReason,
 };
 pub use crate::shared::ports::notification::NotificationService as AppNotificationPort;
 
@@ -116,6 +118,8 @@ pub fn spawn_app_worker(
     session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
     ai_port: Arc<dyn AiServices>,
     llm_stream_port: Option<Arc<dyn LlmStreamPort>>,
+    asr_stream_port: Option<Arc<dyn AsrStreamPort>>,
+    audio_chunk_rx: Option<AudioChunkRx>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
     notification_port: Arc<dyn NotificationPort>,
     app_cfg: AppRuntimeConfig,
@@ -127,6 +131,8 @@ pub fn spawn_app_worker(
         rx,
         ai_port,
         llm_stream_port,
+        asr_stream_port,
+        audio_chunk_rx,
         phone_lookup,
         notification_port,
         app_cfg,
@@ -143,12 +149,15 @@ struct AppWorker {
     history: Vec<ChatMessage>,
     ai_port: Arc<dyn AiServices>,
     llm_stream_port: Option<Arc<dyn LlmStreamPort>>,
+    asr_stream_port: Option<Arc<dyn AsrStreamPort>>,
+    audio_chunk_rx: Option<AudioChunkRx>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
     router: Router,
     notification_port: Arc<dyn NotificationPort>,
     notification_state: NotificationState,
     app_cfg: AppRuntimeConfig,
     next_stream_generation_id: u64,
+    asr_stream_handle: Option<AsrStreamHandle>,
 }
 
 #[derive(Debug, Default)]
@@ -215,6 +224,8 @@ impl AppWorker {
         rx: AppEventRx,
         ai_port: Arc<dyn AiServices>,
         llm_stream_port: Option<Arc<dyn LlmStreamPort>>,
+        asr_stream_port: Option<Arc<dyn AsrStreamPort>>,
+        audio_chunk_rx: Option<AudioChunkRx>,
         phone_lookup: Arc<dyn PhoneLookupPort>,
         notification_port: Arc<dyn NotificationPort>,
         app_cfg: AppRuntimeConfig,
@@ -227,12 +238,15 @@ impl AppWorker {
             history: Vec::new(),
             ai_port,
             llm_stream_port,
+            asr_stream_port,
+            audio_chunk_rx,
             phone_lookup,
             router: Router::new(),
             notification_port,
             notification_state: NotificationState::default(),
             app_cfg,
             next_stream_generation_id: 1,
+            asr_stream_handle: None,
         }
     }
 
@@ -254,85 +268,39 @@ impl AppWorker {
     /// // tokio::spawn(async move { worker.run().await });
     /// ```
     async fn run(mut self) {
-        while let Some(ev) = self.rx.recv().await {
-            match ev {
-                AppEvent::CallRinging {
-                    call_id,
-                    from,
-                    timestamp,
-                } => {
-                    if call_id != self.call_id {
-                        log::warn!(
-                            "[app {}] CallRinging received for mismatched call_id={}",
-                            self.call_id,
-                            call_id
-                        );
-                    }
-                    self.notify_ringing(call_id.clone(), from, timestamp);
-                }
-                AppEvent::CallStarted { call_id, caller } => {
-                    if call_id != self.call_id {
-                        log::warn!(
-                            "[app {}] CallStarted received for mismatched call_id={}",
-                            self.call_id,
-                            call_id
-                        );
-                    }
-                    self.active = true;
-                    let caller_display = caller.as_deref().filter(|value| !value.trim().is_empty());
-                    if let Some(value) = caller_display {
-                        log::debug!(
-                            "[app {}] caller extracted={}",
-                            self.call_id,
-                            mask_phone(value)
-                        );
-                    } else {
-                        log::debug!("[app {}] caller missing", self.call_id);
-                    }
-                    self.handle_phone_lookup(caller).await;
-                }
-                AppEvent::AudioBuffered {
-                    call_id,
-                    pcm_mulaw,
-                    pcm_linear16,
-                } => {
-                    if call_id != self.call_id {
-                        log::warn!(
-                            "[app {}] AudioBuffered received for mismatched call_id={}",
-                            self.call_id,
-                            call_id
-                        );
-                    }
-                    if !self.active {
-                        log::debug!(
-                            "[app {}] dropped audio because call not active",
-                            self.call_id
-                        );
-                        continue;
-                    }
-                    if let Err(e) = self
-                        .handle_audio_buffer(&call_id, pcm_mulaw, pcm_linear16)
-                        .await
-                    {
-                        log::warn!("[app {}] audio handling failed: {:?}", self.call_id, e);
+        loop {
+            tokio::select! {
+                ev = self.rx.recv() => {
+                    let Some(ev) = ev else {
+                        break;
+                    };
+                    if !self.handle_app_event(ev).await {
+                        break;
                     }
                 }
-                AppEvent::CallEnded {
-                    call_id,
-                    from,
-                    reason,
-                    duration_sec,
-                    timestamp,
-                } => {
-                    if call_id != self.call_id {
-                        log::warn!(
-                            "[app {}] CallEnded received for mismatched call_id={}",
-                            self.call_id,
-                            call_id
-                        );
+                chunk = async {
+                    match &self.audio_chunk_rx {
+                        Some(rx) => rx.recv().await,
+                        None => pending::<Option<crate::shared::ports::app::RtpAudioChunk>>().await,
                     }
-                    self.notify_ended(call_id.as_str(), from, reason, duration_sec, timestamp);
-                    break;
+                } => {
+                    match chunk {
+                        Some(chunk) => {
+                            if chunk.call_id != self.call_id {
+                                log::warn!(
+                                    "[app {}] AudioChunk received for mismatched call_id={}",
+                                    self.call_id,
+                                    chunk.call_id
+                                );
+                            } else if self.active {
+                                self.handle_audio_chunk(&chunk.call_id, chunk.pcm_mulaw).await;
+                            }
+                        }
+                        None => {
+                            self.audio_chunk_rx = None;
+                            self.close_asr_stream_handle_best_effort();
+                        }
+                    }
                 }
             }
         }
@@ -340,6 +308,100 @@ impl AppWorker {
 }
 
 impl AppWorker {
+    fn close_asr_stream_handle_best_effort(&mut self) {
+        if let Some(handle) = self.asr_stream_handle.take() {
+            // Do not block the app loop on stream shutdown; best-effort EOS is enough here.
+            let _ = handle.audio_tx.try_send_end();
+        }
+    }
+
+    async fn handle_app_event(&mut self, ev: AppEvent) -> bool {
+        match ev {
+            AppEvent::CallRinging {
+                call_id,
+                from,
+                timestamp,
+            } => {
+                if call_id != self.call_id {
+                    log::warn!(
+                        "[app {}] CallRinging received for mismatched call_id={}",
+                        self.call_id,
+                        call_id
+                    );
+                }
+                self.notify_ringing(call_id.clone(), from, timestamp);
+                true
+            }
+            AppEvent::CallStarted { call_id, caller } => {
+                if call_id != self.call_id {
+                    log::warn!(
+                        "[app {}] CallStarted received for mismatched call_id={}",
+                        self.call_id,
+                        call_id
+                    );
+                }
+                self.active = true;
+                let caller_display = caller.as_deref().filter(|value| !value.trim().is_empty());
+                if let Some(value) = caller_display {
+                    log::debug!(
+                        "[app {}] caller extracted={}",
+                        self.call_id,
+                        mask_phone(value)
+                    );
+                } else {
+                    log::debug!("[app {}] caller missing", self.call_id);
+                }
+                self.handle_phone_lookup(caller).await;
+                true
+            }
+            AppEvent::AudioBuffered {
+                call_id,
+                pcm_mulaw,
+                pcm_linear16,
+            } => {
+                if call_id != self.call_id {
+                    log::warn!(
+                        "[app {}] AudioBuffered received for mismatched call_id={}",
+                        self.call_id,
+                        call_id
+                    );
+                }
+                if !self.active {
+                    log::debug!(
+                        "[app {}] dropped audio because call not active",
+                        self.call_id
+                    );
+                    return true;
+                }
+                if let Err(e) = self
+                    .handle_audio_buffer(&call_id, pcm_mulaw, pcm_linear16)
+                    .await
+                {
+                    log::warn!("[app {}] audio handling failed: {:?}", self.call_id, e);
+                }
+                true
+            }
+            AppEvent::CallEnded {
+                call_id,
+                from,
+                reason,
+                duration_sec,
+                timestamp,
+            } => {
+                if call_id != self.call_id {
+                    log::warn!(
+                        "[app {}] CallEnded received for mismatched call_id={}",
+                        self.call_id,
+                        call_id
+                    );
+                }
+                self.close_asr_stream_handle_best_effort();
+                self.notify_ended(call_id.as_str(), from, reason, duration_sec, timestamp);
+                false
+            }
+        }
+    }
+
     /// Processes an incoming audio buffer for a call: performs ASR and SER, classifies intent,
     /// routes to the appropriate action (fixed response, system info, chat, weather, or transfer),
     /// updates conversation history, synthesizes a reply to WAV, and sends session outputs
@@ -367,14 +429,70 @@ impl AppWorker {
     /// // worker.handle_audio_buffer(&call_id, pcm_mulaw, pcm_linear16).await.unwrap();
     /// # }
     /// ```
+    async fn handle_audio_chunk(&mut self, call_id: &CallId, pcm_mulaw: Vec<u8>) {
+        let Some(port) = &self.asr_stream_port else {
+            return;
+        };
+
+        if self.asr_stream_handle.is_none() {
+            let url = config::asr_streaming_server_url();
+            match port.transcribe_stream(call_id.to_string(), url).await {
+                Ok(handle) => {
+                    self.asr_stream_handle = Some(handle);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[asr stream {call_id}] connection failed: {e}; fallback to sequential"
+                    );
+                    return;
+                }
+            }
+        }
+
+        if let Some(handle) = &self.asr_stream_handle {
+            let _ = handle.audio_tx.try_send_chunk_latest(pcm_mulaw);
+        }
+    }
+
+    async fn take_streaming_asr_result_or_fallback(
+        &mut self,
+        call_id: &CallId,
+        pcm_mulaw: Vec<u8>,
+    ) -> String {
+        let Some(handle) = self.asr_stream_handle.take() else {
+            return self.transcribe_asr(call_id, pcm_mulaw).await;
+        };
+
+        if handle.audio_tx.send_end().await.is_err() {
+            log::warn!("[asr stream {call_id}] failed to send EOS; fallback to sequential");
+            return self.transcribe_asr(call_id, pcm_mulaw).await;
+        }
+
+        match handle.final_rx.await {
+            Ok(Ok(text)) => text,
+            Ok(Err(e)) => {
+                log::warn!(
+                    "[asr stream {call_id}] consumer task error: {e}; fallback to sequential"
+                );
+                self.transcribe_asr(call_id, pcm_mulaw).await
+            }
+            Err(_) => {
+                log::warn!("[asr stream {call_id}] consumer task dropped; fallback to sequential");
+                self.transcribe_asr(call_id, pcm_mulaw).await
+            }
+        }
+    }
+
     async fn handle_audio_buffer(
         &mut self,
         call_id: &CallId,
         pcm_mulaw: Vec<u8>,
         pcm_linear16: Vec<i16>,
     ) -> anyhow::Result<()> {
-        let user_text = self.transcribe_asr(call_id, pcm_mulaw).await;
         self.analyze_ser(call_id, pcm_linear16).await;
+        let user_text = self
+            .take_streaming_asr_result_or_fallback(call_id, pcm_mulaw)
+            .await;
 
         let trimmed = user_text.trim();
         if trimmed.is_empty() {

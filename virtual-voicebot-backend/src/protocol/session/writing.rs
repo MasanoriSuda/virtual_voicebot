@@ -9,7 +9,7 @@ use crate::protocol::rtp::tx::RtpTxHandle;
 use crate::protocol::session::types::*;
 use crate::protocol::session::{Session, SessionHandle};
 use crate::shared::config::SessionRuntimeConfig;
-use crate::shared::ports::app::AppEventTx;
+use crate::shared::ports::app::{AppEventTx, AudioChunkTx};
 use crate::shared::ports::call_log_port::CallLogPort;
 use crate::shared::ports::ingest::IngestPort;
 use crate::shared::ports::routing_port::RoutingPort;
@@ -24,6 +24,7 @@ pub fn spawn_call(
     media_cfg: MediaConfig,
     session_out_tx: tokio::sync::mpsc::Sender<(CallId, SessionOut)>,
     app_tx: AppEventTx,
+    audio_chunk_tx: Option<AudioChunkTx>,
     rtp_tx: RtpTxHandle,
     ingest_url: Option<String>,
     recording_base_url: Option<String>,
@@ -39,6 +40,7 @@ pub fn spawn_call(
         to_uri,
         session_out_tx,
         app_tx,
+        audio_chunk_tx,
         media_cfg,
         rtp_tx,
         ingest_url,
@@ -60,6 +62,7 @@ pub async fn spawn_session(
     media_cfg: MediaConfig,
     session_out_tx: tokio::sync::mpsc::Sender<(CallId, SessionOut)>,
     app_tx: AppEventTx,
+    audio_chunk_tx: Option<AudioChunkTx>,
     rtp_tx: RtpTxHandle,
     ingest_url: Option<String>,
     recording_base_url: Option<String>,
@@ -76,6 +79,7 @@ pub async fn spawn_session(
         media_cfg,
         session_out_tx,
         app_tx,
+        audio_chunk_tx,
         rtp_tx,
         ingest_url,
         recording_base_url,

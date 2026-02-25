@@ -237,6 +237,14 @@ async fn main() -> anyhow::Result<()> {
                             let ingest_url = ingest_call_url.clone();
                             let recording_base_url = recording_base_url.clone();
 
+                            let asr_streaming_enabled = config::voicebot_asr_streaming_enabled();
+                            let (audio_chunk_tx, audio_chunk_rx) = if asr_streaming_enabled {
+                                let (tx, rx) = app::audio_chunk_channel(16);
+                                (Some(tx), Some(rx))
+                            } else {
+                                (None, None)
+                            };
+
                             let app_tx = app::spawn_app_worker(
                                 call_id.clone(),
                                 session_out_tx.clone(),
@@ -246,6 +254,12 @@ async fn main() -> anyhow::Result<()> {
                                 } else {
                                     None
                                 },
+                                if asr_streaming_enabled {
+                                    Some(ai_port.clone())
+                                } else {
+                                    None
+                                },
+                                audio_chunk_rx,
                                 phone_lookup.clone(),
                                 notification_port.clone(),
                                 app_cfg.clone(),
@@ -258,6 +272,7 @@ async fn main() -> anyhow::Result<()> {
                                 MediaConfig::pcmu(advertised_ip.clone(), rtp_port),
                                 session_out_tx.clone(),
                                 app_tx,
+                                audio_chunk_tx,
                                 rtp_handle.clone(),
                                 ingest_url,
                                 recording_base_url,

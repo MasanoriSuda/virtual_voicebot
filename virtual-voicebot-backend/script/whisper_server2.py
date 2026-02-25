@@ -1,6 +1,9 @@
 import asyncio
+import audioop
+import json
+import wave
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 import uvicorn
 import tempfile
 import os
@@ -123,6 +126,28 @@ def apply_output_script(text: str) -> str:
         return text
 
 
+async def run_asr_inference(tmp_path: str) -> str:
+    # グローバルモデルへの同時アクセスを抑制し、推論ハングを timeout で遮断する。
+    try:
+        async with ASR_INFERENCE_SEMAPHORE:
+            raw_text = await asyncio.wait_for(
+                asyncio.to_thread(transcribe_audio, tmp_path),
+                timeout=ASR_INFERENCE_TIMEOUT_SECONDS,
+            )
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail="ASR inference timeout") from e
+    return apply_output_script(raw_text)
+
+
+def write_mulaw_to_wav(mulaw_bytes: bytes, path: str) -> None:
+    pcm16 = audioop.ulaw2lin(mulaw_bytes, 2)
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(8000)
+        wf.writeframes(pcm16)
+
+
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok", "engine": ASR_ENGINE}
@@ -154,18 +179,7 @@ async def transcribe(file: UploadFile = File(...)):
                     )
                 tmp.write(chunk)
 
-        # ASR 文字起こし（CPU/GPU-bound のため event loop 外で実行）
-        # グローバルモデルへの同時アクセスを抑制し、推論ハングを timeout で遮断する。
-        try:
-            async with ASR_INFERENCE_SEMAPHORE:
-                raw_text = await asyncio.wait_for(
-                    asyncio.to_thread(transcribe_audio, tmp_path),
-                    timeout=ASR_INFERENCE_TIMEOUT_SECONDS,
-                )
-        except asyncio.TimeoutError as e:
-            raise HTTPException(status_code=504, detail="ASR inference timeout") from e
-
-        text = apply_output_script(raw_text)
+        text = await run_asr_inference(tmp_path)
         return {"text": text}
     finally:
         await file.close()
@@ -174,6 +188,85 @@ async def transcribe(file: UploadFile = File(...)):
                 os.unlink(tmp_path)
             except FileNotFoundError:
                 pass
+
+
+@app.websocket("/transcribe_stream")
+async def transcribe_stream(websocket: WebSocket):
+    await websocket.accept()
+    total_size = 0
+    sent_first_partial = False
+    pcm_mulaw = bytearray()
+
+    try:
+        while True:
+            message = await websocket.receive()
+            msg_type = message.get("type")
+
+            if msg_type == "websocket.disconnect":
+                raise WebSocketDisconnect()
+
+            if msg_type != "websocket.receive":
+                continue
+
+            data = message.get("bytes")
+            if data is not None:
+                total_size += len(data)
+                if total_size > MAX_UPLOAD_SIZE:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "error": f"upload too large: max={MAX_UPLOAD_SIZE} bytes",
+                        }
+                    )
+                    await websocket.close(code=1009)
+                    return
+
+                pcm_mulaw.extend(data)
+                if not sent_first_partial:
+                    # first-partial timeout を満たすための heartbeat（実テキストは final で返す）
+                    await websocket.send_json({"type": "partial", "text": ""})
+                    sent_first_partial = True
+                continue
+
+            text = message.get("text")
+            if text is None:
+                continue
+
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                await websocket.send_json({"type": "error", "error": "invalid JSON control message"})
+                await websocket.close(code=1003)
+                return
+
+            if payload.get("type") != "end":
+                continue
+
+            if not sent_first_partial:
+                await websocket.send_json({"type": "partial", "text": ""})
+                sent_first_partial = True
+
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp_path = tmp.name
+                write_mulaw_to_wav(bytes(pcm_mulaw), tmp_path)
+                text = await run_asr_inference(tmp_path)
+                await websocket.send_json({"type": "final", "text": text})
+            except HTTPException as e:
+                await websocket.send_json({"type": "error", "error": str(e.detail)})
+            except Exception as e:
+                await websocket.send_json({"type": "error", "error": str(e)})
+            finally:
+                if tmp_path is not None:
+                    try:
+                        os.unlink(tmp_path)
+                    except FileNotFoundError:
+                        pass
+            await websocket.close()
+            return
+    except WebSocketDisconnect:
+        return
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=9010)

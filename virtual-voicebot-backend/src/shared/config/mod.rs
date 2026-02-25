@@ -31,15 +31,25 @@ impl AppRuntimeConfig {
 }
 
 static VOICEBOT_STREAMING_ENABLED: OnceLock<bool> = OnceLock::new();
+static VOICEBOT_ASR_STREAMING_ENABLED: OnceLock<bool> = OnceLock::new();
 static VOICEBOT_STREAMING_SENTENCE_MAX_CHARS: OnceLock<usize> = OnceLock::new();
 static VOICEBOT_STREAMING_SENTENCE_MAX_WAIT: OnceLock<Duration> = OnceLock::new();
 static VOICEBOT_STREAMING_SENTENCE_CHANNEL_CAPACITY: OnceLock<usize> = OnceLock::new();
 static LLM_STREAMING_CONNECT_TIMEOUT: OnceLock<Duration> = OnceLock::new();
 static LLM_STREAMING_FIRST_TOKEN_TIMEOUT: OnceLock<Duration> = OnceLock::new();
 static LLM_STREAMING_TOTAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static ASR_STREAMING_SERVER_URL: OnceLock<String> = OnceLock::new();
+static ASR_STREAMING_CONNECT_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static ASR_STREAMING_FIRST_PARTIAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static ASR_STREAMING_FINAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
 
 pub fn voicebot_streaming_enabled() -> bool {
     *VOICEBOT_STREAMING_ENABLED.get_or_init(|| env_bool("VOICEBOT_STREAMING_ENABLED", false))
+}
+
+pub fn voicebot_asr_streaming_enabled() -> bool {
+    *VOICEBOT_ASR_STREAMING_ENABLED
+        .get_or_init(|| env_bool("VOICEBOT_ASR_STREAMING_ENABLED", false))
 }
 
 pub fn sentence_max_chars() -> usize {
@@ -70,6 +80,47 @@ pub fn llm_streaming_first_token_timeout() -> Duration {
 pub fn llm_streaming_total_timeout() -> Duration {
     *LLM_STREAMING_TOTAL_TIMEOUT
         .get_or_init(|| env_duration_ms("LLM_STREAMING_TOTAL_TIMEOUT_MS", 60_000))
+}
+
+pub fn asr_streaming_server_url() -> String {
+    ASR_STREAMING_SERVER_URL
+        .get_or_init(|| {
+            env_non_empty("ASR_STREAMING_SERVER_URL")
+                .unwrap_or_else(default_asr_streaming_server_url)
+        })
+        .clone()
+}
+
+pub fn asr_streaming_connect_timeout() -> Duration {
+    *ASR_STREAMING_CONNECT_TIMEOUT
+        .get_or_init(|| env_duration_ms("ASR_STREAMING_CONNECT_TIMEOUT_MS", 3_000))
+}
+
+pub fn asr_streaming_first_partial_timeout() -> Duration {
+    *ASR_STREAMING_FIRST_PARTIAL_TIMEOUT
+        .get_or_init(|| env_duration_ms("ASR_STREAMING_FIRST_PARTIAL_TIMEOUT_MS", 3_000))
+}
+
+pub fn asr_streaming_final_timeout() -> Duration {
+    *ASR_STREAMING_FINAL_TIMEOUT
+        .get_or_init(|| env_duration_ms("ASR_STREAMING_FINAL_TIMEOUT_MS", 2_000))
+}
+
+fn default_asr_streaming_server_url() -> String {
+    let source = ai_config().asr_local_server_url.trim();
+    let (scheme, rest) = if let Some(rest) = source.strip_prefix("http://") {
+        ("ws://", rest)
+    } else if let Some(rest) = source.strip_prefix("https://") {
+        ("wss://", rest)
+    } else {
+        return "ws://localhost:9000/transcribe_stream".to_string();
+    };
+    let host_port = rest.split('/').next().unwrap_or(rest).trim();
+    if host_port.is_empty() {
+        "ws://localhost:9000/transcribe_stream".to_string()
+    } else {
+        format!("{scheme}{host_port}/transcribe_stream")
+    }
 }
 
 #[derive(Clone, Debug)]
