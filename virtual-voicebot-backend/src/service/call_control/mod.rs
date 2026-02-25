@@ -19,7 +19,8 @@ use crate::service::call_control::router::{
 use crate::service::call_control::sentence_accumulator::SentenceAccumulator;
 use crate::shared::config::{self, AppRuntimeConfig};
 use crate::shared::ports::ai::{
-    AiServices, AsrChunk, ChatMessage, LlmStreamPort, Role, SerInputPcm, WeatherQuery,
+    AiServices, AsrChunk, ChatMessage, LlmStreamEvent, LlmStreamPort, Role, SerInputPcm,
+    WeatherQuery,
 };
 use crate::shared::ports::notification::{
     NotificationFuture, NotificationService as NotificationPort,
@@ -207,6 +208,7 @@ impl AppWorker {
     ///     crate::shared::config::AppRuntimeConfig::from_env(),
     /// );
     /// ```
+    #[allow(clippy::too_many_arguments)]
     fn new(
         call_id: CallId,
         session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
@@ -718,18 +720,32 @@ impl AppWorker {
                     tokio::select! {
                         item = stream.next() => {
                             match item {
-                                Some(Ok(token)) => {
-                                    first_token_received = true;
-                                    full_answer.push_str(&token);
-                                    if let Some(sentence) = acc.push(&token) {
-                                        sentences_sent += 1;
-                                        if sentence_tx.send(sentence).await.is_err() {
+                                Some(Ok(event)) => {
+                                    match event {
+                                        LlmStreamEvent::Token(token) => {
+                                            first_token_received = true;
+                                            full_answer.push_str(&token);
+                                            if let Some(sentence) = acc.push(&token) {
+                                                sentences_sent += 1;
+                                                if sentence_tx.send(sentence).await.is_err() {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        LlmStreamEvent::End => {
+                                            if let Some(tail) = acc.flush() {
+                                                sentences_sent += 1;
+                                                let _ = sentence_tx.send(tail).await;
+                                            }
                                             break;
                                         }
                                     }
                                 }
                                 Some(Err(e)) => {
-                                    log::warn!("[app stream] LLM stream error: {e}");
+                                    log::warn!(
+                                        "[app {}] LLM stream error: {e}",
+                                        call_id_for_consumer
+                                    );
                                     had_error = true;
                                     if let Some(tail) = acc.flush() {
                                         sentences_sent += 1;
@@ -738,6 +754,9 @@ impl AppWorker {
                                     break;
                                 }
                                 None => {
+                                    // Expected normal end is explicit `LlmStreamEvent::End`.
+                                    // `None` here means producer ended without terminal event.
+                                    had_error = true;
                                     if let Some(tail) = acc.flush() {
                                         sentences_sent += 1;
                                         let _ = sentence_tx.send(tail).await;

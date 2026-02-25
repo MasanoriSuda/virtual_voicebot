@@ -26,8 +26,8 @@ use aws_sdk_transcribe as transcribe;
 use crate::shared::config;
 use crate::shared::error::ai::{AsrError, IntentError, LlmError, TtsError, WeatherError};
 use crate::shared::ports::ai::{
-    AiFuture, AsrChunk, AsrPort, ChatMessage, IntentPort, LlmPort, LlmStream, LlmStreamPort, Role,
-    SerInputPcm, SerOutcome, SerPort, TtsPort, WeatherPort, WeatherQuery,
+    AiFuture, AsrChunk, AsrPort, ChatMessage, IntentPort, LlmPort, LlmStream, LlmStreamEvent,
+    LlmStreamPort, Role, SerInputPcm, SerOutcome, SerPort, TtsPort, WeatherPort, WeatherQuery,
 };
 use crate::shared::utils::mask_pii;
 
@@ -1178,13 +1178,33 @@ fn parse_ollama_stream_line(line: &[u8]) -> std::result::Result<(Option<String>,
 }
 
 fn spawn_ollama_stream_parser(resp: reqwest::Response) -> LlmStream {
-    let (tx, rx) = mpsc::channel::<Result<String, LlmError>>(OLLAMA_STREAM_CHANNEL_CAPACITY);
+    let (tx, rx) =
+        mpsc::channel::<Result<LlmStreamEvent, LlmError>>(OLLAMA_STREAM_CHANNEL_CAPACITY);
     tokio::spawn(async move {
         let mut bytes_stream = resp.bytes_stream();
         let mut buf = Vec::<u8>::new();
+        // Parser task leak防止用の read timeout。呼び出し側の first-token/chunk-idle timeout より緩くはしない。
+        let read_timeout =
+            config::llm_streaming_first_token_timeout().max(config::sentence_max_wait());
 
         loop {
-            let Some(item) = bytes_stream.next().await else {
+            if tx.is_closed() {
+                return;
+            }
+
+            let next_result = timeout(read_timeout, bytes_stream.next()).await;
+            let Some(item) = (match next_result {
+                Ok(item) => item,
+                Err(_) => {
+                    if tx.is_closed() {
+                        return;
+                    }
+                    let _ = tx
+                        .send(Err(LlmError::Timeout("ollama stream read timeout".into())))
+                        .await;
+                    return;
+                }
+            }) else {
                 break;
             };
             let chunk = match item {
@@ -1199,6 +1219,9 @@ fn spawn_ollama_stream_parser(resp: reqwest::Response) -> LlmStream {
             buf.extend_from_slice(&chunk);
 
             while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+                if tx.is_closed() {
+                    return;
+                }
                 let line = buf.drain(..=pos).collect::<Vec<u8>>();
                 let line = line.trim_ascii();
                 if line.is_empty() {
@@ -1207,11 +1230,12 @@ fn spawn_ollama_stream_parser(resp: reqwest::Response) -> LlmStream {
                 match parse_ollama_stream_line(line) {
                     Ok((token, done)) => {
                         if let Some(token) = token {
-                            if tx.send(Ok(token)).await.is_err() {
+                            if tx.send(Ok(LlmStreamEvent::Token(token))).await.is_err() {
                                 return;
                             }
                         }
                         if done {
+                            let _ = tx.send(Ok(LlmStreamEvent::End)).await;
                             return;
                         }
                     }
@@ -1228,9 +1252,12 @@ fn spawn_ollama_stream_parser(resp: reqwest::Response) -> LlmStream {
             return;
         }
         match parse_ollama_stream_line(tail) {
-            Ok((token, _done)) => {
+            Ok((token, done)) => {
                 if let Some(token) = token {
-                    let _ = tx.send(Ok(token)).await;
+                    let _ = tx.send(Ok(LlmStreamEvent::Token(token))).await;
+                }
+                if done {
+                    let _ = tx.send(Ok(LlmStreamEvent::End)).await;
                 }
             }
             Err(e) => {

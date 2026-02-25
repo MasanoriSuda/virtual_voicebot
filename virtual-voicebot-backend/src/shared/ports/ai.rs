@@ -11,7 +11,7 @@ pub mod weather;
 
 pub use asr::AsrPort;
 pub use intent::IntentPort;
-pub use llm::{LlmPort, LlmStream, LlmStreamPort};
+pub use llm::{LlmPort, LlmStream, LlmStreamEvent, LlmStreamPort};
 pub use ser::SerPort;
 pub use tts::TtsPort;
 pub use types::{

@@ -65,19 +65,17 @@ impl SessionCoordinator {
                 self.call_id, self.playback_generation_id, generation_id
             );
             self.cancel_playback();
-        } else if !self.playback_queue.is_empty() {
-            if self
-                .playback_queue
-                .front()
-                .map(|p| p.generation_id != generation_id)
-                .unwrap_or(false)
-            {
-                info!(
-                    "[session {}] dropping stale queued playback for new generation={}",
-                    self.call_id, generation_id
-                );
-                self.playback_queue.clear();
-            }
+        } else if self
+            .playback_queue
+            .front()
+            .map(|p| p.generation_id != generation_id)
+            .unwrap_or(false)
+        {
+            info!(
+                "[session {}] dropping stale queued playback for new generation={}",
+                self.call_id, generation_id
+            );
+            self.playback_queue.clear();
         }
 
         self.stop_ivr_timeout();

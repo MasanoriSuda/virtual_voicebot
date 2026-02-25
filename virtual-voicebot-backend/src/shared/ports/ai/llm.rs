@@ -6,7 +6,13 @@ use crate::shared::error::ai::LlmError;
 
 use super::{AiFuture, ChatMessage};
 
-pub type LlmStream = Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LlmStreamEvent {
+    Token(String),
+    End,
+}
+
+pub type LlmStream = Pin<Box<dyn Stream<Item = Result<LlmStreamEvent, LlmError>> + Send>>;
 
 pub trait LlmPort: Send + Sync {
     fn generate_answer(
