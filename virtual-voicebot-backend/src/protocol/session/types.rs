@@ -87,6 +87,11 @@ pub enum SessionControlIn {
     AppBotAudioFile {
         path: String,
     },
+    /// app から返ってきたボット応答音声（WAVファイルパス、enqueue 再生）
+    AppBotAudioFileEnqueue {
+        path: String,
+        generation_id: PlaybackGenerationId,
+    },
     /// app からの終了指示
     AppHangup,
     /// app からの転送指示
@@ -220,6 +225,11 @@ pub enum SessionOut {
     AppSendBotAudioFile {
         path: String,
     },
+    /// app が生成したボット音声（WAVパス）を session へ戻す（enqueue 再生）
+    AppEnqueueBotAudioFile {
+        path: String,
+        generation_id: PlaybackGenerationId,
+    },
     /// app からの切断指示
     AppRequestHangup,
     /// app からの転送指示
@@ -231,6 +241,8 @@ pub enum SessionOut {
         value: i64,
     },
 }
+
+pub type PlaybackGenerationId = u64;
 
 /// セッション状態（設計 doc の Idle/Early/Confirmed/Terminating/Terminated に対応）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

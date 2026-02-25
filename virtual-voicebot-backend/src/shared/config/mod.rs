@@ -30,6 +30,48 @@ impl AppRuntimeConfig {
     }
 }
 
+static VOICEBOT_STREAMING_ENABLED: OnceLock<bool> = OnceLock::new();
+static VOICEBOT_STREAMING_SENTENCE_MAX_CHARS: OnceLock<usize> = OnceLock::new();
+static VOICEBOT_STREAMING_SENTENCE_MAX_WAIT: OnceLock<Duration> = OnceLock::new();
+static VOICEBOT_STREAMING_SENTENCE_CHANNEL_CAPACITY: OnceLock<usize> = OnceLock::new();
+static LLM_STREAMING_CONNECT_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static LLM_STREAMING_FIRST_TOKEN_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static LLM_STREAMING_TOTAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+pub fn voicebot_streaming_enabled() -> bool {
+    *VOICEBOT_STREAMING_ENABLED.get_or_init(|| env_bool("VOICEBOT_STREAMING_ENABLED", false))
+}
+
+pub fn sentence_max_chars() -> usize {
+    *VOICEBOT_STREAMING_SENTENCE_MAX_CHARS
+        .get_or_init(|| env_u64("VOICEBOT_STREAMING_SENTENCE_MAX_CHARS", 50) as usize)
+}
+
+pub fn sentence_max_wait() -> Duration {
+    *VOICEBOT_STREAMING_SENTENCE_MAX_WAIT
+        .get_or_init(|| env_duration_ms("VOICEBOT_STREAMING_SENTENCE_MAX_WAIT_MS", 2_000))
+}
+
+pub fn sentence_channel_capacity() -> usize {
+    *VOICEBOT_STREAMING_SENTENCE_CHANNEL_CAPACITY
+        .get_or_init(|| env_u64("VOICEBOT_STREAMING_SENTENCE_CHANNEL_CAPACITY", 4) as usize)
+}
+
+pub fn llm_streaming_connect_timeout() -> Duration {
+    *LLM_STREAMING_CONNECT_TIMEOUT
+        .get_or_init(|| env_duration_ms("LLM_STREAMING_CONNECT_TIMEOUT_MS", 5_000))
+}
+
+pub fn llm_streaming_first_token_timeout() -> Duration {
+    *LLM_STREAMING_FIRST_TOKEN_TIMEOUT
+        .get_or_init(|| env_duration_ms("LLM_STREAMING_FIRST_TOKEN_TIMEOUT_MS", 5_000))
+}
+
+pub fn llm_streaming_total_timeout() -> Duration {
+    *LLM_STREAMING_TOTAL_TIMEOUT
+        .get_or_init(|| env_duration_ms("LLM_STREAMING_TOTAL_TIMEOUT_MS", 60_000))
+}
+
 #[derive(Clone, Debug)]
 pub struct SessionRuntimeConfig {
     pub vad: VadConfig,

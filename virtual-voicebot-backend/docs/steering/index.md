@@ -51,6 +51,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-236](STEER-236_serversync-systemd-service.md) | serversync の systemd 常駐化 | Approved | #236 | P1 | `serversync` を systemd unit で常駐管理。STEER-235 の設計を踏襲（KillSignal=SIGINT / @@OS_USER@@ / EnvironmentFile）。通話本体と同一 OS ユーザーで録音ファイル権限を揃える |
 | [STEER-241](STEER-241_intent-cloud-provider.md) | intent の OpenAI クラウドプロバイダー追加 | Approved | #241 | P1 | intent 分類に OpenAI Cloud ステージを追加（cloud → local → raspi）。STEER-231 の `openai_*_enabled` パターンを踏襲。local/raspi フォールバックは維持 |
 | [STEER-246](STEER-246_whisper-docker-service.md) | Whisper Docker Compose 常駐化 | Approved | #246 | P1 | Whisper サーバーを Docker Compose サービスとして常駐化。GET /healthz 追加・model cache volume 永続化・compose ネットワーク内での接続先設定。#245 ダッシュボード死活監視の前提基盤 |
+| [STEER-249](STEER-249_streaming-pipeline.md) | LLM ストリーミング ＋ 文単位 TTS 先行再生 | Draft | #249 | P1 | Ollama streaming 受信（stream:true）＋ 文単位 TTS キュー投入で first-audio latency を短縮。ASR 真のストリーミング化は別 Issue へ分割 |
 
 ---
 
@@ -112,3 +113,4 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-24 | 3.0 | STEER-241 ステータス Draft → Approved | @MasanoriSuda |
 | 2026-02-24 | 3.1 | STEER-246 追加（Whisper Docker Compose 常駐化） | Claude Sonnet 4.6 |
 | 2026-02-24 | 3.2 | STEER-246 ステータス Draft → Approved | @MasanoriSuda |
+| 2026-02-25 | 3.3 | STEER-249 追加（LLM ストリーミング ＋ 文単位 TTS 先行再生） | Claude Sonnet 4.6 |

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 // session.rs
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -32,7 +33,7 @@ use crate::shared::ports::storage::StoragePort;
 use anyhow::Error;
 use uuid::Uuid;
 // log macros used in handler/service modules
-use services::playback_service::PlaybackState;
+use services::playback_service::{PendingUtterance, PlaybackState};
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
 const PLAYBACK_FRAME_INTERVAL: Duration = Duration::from_millis(20);
@@ -102,6 +103,8 @@ pub struct SessionCoordinator {
     timers: SessionTimers,
     sending_audio: bool,
     playback: Option<PlaybackState>,
+    playback_generation_id: Option<PlaybackGenerationId>,
+    playback_queue: VecDeque<PendingUtterance>,
     // バッファ/タイマ
     speaking: bool,
     capture: AudioCapture,
@@ -202,6 +205,8 @@ impl SessionCoordinator {
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             playback: None,
+            playback_generation_id: None,
+            playback_queue: VecDeque::new(),
             speaking: false,
             capture: AudioCapture::new(runtime_cfg.vad.clone()),
             intro_sent: false,
@@ -954,6 +959,8 @@ mod tests {
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             playback: None,
+            playback_generation_id: None,
+            playback_queue: VecDeque::new(),
             speaking: false,
             capture: AudioCapture::new(runtime_cfg.vad.clone()),
             intro_sent: false,

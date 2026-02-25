@@ -585,6 +585,20 @@ impl SessionCoordinator {
                     );
                 }
             }
+            (
+                SessState::Established,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path,
+                    generation_id,
+                },
+            ) => {
+                if let Err(e) = self.enqueue_playback(&path, generation_id).await {
+                    warn!(
+                        "[session {}] failed to enqueue app audio: {:?}",
+                        self.call_id, e
+                    );
+                }
+            }
             (_, SessionControlIn::AppHangup) => {
                 warn!("[session {}] app requested hangup", self.call_id);
                 self.stop_ring_delay();
@@ -1683,6 +1697,8 @@ mod tests {
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             playback: None,
+            playback_generation_id: None,
+            playback_queue: std::collections::VecDeque::new(),
             speaking: false,
             capture: AudioCapture::new(runtime_cfg.vad.clone()),
             intro_sent: false,
@@ -1934,5 +1950,113 @@ mod tests {
             session.b_leg.is_none(),
             "b_leg must remain unset when transfer request is ignored"
         );
+    }
+
+    #[tokio::test]
+    async fn app_bot_audio_file_enqueue_starts_playback_in_established() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
+
+        let advance = session
+            .handle_control_event(
+                SessState::Established,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path: "/tmp/test.wav".to_string(),
+                    generation_id: 1,
+                },
+            )
+            .await;
+
+        assert!(advance, "enqueue audio should keep session loop running");
+        assert!(
+            session.playback.is_some(),
+            "enqueue on idle playback should start playback immediately"
+        );
+        assert!(
+            session.playback_queue.is_empty(),
+            "idle playback path should not enqueue frames"
+        );
+        assert!(
+            session.sending_audio,
+            "session should enter sending_audio state"
+        );
+    }
+
+    #[tokio::test]
+    async fn app_bot_audio_file_enqueue_is_ignored_outside_established() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
+
+        let advance = session
+            .handle_control_event(
+                SessState::Terminated,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path: "/tmp/test.wav".to_string(),
+                    generation_id: 1,
+                },
+            )
+            .await;
+
+        assert!(advance, "ignored enqueue should keep session loop running");
+        assert!(
+            session.playback.is_none(),
+            "playback must remain stopped when enqueue is ignored"
+        );
+        assert!(
+            session.playback_queue.is_empty(),
+            "queue must remain empty when enqueue is ignored"
+        );
+        assert!(
+            !session.sending_audio,
+            "ignored enqueue must not start audio sending"
+        );
+    }
+
+    #[tokio::test]
+    async fn app_bot_audio_file_enqueue_interrupts_different_generation() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
+
+        let advance_first = session
+            .handle_control_event(
+                SessState::Established,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path: "/tmp/test-1.wav".to_string(),
+                    generation_id: 10,
+                },
+            )
+            .await;
+        assert!(advance_first);
+        assert_eq!(session.playback_generation_id, Some(10));
+        assert!(session.playback_queue.is_empty());
+
+        let advance_same = session
+            .handle_control_event(
+                SessState::Established,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path: "/tmp/test-2.wav".to_string(),
+                    generation_id: 10,
+                },
+            )
+            .await;
+        assert!(advance_same);
+        assert_eq!(session.playback_queue.len(), 1);
+
+        let advance_new = session
+            .handle_control_event(
+                SessState::Established,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path: "/tmp/test-3.wav".to_string(),
+                    generation_id: 11,
+                },
+            )
+            .await;
+        assert!(advance_new);
+        assert_eq!(session.playback_generation_id, Some(11));
+        assert!(
+            session.playback_queue.is_empty(),
+            "interrupt-first should clear queued chunks from old generation"
+        );
+        assert!(session.playback.is_some());
     }
 }
