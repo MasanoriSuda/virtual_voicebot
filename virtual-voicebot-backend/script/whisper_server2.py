@@ -1,6 +1,7 @@
 import asyncio
 import audioop
 import json
+import logging
 import wave
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
@@ -10,11 +11,13 @@ import os
 import torch
 
 app = FastAPI()
+logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_SIZE = int(os.environ.get("ASR_MAX_UPLOAD_SIZE_BYTES", str(25 * 1024 * 1024)))
 UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
 ASR_INFERENCE_CONCURRENCY = int(os.environ.get("ASR_INFERENCE_CONCURRENCY", "1"))
 ASR_INFERENCE_TIMEOUT_SECONDS = float(os.environ.get("ASR_INFERENCE_TIMEOUT_SECONDS", "120"))
+ASR_WS_IDLE_TIMEOUT_SECONDS = float(os.environ.get("ASR_WS_IDLE_TIMEOUT_SECONDS", "30"))
 ASR_INFERENCE_SEMAPHORE = asyncio.Semaphore(max(1, ASR_INFERENCE_CONCURRENCY))
 
 ASR_OUTPUT_SCRIPT = os.environ.get("ASR_OUTPUT_SCRIPT", "hiragana").lower()
@@ -199,7 +202,18 @@ async def transcribe_stream(websocket: WebSocket):
 
     try:
         while True:
-            message = await websocket.receive()
+            try:
+                message = await asyncio.wait_for(
+                    websocket.receive(), timeout=ASR_WS_IDLE_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "transcribe_stream idle timeout: timeout_sec=%s bytes=%s",
+                    ASR_WS_IDLE_TIMEOUT_SECONDS,
+                    total_size,
+                )
+                await websocket.close(code=1001)
+                return
             msg_type = message.get("type")
 
             if msg_type == "websocket.disconnect":
@@ -256,7 +270,10 @@ async def transcribe_stream(websocket: WebSocket):
             except HTTPException as e:
                 await websocket.send_json({"type": "error", "error": str(e.detail)})
             except Exception as e:
-                await websocket.send_json({"type": "error", "error": str(e)})
+                logger.exception("transcribe_stream internal error")
+                await websocket.send_json(
+                    {"type": "error", "error": "internal server error"}
+                )
             finally:
                 if tmp_path is not None:
                     try:

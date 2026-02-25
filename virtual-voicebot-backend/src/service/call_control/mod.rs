@@ -158,6 +158,7 @@ struct AppWorker {
     app_cfg: AppRuntimeConfig,
     next_stream_generation_id: u64,
     asr_stream_handle: Option<AsrStreamHandle>,
+    asr_stream_connect_failed_for_turn: bool,
 }
 
 #[derive(Debug, Default)]
@@ -247,6 +248,7 @@ impl AppWorker {
             app_cfg,
             next_stream_generation_id: 1,
             asr_stream_handle: None,
+            asr_stream_connect_failed_for_turn: false,
         }
     }
 
@@ -328,6 +330,7 @@ impl AppWorker {
                         self.call_id,
                         call_id
                     );
+                    return true;
                 }
                 self.notify_ringing(call_id.clone(), from, timestamp);
                 true
@@ -339,6 +342,7 @@ impl AppWorker {
                         self.call_id,
                         call_id
                     );
+                    return true;
                 }
                 self.active = true;
                 let caller_display = caller.as_deref().filter(|value| !value.trim().is_empty());
@@ -365,6 +369,7 @@ impl AppWorker {
                         self.call_id,
                         call_id
                     );
+                    return true;
                 }
                 if !self.active {
                     log::debug!(
@@ -394,6 +399,7 @@ impl AppWorker {
                         self.call_id,
                         call_id
                     );
+                    return true;
                 }
                 self.close_asr_stream_handle_best_effort();
                 self.notify_ended(call_id.as_str(), from, reason, duration_sec, timestamp);
@@ -433,14 +439,19 @@ impl AppWorker {
         let Some(port) = &self.asr_stream_port else {
             return;
         };
+        if self.asr_stream_connect_failed_for_turn {
+            return;
+        }
 
         if self.asr_stream_handle.is_none() {
             let url = config::asr_streaming_server_url();
             match port.transcribe_stream(call_id.to_string(), url).await {
                 Ok(handle) => {
                     self.asr_stream_handle = Some(handle);
+                    self.asr_stream_connect_failed_for_turn = false;
                 }
                 Err(e) => {
+                    self.asr_stream_connect_failed_for_turn = true;
                     log::warn!(
                         "[asr stream {call_id}] connection failed: {e}; fallback to sequential"
                     );
@@ -459,6 +470,7 @@ impl AppWorker {
         call_id: &CallId,
         pcm_mulaw: Vec<u8>,
     ) -> String {
+        self.asr_stream_connect_failed_for_turn = false;
         let Some(handle) = self.asr_stream_handle.take() else {
             return self.transcribe_asr(call_id, pcm_mulaw).await;
         };
@@ -468,16 +480,22 @@ impl AppWorker {
             return self.transcribe_asr(call_id, pcm_mulaw).await;
         }
 
-        match handle.final_rx.await {
-            Ok(Ok(text)) => text,
-            Ok(Err(e)) => {
+        match timeout(config::asr_streaming_final_timeout(), handle.final_rx).await {
+            Ok(Ok(Ok(text))) => text,
+            Ok(Ok(Err(e))) => {
                 log::warn!(
                     "[asr stream {call_id}] consumer task error: {e}; fallback to sequential"
                 );
                 self.transcribe_asr(call_id, pcm_mulaw).await
             }
-            Err(_) => {
+            Ok(Err(_)) => {
                 log::warn!("[asr stream {call_id}] consumer task dropped; fallback to sequential");
+                self.transcribe_asr(call_id, pcm_mulaw).await
+            }
+            Err(_) => {
+                log::warn!(
+                    "[asr stream {call_id}] final result wait timeout; fallback to sequential"
+                );
                 self.transcribe_asr(call_id, pcm_mulaw).await
             }
         }

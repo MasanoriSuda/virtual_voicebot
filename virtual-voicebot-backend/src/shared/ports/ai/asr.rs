@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_stream::Stream;
