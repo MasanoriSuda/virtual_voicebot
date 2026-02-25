@@ -5,13 +5,19 @@ use log::{info, warn};
 use tokio::task::spawn_blocking;
 use tokio::time::timeout;
 
-use crate::protocol::session::types::IvrState;
+use crate::protocol::session::types::{IvrState, PlaybackGenerationId};
 use crate::shared::config;
 
 #[derive(Debug)]
 pub(crate) struct PlaybackState {
     pub(crate) frames: Vec<Vec<u8>>,
     pub(crate) index: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct PendingUtterance {
+    pub(crate) generation_id: PlaybackGenerationId,
+    pub(crate) frames: Vec<Vec<u8>>,
 }
 
 impl SessionCoordinator {
@@ -33,23 +39,49 @@ impl SessionCoordinator {
         if frames.is_empty() {
             anyhow::bail!("no frames");
         }
-        self.align_rtp_clock();
-        self.playback = Some(PlaybackState { frames, index: 0 });
-        self.sending_audio = true;
-        Ok(())
+        self.begin_playback_frames(frames, None)
     }
 
-    pub(crate) async fn enqueue_playback(&mut self, path: &str) -> Result<(), Error> {
-        if self.playback.is_some() {
-            let frames = self.load_frames_with_timeout(path).await?;
-            if frames.is_empty() {
-                anyhow::bail!("no frames");
-            }
-            self.playback_queue.push_back(frames);
-            return Ok(());
+    pub(crate) async fn enqueue_playback(
+        &mut self,
+        path: &str,
+        generation_id: PlaybackGenerationId,
+    ) -> Result<(), Error> {
+        let frames = self.load_frames_with_timeout(path).await?;
+        if frames.is_empty() {
+            anyhow::bail!("no frames");
         }
 
-        self.start_playback(&[path]).await
+        if self.playback.is_some() {
+            if self.playback_generation_id == Some(generation_id) {
+                self.playback_queue.push_back(PendingUtterance {
+                    generation_id,
+                    frames,
+                });
+                return Ok(());
+            }
+            info!(
+                "[session {}] interrupt-first enqueue: replace playback old_generation={:?} new_generation={}",
+                self.call_id, self.playback_generation_id, generation_id
+            );
+            self.cancel_playback();
+        } else if !self.playback_queue.is_empty() {
+            if self
+                .playback_queue
+                .front()
+                .map(|p| p.generation_id != generation_id)
+                .unwrap_or(false)
+            {
+                info!(
+                    "[session {}] dropping stale queued playback for new generation={}",
+                    self.call_id, generation_id
+                );
+                self.playback_queue.clear();
+            }
+        }
+
+        self.stop_ivr_timeout();
+        self.begin_playback_frames(frames, Some(generation_id))
     }
 
     pub(crate) fn step_playback(&mut self) {
@@ -73,13 +105,14 @@ impl SessionCoordinator {
     }
 
     pub(crate) fn finish_playback(&mut self, restart_ivr_timeout: bool) {
-        if let Some(next_frames) = self.playback_queue.pop_front() {
-            self.align_rtp_clock();
-            self.playback = Some(PlaybackState {
-                frames: next_frames,
-                index: 0,
-            });
-            self.sending_audio = true;
+        if let Some(next) = self.playback_queue.pop_front() {
+            if let Err(e) = self.begin_playback_frames(next.frames, Some(next.generation_id)) {
+                warn!(
+                    "[session {}] failed to start queued playback generation={}: {:?}",
+                    self.call_id, next.generation_id, e
+                );
+                self.finish_playback(restart_ivr_timeout);
+            }
             return;
         }
         self.clear_playback_state();
@@ -154,6 +187,22 @@ impl SessionCoordinator {
 
     fn clear_playback_state(&mut self) {
         self.playback = None;
+        self.playback_generation_id = None;
         self.sending_audio = false;
+    }
+
+    fn begin_playback_frames(
+        &mut self,
+        frames: Vec<Vec<u8>>,
+        generation_id: Option<PlaybackGenerationId>,
+    ) -> Result<(), Error> {
+        if frames.is_empty() {
+            anyhow::bail!("no frames");
+        }
+        self.align_rtp_clock();
+        self.playback = Some(PlaybackState { frames, index: 0 });
+        self.playback_generation_id = generation_id;
+        self.sending_audio = true;
+        Ok(())
     }
 }

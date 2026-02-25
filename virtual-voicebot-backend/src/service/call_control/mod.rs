@@ -147,6 +147,7 @@ struct AppWorker {
     notification_port: Arc<dyn NotificationPort>,
     notification_state: NotificationState,
     app_cfg: AppRuntimeConfig,
+    next_stream_generation_id: u64,
 }
 
 #[derive(Debug, Default)]
@@ -229,6 +230,7 @@ impl AppWorker {
             notification_port,
             notification_state: NotificationState::default(),
             app_cfg,
+            next_stream_generation_id: 1,
         }
     }
 
@@ -615,6 +617,12 @@ impl AppWorker {
         }
     }
 
+    fn next_stream_generation_id(&mut self) -> u64 {
+        let id = self.next_stream_generation_id;
+        self.next_stream_generation_id = self.next_stream_generation_id.wrapping_add(1).max(1);
+        id
+    }
+
     async fn handle_user_text_sequential(
         &mut self,
         call_id: &CallId,
@@ -685,6 +693,7 @@ impl AppWorker {
 
         let (sentence_tx, mut sentence_rx) =
             mpsc::channel::<String>(config::sentence_channel_capacity());
+        let generation_id = self.next_stream_generation_id();
         let first_token_timeout = config::llm_streaming_first_token_timeout();
         let idle_timeout = config::sentence_max_wait();
         let total_timeout = config::llm_streaming_total_timeout();
@@ -780,6 +789,7 @@ impl AppWorker {
                             self.call_id.clone(),
                             SessionOut::AppEnqueueBotAudioFile {
                                 path: wav_path.to_string_lossy().to_string(),
+                                generation_id,
                             },
                         ))
                         .await;

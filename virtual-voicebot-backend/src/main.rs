@@ -436,11 +436,11 @@ async fn main() -> anyhow::Result<()> {
                                 .await;
                         }
                     }
-                    SessionOut::AppEnqueueBotAudioFile { path } => {
+                    SessionOut::AppEnqueueBotAudioFile { path, generation_id } => {
                         if let Some(sess_tx) = session_registry.get(&call_id).await {
                             let _ = sess_tx
                                 .control_tx
-                                .send(SessionControlIn::AppBotAudioFileEnqueue { path })
+                                .send(SessionControlIn::AppBotAudioFileEnqueue { path, generation_id })
                                 .await;
                         }
                     }
