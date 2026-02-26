@@ -29,6 +29,8 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chron
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 tempfile = "3"
 tokio-stream = "0.1"
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
 
 [dev-dependencies]
 rcgen = "0.13"

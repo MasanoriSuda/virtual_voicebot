@@ -30,6 +30,21 @@ pub enum AppEvent {
     },
 }
 
+#[derive(Clone)]
+pub struct RtpAudioChunk {
+    pub call_id: CallId,
+    pub pcm_mulaw: Vec<u8>,
+}
+
+impl fmt::Debug for RtpAudioChunk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RtpAudioChunk")
+            .field("call_id", &self.call_id)
+            .field("pcm_mulaw_len", &self.pcm_mulaw.len())
+            .finish()
+    }
+}
+
 impl fmt::Debug for AppEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -91,6 +106,16 @@ pub struct AppEventRx {
     rx: Arc<Mutex<mpsc::Receiver<AppEvent>>>,
 }
 
+#[derive(Clone)]
+pub struct AudioChunkTx {
+    tx: mpsc::Sender<RtpAudioChunk>,
+    rx: Arc<Mutex<mpsc::Receiver<RtpAudioChunk>>>,
+}
+
+pub struct AudioChunkRx {
+    rx: Arc<Mutex<mpsc::Receiver<RtpAudioChunk>>>,
+}
+
 pub fn app_event_channel(capacity: usize) -> (AppEventTx, AppEventRx) {
     let (tx, rx) = mpsc::channel(capacity);
     let shared = Arc::new(Mutex::new(rx));
@@ -100,6 +125,18 @@ pub fn app_event_channel(capacity: usize) -> (AppEventTx, AppEventRx) {
             rx: Arc::clone(&shared),
         },
         AppEventRx { rx: shared },
+    )
+}
+
+pub fn audio_chunk_channel(capacity: usize) -> (AudioChunkTx, AudioChunkRx) {
+    let (tx, rx) = mpsc::channel(capacity);
+    let shared = Arc::new(Mutex::new(rx));
+    (
+        AudioChunkTx {
+            tx,
+            rx: Arc::clone(&shared),
+        },
+        AudioChunkRx { rx: shared },
     )
 }
 
@@ -120,6 +157,10 @@ impl AppEventTx {
         match self.tx.try_send(event) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(event)) => {
+                // NOTE: best-effort oldest-drop.
+                // If `try_lock()` fails because the consumer holds the mutex during `recv().await`,
+                // the retry below may still return `Full(event)`, which drops the newest item.
+                // A dedicated overwrite buffer/watch-style channel is needed for strict latest-first.
                 if let Ok(mut rx) = self.rx.try_lock() {
                     let _ = rx.try_recv();
                 }
@@ -132,6 +173,35 @@ impl AppEventTx {
 
 impl AppEventRx {
     pub async fn recv(&self) -> Option<AppEvent> {
+        let mut rx = self.rx.lock().await;
+        rx.recv().await
+    }
+}
+
+impl AudioChunkTx {
+    pub fn try_send_latest(
+        &self,
+        chunk: RtpAudioChunk,
+    ) -> Result<(), mpsc::error::TrySendError<RtpAudioChunk>> {
+        match self.tx.try_send(chunk) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(chunk)) => {
+                // NOTE: best-effort oldest-drop.
+                // If `try_lock()` fails because the consumer holds the mutex during `recv().await`,
+                // the retry below may still return `Full(chunk)`, which drops the newest item.
+                // A dedicated overwrite buffer/watch-style channel is needed for strict latest-first.
+                if let Ok(mut rx) = self.rx.try_lock() {
+                    let _ = rx.try_recv();
+                }
+                self.tx.try_send(chunk)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl AudioChunkRx {
+    pub async fn recv(&self) -> Option<RtpAudioChunk> {
         let mut rx = self.rx.lock().await;
         rx.recv().await
     }

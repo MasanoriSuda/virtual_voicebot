@@ -4,6 +4,7 @@
 //! - ポリシー（タイムアウト/リトライ/フォールバック）は既存のまま。
 
 use anyhow::{anyhow, Result};
+use futures_util::{SinkExt, StreamExt as FuturesStreamExt};
 use log::info;
 use reqwest::{multipart, Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -11,11 +12,14 @@ use serde_json::Value;
 use std::fs;
 use std::future::Future;
 use std::io::Cursor;
+use std::pin::Pin;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::StreamExt;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 use aws_config::meta::region::RegionProviderChain;
 use aws_config::{BehaviorVersion, SdkConfig};
@@ -26,8 +30,9 @@ use aws_sdk_transcribe as transcribe;
 use crate::shared::config;
 use crate::shared::error::ai::{AsrError, IntentError, LlmError, TtsError, WeatherError};
 use crate::shared::ports::ai::{
-    AiFuture, AsrChunk, AsrPort, ChatMessage, IntentPort, LlmPort, LlmStream, LlmStreamEvent,
-    LlmStreamPort, Role, SerInputPcm, SerOutcome, SerPort, TtsPort, WeatherPort, WeatherQuery,
+    asr_audio_channel, AiFuture, AsrAudioMsg, AsrChunk, AsrPort, AsrStreamEvent, AsrStreamHandle,
+    AsrStreamPort, ChatMessage, IntentPort, LlmPort, LlmStream, LlmStreamEvent, LlmStreamPort,
+    Role, SerInputPcm, SerOutcome, SerPort, TtsPort, WeatherPort, WeatherQuery,
 };
 use crate::shared::utils::mask_pii;
 
@@ -121,6 +126,22 @@ struct OpenAiSpeechRequest {
 #[derive(Deserialize)]
 struct WhisperResponse {
     text: String,
+}
+
+#[derive(Serialize)]
+struct WhisperStreamEndRequest {
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+#[derive(Deserialize)]
+struct WhisperStreamEventResponse {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 pub mod asr;
@@ -524,6 +545,171 @@ async fn transcribe_with_http_asr(
 
     let result: WhisperResponse = resp.json().await?;
     Ok(result.text)
+}
+
+const ASR_STREAM_AUDIO_CHANNEL_CAPACITY: usize = 32;
+
+fn parse_whisper_stream_event_text(text: &str) -> std::result::Result<AsrStreamEvent, AsrError> {
+    let parsed: WhisperStreamEventResponse = serde_json::from_str(text).map_err(|e| {
+        AsrError::TranscriptionFailed(format!("invalid ASR stream event JSON: {e}"))
+    })?;
+
+    if let Some(err) = parsed.error {
+        return Err(AsrError::TranscriptionFailed(err));
+    }
+
+    match parsed.kind.as_str() {
+        "partial" => Ok(AsrStreamEvent::Partial(parsed.text.unwrap_or_default())),
+        "final" => Ok(AsrStreamEvent::Final(parsed.text.unwrap_or_default())),
+        other => Err(AsrError::TranscriptionFailed(format!(
+            "unknown ASR stream event type: {other}"
+        ))),
+    }
+}
+
+async fn call_whisper_stream(
+    call_id: &str,
+    endpoint_url: &str,
+) -> std::result::Result<AsrStreamHandle, AsrError> {
+    let connect_timeout = config::asr_streaming_connect_timeout();
+    let first_partial_timeout = config::asr_streaming_first_partial_timeout();
+    let final_timeout = config::asr_streaming_final_timeout();
+
+    let (ws, _) = timeout(connect_timeout, connect_async(endpoint_url))
+        .await
+        .map_err(|_| AsrError::Timeout)?
+        .map_err(|e| AsrError::TranscriptionFailed(e.to_string()))?;
+
+    let (mut ws_tx, mut ws_rx) = ws.split();
+    let (audio_tx, audio_rx) = asr_audio_channel(ASR_STREAM_AUDIO_CHANNEL_CAPACITY);
+    let (final_tx, final_rx) = oneshot::channel::<Result<String, AsrError>>();
+    let call_id = call_id.to_string();
+
+    tokio::spawn(async move {
+        use std::future::pending;
+
+        let mut first_partial_seen = false;
+        let mut last_partial = String::new();
+        let mut end_sent = false;
+        let mut waiting_final = false;
+        let mut first_partial_timer = Box::pin(sleep(first_partial_timeout));
+        let mut final_timer: Option<Pin<Box<tokio::time::Sleep>>> = None;
+
+        loop {
+            tokio::select! {
+                _ = &mut first_partial_timer, if !first_partial_seen => {
+                    let _ = final_tx.send(Err(AsrError::Timeout));
+                    let _ = ws_tx.close().await;
+                    return;
+                }
+                _ = async {
+                    if let Some(timer) = &mut final_timer {
+                        timer.as_mut().await;
+                    } else {
+                        pending::<()>().await;
+                    }
+                }, if waiting_final => {
+                    let _ = final_tx.send(Ok(last_partial));
+                    let _ = ws_tx.close().await;
+                    return;
+                }
+                maybe_audio = audio_rx.recv(), if !end_sent => {
+                    match maybe_audio {
+                        Some(AsrAudioMsg::Chunk(pcmu)) => {
+                            if let Err(e) = ws_tx.send(WsMessage::Binary(pcmu.into())).await {
+                                let _ = final_tx.send(Err(AsrError::TranscriptionFailed(e.to_string())));
+                                return;
+                            }
+                        }
+                        Some(AsrAudioMsg::End) => {
+                            end_sent = true;
+                            waiting_final = true;
+                            if let Err(e) = ws_tx
+                                .send(WsMessage::Text(
+                                    serde_json::to_string(&WhisperStreamEndRequest { kind: "end" })
+                                        .unwrap_or_else(|_| "{\"type\":\"end\"}".to_string())
+                                        .into(),
+                                ))
+                                .await
+                            {
+                                let _ = final_tx.send(Err(AsrError::TranscriptionFailed(e.to_string())));
+                                return;
+                            }
+                            final_timer = Some(Box::pin(sleep(final_timeout)));
+                        }
+                        None => {
+                            let _ = final_tx.send(Err(AsrError::TranscriptionFailed(
+                                "ASR audio channel closed".to_string(),
+                            )));
+                            let _ = ws_tx.close().await;
+                            return;
+                        }
+                    }
+                }
+                maybe_msg = FuturesStreamExt::next(&mut ws_rx) => {
+                    match maybe_msg {
+                        Some(Ok(WsMessage::Text(text))) => {
+                            match parse_whisper_stream_event_text(&text) {
+                                Ok(AsrStreamEvent::Partial(text)) => {
+                                    first_partial_seen = true;
+                                    if !text.is_empty() {
+                                        last_partial = text;
+                                    }
+                                }
+                                Ok(AsrStreamEvent::Final(text)) => {
+                                    if !text.is_empty() {
+                                        last_partial = text.clone();
+                                    }
+                                    let out = if text.is_empty() { last_partial.clone() } else { text };
+                                    let _ = final_tx.send(Ok(out));
+                                    let _ = ws_tx.close().await;
+                                    return;
+                                }
+                                Err(e) => {
+                                    let _ = final_tx.send(Err(e));
+                                    let _ = ws_tx.close().await;
+                                    return;
+                                }
+                            }
+                        }
+                        Some(Ok(WsMessage::Close(_))) => {
+                            if waiting_final {
+                                let _ = final_tx.send(Ok(last_partial));
+                            } else {
+                                let _ = final_tx.send(Err(AsrError::TranscriptionFailed(
+                                    "ASR stream closed before final".to_string(),
+                                )));
+                            }
+                            return;
+                        }
+                        Some(Ok(WsMessage::Ping(data))) => {
+                            let _ = ws_tx.send(WsMessage::Pong(data)).await;
+                        }
+                        Some(Ok(WsMessage::Pong(_))) => {}
+                        Some(Ok(WsMessage::Binary(_))) => {}
+                        Some(Ok(WsMessage::Frame(_))) => {}
+                        Some(Err(e)) => {
+                            log::warn!("[asr stream {}] websocket receive error: {}", call_id, e);
+                            let _ = final_tx.send(Err(AsrError::TranscriptionFailed(e.to_string())));
+                            return;
+                        }
+                        None => {
+                            if waiting_final {
+                                let _ = final_tx.send(Ok(last_partial));
+                            } else {
+                                let _ = final_tx.send(Err(AsrError::TranscriptionFailed(
+                                    "ASR stream ended before final".to_string(),
+                                )));
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(AsrStreamHandle { audio_tx, final_rx })
 }
 
 fn build_openai_chat_messages(
@@ -1194,7 +1380,8 @@ fn spawn_ollama_stream_parser(resp: reqwest::Response) -> LlmStream {
                 return;
             }
 
-            let next_result = timeout(read_timeout, bytes_stream.next()).await;
+            let next_result =
+                timeout(read_timeout, FuturesStreamExt::next(&mut bytes_stream)).await;
             let Some(item) = (match next_result {
                 Ok(item) => item,
                 Err(_) => {
@@ -1556,6 +1743,16 @@ impl AsrPort for DefaultAiPort {
                 .await
                 .map_err(|e| AsrError::TranscriptionFailed(e.to_string()))
         })
+    }
+}
+
+impl AsrStreamPort for DefaultAiPort {
+    fn transcribe_stream(
+        &self,
+        call_id: String,
+        endpoint_url: String,
+    ) -> AiFuture<Result<AsrStreamHandle, AsrError>> {
+        Box::pin(async move { call_whisper_stream(&call_id, &endpoint_url).await })
     }
 }
 

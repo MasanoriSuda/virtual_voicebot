@@ -23,7 +23,7 @@ use crate::protocol::session::timers::SessionTimers;
 use crate::protocol::sip::{parse_name_addr, parse_uri};
 use crate::service::routing::normalize_phone_number_e164;
 use crate::shared::config::{self, SessionRuntimeConfig};
-use crate::shared::ports::app::AppEventTx;
+use crate::shared::ports::app::{AppEventTx, AudioChunkTx};
 use crate::shared::ports::call_log_port::{
     CallLogPort, EndedCallLog, EndedIvrSessionEvent, EndedRecording,
 };
@@ -90,6 +90,7 @@ pub struct SessionCoordinator {
     control_tx: mpsc::Sender<SessionControlIn>,
     media_tx: mpsc::Sender<SessionMediaIn>,
     app_tx: AppEventTx,
+    audio_chunk_tx: Option<AudioChunkTx>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
     media_cfg: MediaConfig,
     call_log_port: Arc<dyn CallLogPort>,
@@ -159,6 +160,7 @@ impl SessionCoordinator {
         to_uri: String,
         session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
         app_tx: AppEventTx,
+        audio_chunk_tx: Option<AudioChunkTx>,
         media_cfg: MediaConfig,
         rtp_tx: RtpTxHandle,
         ingest_url: Option<String>,
@@ -190,6 +192,7 @@ impl SessionCoordinator {
             control_tx: control_tx.clone(),
             media_tx: media_tx.clone(),
             app_tx,
+            audio_chunk_tx,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg,
             call_log_port,
@@ -942,6 +945,7 @@ mod tests {
             control_tx,
             media_tx,
             app_tx,
+            audio_chunk_tx: None,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
             call_log_port: Arc::new(DummyCallLogPort),

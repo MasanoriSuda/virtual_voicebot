@@ -16,7 +16,7 @@ use crate::protocol::session::types::{
     SessionTimerInfo,
 };
 use crate::service::routing::{ActionConfig, ActionExecutor, RuleEvaluator};
-use crate::shared::ports::app::{AppEvent, EndReason};
+use crate::shared::ports::app::{AppEvent, EndReason, RtpAudioChunk};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -744,7 +744,27 @@ impl SessionCoordinator {
                     }
                     self.recording.push_b_leg_tx(&payload);
                 } else if self.ivr_state == IvrState::VoicebotMode {
-                    if let Some(buffer) = self.capture.ingest(&payload) {
+                    let was_in_speech = self.capture.is_in_speech();
+                    let capture_result = self.capture.ingest(&payload);
+                    let is_in_speech = self.capture.is_in_speech();
+
+                    if (was_in_speech || is_in_speech)
+                        && crate::shared::config::voicebot_asr_streaming_enabled()
+                    {
+                        if let Some(tx) = &self.audio_chunk_tx {
+                            if let Err(err) = tx.try_send_latest(RtpAudioChunk {
+                                call_id: self.call_id.clone(),
+                                pcm_mulaw: payload.clone(),
+                            }) {
+                                warn!(
+                                    "[session {}] dropped audio chunk event: {:?}",
+                                    self.call_id, err
+                                );
+                            }
+                        }
+                    }
+
+                    if let Some(buffer) = capture_result {
                         info!(
                             "[session {}] buffered audio ready for app ({} bytes)",
                             self.call_id,
@@ -1680,6 +1700,7 @@ mod tests {
             control_tx,
             media_tx,
             app_tx,
+            audio_chunk_tx: None,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
             call_log_port: Arc::new(DummyCallLogPort),
