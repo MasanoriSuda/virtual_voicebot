@@ -41,17 +41,28 @@ fn sanitized_display_url_for_log(url: &str) -> String {
     if let Ok(mut parsed) = reqwest::Url::parse(trimmed) {
         let _ = parsed.set_username("");
         let _ = parsed.set_password(None);
+        parsed.set_query(None);
+        parsed.set_fragment(None);
         return parsed.to_string().trim_end_matches('/').to_string();
     }
 
     if let Some((scheme, rest)) = trimmed.split_once("://") {
         let host_part = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
+        let host_part = host_part
+            .split(['?', '#'])
+            .next()
+            .unwrap_or(host_part)
+            .trim_end_matches('/');
         return format!("{scheme}://{host_part}");
     }
 
     trimmed
         .rsplit_once('@')
         .map_or(trimmed, |(_, host)| host)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(trimmed)
+        .trim_end_matches('/')
         .to_string()
 }
 
@@ -609,4 +620,63 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sanitize_optional_url, sanitized_display_url_for_log};
+
+    #[test]
+    fn sanitized_display_url_for_log_returns_none_for_empty_or_whitespace() {
+        assert_eq!(sanitized_display_url_for_log(""), "none");
+        assert_eq!(sanitized_display_url_for_log("   \t  "), "none");
+    }
+
+    #[test]
+    fn sanitized_display_url_for_log_trims_trailing_slash_and_strips_userinfo() {
+        assert_eq!(
+            sanitized_display_url_for_log("http://user:pass@example.com:8080/api/"),
+            "http://example.com:8080/api"
+        );
+        assert_eq!(
+            sanitized_display_url_for_log("https://example.com/base/"),
+            "https://example.com/base"
+        );
+        assert_eq!(
+            sanitized_display_url_for_log("https://user:pass@example.com/base/?token=secret#frag"),
+            "https://example.com/base"
+        );
+    }
+
+    #[test]
+    fn sanitized_display_url_for_log_handles_invalid_strings_with_and_without_scheme() {
+        assert_eq!(
+            sanitized_display_url_for_log("custom scheme://user:pass@host.local/path"),
+            "custom scheme://host.local/path"
+        );
+        assert_eq!(
+            sanitized_display_url_for_log(
+                "custom scheme://user:pass@host.local/path?token=secret#frag"
+            ),
+            "custom scheme://host.local/path"
+        );
+        assert_eq!(
+            sanitized_display_url_for_log("not a url@host.local/path?token=secret#frag"),
+            "host.local/path"
+        );
+        assert_eq!(
+            sanitized_display_url_for_log("just-hostname"),
+            "just-hostname"
+        );
+    }
+
+    #[test]
+    fn sanitize_optional_url_handles_some_and_none() {
+        assert_eq!(
+            sanitize_optional_url(Some("http://user:pass@example.com/")),
+            "http://example.com"
+        );
+        assert_eq!(sanitize_optional_url(Some("   ")), "none");
+        assert_eq!(sanitize_optional_url(None), "none");
+    }
 }
