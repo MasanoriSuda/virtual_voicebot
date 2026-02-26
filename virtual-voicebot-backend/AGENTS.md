@@ -211,7 +211,7 @@ Co-Authored-By: Codex <noreply@openai.com>
 - [ ] AC-1: ステアリングがある場合、**ステアリング§5** の差分仕様どおりに実装されていること
 - [ ] AC-2: **コード変更がある場合**、変更に対応するテストが追加/更新されていること
 - [ ] AC-3: **コード変更がある場合**、以下を実装完了後にローカルで必ず実行し、すべて成功すること。失敗した場合は修正して再実行する。最終報告に各コマンドの実行結果（成功/失敗）を記載すること。
-  ```
+  ```bash
   rustc -V && cargo -V
   cargo fmt --all -- --check
   cargo clippy --all-targets --all-features -- -D warnings

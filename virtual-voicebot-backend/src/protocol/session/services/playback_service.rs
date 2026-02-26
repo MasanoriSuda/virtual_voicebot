@@ -1,4 +1,5 @@
 use std::io::ErrorKind;
+use std::path::{Component, Path};
 
 use anyhow::{anyhow, Error};
 
@@ -198,6 +199,13 @@ impl SessionCoordinator {
         if !is_tts_temp_wav_path(path) {
             return;
         }
+        if !is_safe_tts_temp_wav_path(path).await {
+            warn!(
+                "[session {}] skip unsafe TTS temp wav cleanup path={}",
+                self.call_id, path
+            );
+            return;
+        }
         match tokio::fs::remove_file(path).await {
             Ok(()) => {}
             Err(err) if err.kind() == ErrorKind::NotFound => {}
@@ -232,4 +240,41 @@ impl SessionCoordinator {
 
 fn is_tts_temp_wav_path(path: &str) -> bool {
     path.starts_with("/tmp/tts_output_") || path.starts_with("/tmp/tts_stream_output_")
+}
+
+async fn is_safe_tts_temp_wav_path(path: &str) -> bool {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return false;
+    }
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return false;
+    }
+
+    let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    if !(file_name.starts_with("tts_output_") || file_name.starts_with("tts_stream_output_")) {
+        return false;
+    }
+    if !file_name.ends_with(".wav") {
+        return false;
+    }
+    if !file_name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return false;
+    }
+
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let Ok(canon_tmp) = tokio::fs::canonicalize("/tmp").await else {
+        return false;
+    };
+    let Ok(canon_parent) = tokio::fs::canonicalize(parent).await else {
+        return false;
+    };
+    canon_parent == canon_tmp
 }
