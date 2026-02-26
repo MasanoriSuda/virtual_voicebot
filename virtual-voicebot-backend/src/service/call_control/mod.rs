@@ -5,6 +5,7 @@
 
 mod router;
 mod sentence_accumulator;
+mod wav_stream_chunker;
 
 use std::future::pending;
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ use crate::service::call_control::router::{
     parse_intent_json, router_config, system_info_response, RouteAction, Router,
 };
 use crate::service::call_control::sentence_accumulator::SentenceAccumulator;
+use crate::service::call_control::wav_stream_chunker::WavStreamChunker;
 use crate::shared::config::{self, AppRuntimeConfig};
 use crate::shared::error::ai::TtsError;
 use crate::shared::ports::ai::{
@@ -176,6 +178,12 @@ struct NotificationState {
     ringing_notified: bool,
     missed_notified: bool,
     ended_notified: bool,
+}
+
+#[derive(Debug)]
+struct TtsStreamEarlyStartError {
+    error: TtsError,
+    emitted_segments: usize,
 }
 
 impl AppWorker {
@@ -1028,6 +1036,30 @@ impl AppWorker {
             }
         };
 
+        if config::tts_streaming_early_start_enabled() {
+            match self
+                .stream_tts_sentence_early_start(call_id, stream, generation_id)
+                .await
+            {
+                Ok(()) => return true,
+                Err(err) => {
+                    if err.emitted_segments > 0 {
+                        log::warn!(
+                            "[tts stream {call_id}] early-start failed after {} segment(s): {}; keep partial playback",
+                            err.emitted_segments,
+                            err.error
+                        );
+                        return true;
+                    }
+                    log::warn!(
+                        "[tts stream {call_id}] early-start failed before first segment: {}; fallback",
+                        err.error
+                    );
+                    return false;
+                }
+            }
+        }
+
         match self
             .collect_tts_stream_to_tmp(call_id, stream, generation_id)
             .await
@@ -1041,6 +1073,110 @@ impl AppWorker {
                 log::warn!("[tts stream {call_id}] collect/write failed: {e}; fallback");
                 false
             }
+        }
+    }
+
+    async fn stream_tts_sentence_early_start(
+        &mut self,
+        call_id: &CallId,
+        stream: TtsStream,
+        generation_id: u64,
+    ) -> Result<(), TtsStreamEarlyStartError> {
+        let first_chunk_timeout = config::tts_streaming_first_chunk_timeout();
+        let total_timeout = config::tts_streaming_total_timeout();
+        let mut emitted_segments = 0usize;
+        let mut next_segment_index = 0usize;
+        let mut chunker = WavStreamChunker::new(config::tts_streaming_early_start_bytes());
+
+        let streamed = timeout(total_timeout, async {
+            tokio::pin!(stream);
+
+            let first = tokio::select! {
+                item = stream.next() => item,
+                _ = sleep(first_chunk_timeout) => {
+                    return Err(TtsError::SynthesisFailed(format!(
+                        "first chunk timeout ({} ms)",
+                        first_chunk_timeout.as_millis()
+                    )));
+                }
+            };
+
+            match first {
+                Some(Ok(bytes)) => {
+                    let wav_segments = chunker.push(&bytes).map_err(|e| {
+                        TtsError::SynthesisFailed(format!("wav stream parse failed: {e}"))
+                    })?;
+                    for wav in wav_segments {
+                        self.write_and_enqueue_tts_stream_segment(
+                            call_id,
+                            generation_id,
+                            next_segment_index,
+                            wav,
+                        )
+                        .await?;
+                        emitted_segments += 1;
+                        next_segment_index += 1;
+                    }
+                }
+                Some(Err(e)) => return Err(e),
+                None => return Err(TtsError::SynthesisFailed("empty TTS stream".to_string())),
+            }
+
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(bytes) => {
+                        let wav_segments = chunker.push(&bytes).map_err(|e| {
+                            TtsError::SynthesisFailed(format!("wav stream parse failed: {e}"))
+                        })?;
+                        for wav in wav_segments {
+                            self.write_and_enqueue_tts_stream_segment(
+                                call_id,
+                                generation_id,
+                                next_segment_index,
+                                wav,
+                            )
+                            .await?;
+                            emitted_segments += 1;
+                            next_segment_index += 1;
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+
+            if let Some(wav) = chunker.finish().map_err(|e| {
+                TtsError::SynthesisFailed(format!("wav stream finalize failed: {e}"))
+            })? {
+                self.write_and_enqueue_tts_stream_segment(
+                    call_id,
+                    generation_id,
+                    next_segment_index,
+                    wav,
+                )
+                .await?;
+                emitted_segments += 1;
+            }
+
+            if emitted_segments == 0 {
+                return Err(TtsError::SynthesisFailed("empty TTS stream".to_string()));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| {
+            TtsError::SynthesisFailed(format!("total timeout ({} ms)", total_timeout.as_millis()))
+        });
+
+        match streamed {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(TtsStreamEarlyStartError {
+                error,
+                emitted_segments,
+            }),
+            Err(error) => Err(TtsStreamEarlyStartError {
+                error,
+                emitted_segments,
+            }),
         }
     }
 
@@ -1099,6 +1235,15 @@ impl AppWorker {
     }
 
     fn tts_stream_tmp_path(&self, call_id: &CallId, generation_id: u64) -> PathBuf {
+        self.tts_stream_segment_tmp_path(call_id, generation_id, 0)
+    }
+
+    fn tts_stream_segment_tmp_path(
+        &self,
+        call_id: &CallId,
+        generation_id: u64,
+        segment_index: usize,
+    ) -> PathBuf {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1112,9 +1257,25 @@ impl AppWorker {
             })
             .collect();
         PathBuf::from(format!(
-            "/tmp/tts_stream_output_{}_{}_{}.wav",
-            safe_call_id, generation_id, ts
+            "/tmp/tts_stream_output_{}_{}_{}_{}.wav",
+            safe_call_id, generation_id, segment_index, ts
         ))
+    }
+
+    async fn write_and_enqueue_tts_stream_segment(
+        &self,
+        call_id: &CallId,
+        generation_id: u64,
+        segment_index: usize,
+        wav_bytes: Vec<u8>,
+    ) -> Result<(), TtsError> {
+        let tmp_path = self.tts_stream_segment_tmp_path(call_id, generation_id, segment_index);
+        tokio::fs::write(&tmp_path, &wav_bytes)
+            .await
+            .map_err(|e| TtsError::SynthesisFailed(format!("tmp wav write failed: {e}")))?;
+        self.enqueue_streaming_bot_audio_file(tmp_path, generation_id)
+            .await;
+        Ok(())
     }
 
     async fn enqueue_streaming_bot_audio_file(&self, wav_path: PathBuf, generation_id: u64) {
