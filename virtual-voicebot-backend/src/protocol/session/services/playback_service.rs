@@ -1,3 +1,5 @@
+use std::io::ErrorKind;
+
 use anyhow::{anyhow, Error};
 
 use super::super::SessionCoordinator;
@@ -47,7 +49,16 @@ impl SessionCoordinator {
         path: &str,
         generation_id: PlaybackGenerationId,
     ) -> Result<(), Error> {
-        let frames = self.load_frames_with_timeout(path).await?;
+        let frames = match self.load_frames_with_timeout(path).await {
+            Ok(frames) => {
+                self.cleanup_tts_temp_wav(path).await;
+                frames
+            }
+            Err(e) => {
+                self.cleanup_tts_temp_wav(path).await;
+                return Err(e);
+            }
+        };
         if frames.is_empty() {
             anyhow::bail!("no frames");
         }
@@ -183,6 +194,20 @@ impl SessionCoordinator {
         }
     }
 
+    async fn cleanup_tts_temp_wav(&self, path: &str) {
+        if !is_tts_temp_wav_path(path) {
+            return;
+        }
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => warn!(
+                "[session {}] failed to remove TTS temp wav path={}: {:?}",
+                self.call_id, path, err
+            ),
+        }
+    }
+
     fn clear_playback_state(&mut self) {
         self.playback = None;
         self.playback_generation_id = None;
@@ -203,4 +228,8 @@ impl SessionCoordinator {
         self.sending_audio = true;
         Ok(())
     }
+}
+
+fn is_tts_temp_wav_path(path: &str) -> bool {
+    path.starts_with("/tmp/tts_output_") || path.starts_with("/tmp/tts_stream_output_")
 }
