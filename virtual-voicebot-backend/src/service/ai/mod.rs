@@ -32,7 +32,8 @@ use crate::shared::error::ai::{AsrError, IntentError, LlmError, TtsError, Weathe
 use crate::shared::ports::ai::{
     asr_audio_channel, AiFuture, AsrAudioMsg, AsrChunk, AsrPort, AsrStreamEvent, AsrStreamHandle,
     AsrStreamPort, ChatMessage, IntentPort, LlmPort, LlmStream, LlmStreamEvent, LlmStreamPort,
-    Role, SerInputPcm, SerOutcome, SerPort, TtsPort, WeatherPort, WeatherQuery,
+    Role, SerInputPcm, SerOutcome, SerPort, TtsPort, TtsStream, TtsStreamPort, WeatherPort,
+    WeatherQuery,
 };
 use crate::shared::utils::mask_pii;
 
@@ -941,6 +942,128 @@ async fn synth_openai_tts_for_stage(
     Ok(wav)
 }
 
+fn map_tts_response_stream(resp: reqwest::Response) -> TtsStream {
+    Box::pin(resp.bytes_stream().map(|chunk| {
+        chunk
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| TtsError::SynthesisFailed(e.to_string()))
+    }))
+}
+
+async fn synth_openai_tts_stream_for_stage(
+    base_url: &str,
+    api_key: &str,
+    text: &str,
+    connect_timeout: Duration,
+) -> Result<TtsStream> {
+    let client = http_client_for_stream(connect_timeout)?;
+    let url = openai_endpoint_url(base_url, "/audio/speech");
+    let req = OpenAiSpeechRequest {
+        model: OPENAI_TTS_MODEL.to_string(),
+        voice: OPENAI_TTS_VOICE.to_string(),
+        input: text.to_string(),
+        response_format: "wav".to_string(),
+    };
+
+    let resp = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&req)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body_len = resp.bytes().await?.len();
+        anyhow::bail!("OpenAI TTS HTTP error {} (body_len={})", status, body_len);
+    }
+    Ok(map_tts_response_stream(resp))
+}
+
+async fn synth_zundamon_stream_for_stage(
+    base_url: &str,
+    text: &str,
+    startup_timeout: Duration,
+    connect_timeout: Duration,
+) -> Result<TtsStream> {
+    let query_client = http_client(startup_timeout)?;
+    let speaker_id = 3; // ずんだもん ノーマル
+
+    let query_url = tts_endpoint_url(base_url, "/audio_query");
+    let query_resp = query_client
+        .post(query_url)
+        .query(&[("text", text), ("speaker", &speaker_id.to_string())])
+        .send()
+        .await?;
+
+    let status = query_resp.status();
+    let query_body = query_resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("audio_query error {} ({} bytes)", status, query_body.len());
+    }
+
+    let stream_client = http_client_for_stream(connect_timeout)?;
+    let synth_url = tts_endpoint_url(base_url, "/synthesis");
+    let synth_resp = stream_client
+        .post(synth_url)
+        .query(&[("speaker", &speaker_id.to_string())])
+        .header("Content-Type", "application/json")
+        .body(query_body)
+        .send()
+        .await?;
+
+    let status = synth_resp.status();
+    if !status.is_success() {
+        let body_len = synth_resp.bytes().await?.len();
+        anyhow::bail!("synthesis error {} ({} bytes)", status, body_len);
+    }
+
+    Ok(map_tts_response_stream(synth_resp))
+}
+
+async fn try_tts_stream_stage<F, Fut>(
+    call_id: &str,
+    stage: TtsStage,
+    startup_timeout: Duration,
+    run: F,
+) -> Option<TtsStream>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<TtsStream>>,
+{
+    let stage_name = stage.as_str();
+    log::debug!(
+        "[tts {call_id}] TTS stream stage start: tts_stage={} timeout_ms={}",
+        stage_name,
+        startup_timeout.as_millis()
+    );
+
+    let stream = match timeout(startup_timeout, run()).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(err)) => {
+            log::warn!(
+                "[tts {call_id}] TTS stream stage failed: tts_stage={} reason={}",
+                stage_name,
+                err
+            );
+            return None;
+        }
+        Err(_) => {
+            log::warn!(
+                "[tts {call_id}] TTS stream stage failed: tts_stage={} reason=timeout timeout_ms={}",
+                stage_name,
+                startup_timeout.as_millis()
+            );
+            return None;
+        }
+    };
+
+    log::debug!(
+        "[tts {call_id}] TTS stream stage connected: tts_stage={}",
+        stage_name
+    );
+    Some(stream)
+}
+
 async fn try_asr_stage<F, Fut>(
     call_id: &str,
     stage: AsrStage,
@@ -1820,6 +1943,102 @@ impl TtsPort for DefaultAiPort {
                 .await
                 .map(std::path::PathBuf::from)
                 .map_err(|e| TtsError::SynthesisFailed(e.to_string()))
+        })
+    }
+}
+
+impl TtsStreamPort for DefaultAiPort {
+    fn synth_stream(&self, call_id: String, text: String) -> AiFuture<Result<TtsStream, TtsError>> {
+        Box::pin(async move {
+            let ai_cfg = config::ai_config();
+            if tts_stage_count(ai_cfg) == 0 {
+                log::error!("[tts {call_id}] TTS stream failed: reason=all TTS stages disabled");
+                return Err(TtsError::SynthesisFailed(
+                    "all TTS stages disabled".to_string(),
+                ));
+            }
+
+            let startup_timeout = config::tts_streaming_connect_timeout();
+            let openai_tts_enabled = openai_tts_stage_enabled(ai_cfg);
+            let openai_api_key_owned = openai_api_key(ai_cfg).map(str::to_string);
+            let openai_base_url = ai_cfg.openai_base_url.clone();
+
+            if openai_tts_enabled {
+                if let Some(stream) =
+                    try_tts_stream_stage(&call_id, TtsStage::Cloud, startup_timeout, || {
+                        let openai_api_key_owned = openai_api_key_owned.clone();
+                        let openai_base_url = openai_base_url.clone();
+                        let text = text.clone();
+                        async move {
+                            let api_key = openai_api_key_owned
+                                .as_deref()
+                                .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
+                            synth_openai_tts_stream_for_stage(
+                                &openai_base_url,
+                                api_key,
+                                &text,
+                                startup_timeout,
+                            )
+                            .await
+                        }
+                    })
+                    .await
+                {
+                    return Ok(stream);
+                }
+            }
+
+            if ai_cfg.tts_local_server_enabled {
+                let local_base_url = ai_cfg.tts_local_server_base_url.clone();
+                if let Some(stream) =
+                    try_tts_stream_stage(&call_id, TtsStage::Local, startup_timeout, || {
+                        let text = text.clone();
+                        async move {
+                            synth_zundamon_stream_for_stage(
+                                &local_base_url,
+                                &text,
+                                startup_timeout,
+                                startup_timeout,
+                            )
+                            .await
+                        }
+                    })
+                    .await
+                {
+                    return Ok(stream);
+                }
+            }
+
+            if ai_cfg.tts_raspi_enabled {
+                if let Some(raspi_base_url) = ai_cfg.tts_raspi_base_url.clone() {
+                    if let Some(stream) =
+                        try_tts_stream_stage(&call_id, TtsStage::Raspi, startup_timeout, || {
+                            let text = text.clone();
+                            async move {
+                                synth_zundamon_stream_for_stage(
+                                    &raspi_base_url,
+                                    &text,
+                                    startup_timeout,
+                                    startup_timeout,
+                                )
+                                .await
+                            }
+                        })
+                        .await
+                    {
+                        return Ok(stream);
+                    }
+                } else {
+                    log::warn!(
+                        "[tts {call_id}] TTS stream stage failed: tts_stage=raspi reason=TTS_RASPI_BASE_URL missing"
+                    );
+                }
+            }
+
+            log::error!("[tts {call_id}] TTS stream failed: reason=all TTS stages failed");
+            Err(TtsError::SynthesisFailed(
+                "all TTS stages failed".to_string(),
+            ))
         })
     }
 }

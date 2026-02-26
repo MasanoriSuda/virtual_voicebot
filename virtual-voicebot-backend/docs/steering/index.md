@@ -53,6 +53,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-246](STEER-246_whisper-docker-service.md) | Whisper Docker Compose 常駐化 | Approved | #246 | P1 | Whisper サーバーを Docker Compose サービスとして常駐化。GET /healthz 追加・model cache volume 永続化・compose ネットワーク内での接続先設定。#245 ダッシュボード死活監視の前提基盤 |
 | [STEER-249](STEER-249_streaming-pipeline.md) | LLM ストリーミング ＋ 文単位 TTS 先行再生 | Draft | #249 | P1 | Ollama streaming 受信（stream:true）＋ 文単位 TTS キュー投入で first-audio latency を短縮。ASR 真のストリーミング化は別 Issue へ分割 |
 | [STEER-250](STEER-250_asr-streaming.md) | 真の ASR ストリーミング化（第2段階） | Approved | #250 | P1 | 発話中に ASR WebSocket でリアルタイム転写し、発話終了→LLM開始のギャップをほぼゼロにする。#249 完了後に着手 |
+| [STEER-251](STEER-251_tts-streaming.md) | 真の TTS ストリーミング化（第3段階） | Draft | #251 | P1 | TTS サービスの streaming API を利用して音声バイトを逐次受信し、文単位の first-audio latency をさらに削減する。#249 完了後に着手 |
 
 ---
 
@@ -117,3 +118,4 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-25 | 3.3 | STEER-249 追加（LLM ストリーミング ＋ 文単位 TTS 先行再生） | Claude Sonnet 4.6 |
 | 2026-02-26 | 3.4 | STEER-250 追加（真の ASR ストリーミング化・第2段階） | Claude Sonnet 4.6 |
 | 2026-02-26 | 3.5 | STEER-250 ステータス Draft → Approved | @MasanoriSuda |
+| 2026-02-26 | 3.6 | STEER-251 追加（真の TTS ストリーミング化・第3段階） | Claude Sonnet 4.6 |

@@ -32,12 +32,18 @@ impl AppRuntimeConfig {
 
 static VOICEBOT_STREAMING_ENABLED: OnceLock<bool> = OnceLock::new();
 static VOICEBOT_ASR_STREAMING_ENABLED: OnceLock<bool> = OnceLock::new();
+static VOICEBOT_TTS_STREAMING_ENABLED: OnceLock<bool> = OnceLock::new();
 static VOICEBOT_STREAMING_SENTENCE_MAX_CHARS: OnceLock<usize> = OnceLock::new();
 static VOICEBOT_STREAMING_SENTENCE_MAX_WAIT: OnceLock<Duration> = OnceLock::new();
 static VOICEBOT_STREAMING_SENTENCE_CHANNEL_CAPACITY: OnceLock<usize> = OnceLock::new();
 static LLM_STREAMING_CONNECT_TIMEOUT: OnceLock<Duration> = OnceLock::new();
 static LLM_STREAMING_FIRST_TOKEN_TIMEOUT: OnceLock<Duration> = OnceLock::new();
 static LLM_STREAMING_TOTAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static TTS_STREAMING_CONNECT_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static TTS_STREAMING_FIRST_CHUNK_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static TTS_STREAMING_TOTAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static TTS_STREAMING_EARLY_START_ENABLED: OnceLock<bool> = OnceLock::new();
+static TTS_STREAMING_EARLY_START_BYTES: OnceLock<usize> = OnceLock::new();
 static ASR_STREAMING_SERVER_URL: OnceLock<String> = OnceLock::new();
 static ASR_STREAMING_CONNECT_TIMEOUT: OnceLock<Duration> = OnceLock::new();
 static ASR_STREAMING_FIRST_PARTIAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
@@ -50,6 +56,11 @@ pub fn voicebot_streaming_enabled() -> bool {
 pub fn voicebot_asr_streaming_enabled() -> bool {
     *VOICEBOT_ASR_STREAMING_ENABLED
         .get_or_init(|| env_bool("VOICEBOT_ASR_STREAMING_ENABLED", false))
+}
+
+pub fn voicebot_tts_streaming_enabled() -> bool {
+    *VOICEBOT_TTS_STREAMING_ENABLED
+        .get_or_init(|| env_bool("VOICEBOT_TTS_STREAMING_ENABLED", false))
 }
 
 pub fn sentence_max_chars() -> usize {
@@ -80,6 +91,31 @@ pub fn llm_streaming_first_token_timeout() -> Duration {
 pub fn llm_streaming_total_timeout() -> Duration {
     *LLM_STREAMING_TOTAL_TIMEOUT
         .get_or_init(|| env_duration_ms("LLM_STREAMING_TOTAL_TIMEOUT_MS", 60_000))
+}
+
+pub fn tts_streaming_connect_timeout() -> Duration {
+    *TTS_STREAMING_CONNECT_TIMEOUT
+        .get_or_init(|| env_duration_ms("TTS_STREAMING_CONNECT_TIMEOUT_MS", 3_000))
+}
+
+pub fn tts_streaming_first_chunk_timeout() -> Duration {
+    *TTS_STREAMING_FIRST_CHUNK_TIMEOUT
+        .get_or_init(|| env_duration_ms("TTS_STREAMING_FIRST_CHUNK_TIMEOUT_MS", 3_000))
+}
+
+pub fn tts_streaming_total_timeout() -> Duration {
+    *TTS_STREAMING_TOTAL_TIMEOUT
+        .get_or_init(|| env_duration_ms("TTS_STREAMING_TOTAL_TIMEOUT_MS", 15_000))
+}
+
+pub fn tts_streaming_early_start_enabled() -> bool {
+    *TTS_STREAMING_EARLY_START_ENABLED
+        .get_or_init(|| env_bool("VOICEBOT_TTS_STREAMING_EARLY_START_ENABLED", false))
+}
+
+pub fn tts_streaming_early_start_bytes() -> usize {
+    *TTS_STREAMING_EARLY_START_BYTES
+        .get_or_init(|| env_u64("TTS_STREAMING_EARLY_START_BYTES", 24_000) as usize)
 }
 
 pub fn asr_streaming_server_url() -> String {

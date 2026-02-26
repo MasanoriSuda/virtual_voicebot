@@ -16,7 +16,7 @@ pub use asr::{
 pub use intent::IntentPort;
 pub use llm::{LlmPort, LlmStream, LlmStreamEvent, LlmStreamPort};
 pub use ser::SerPort;
-pub use tts::TtsPort;
+pub use tts::{TtsPort, TtsStream, TtsStreamPort};
 pub use types::{
     AsrChunk, ChatMessage, Emotion, Intent, Role, SerInputPcm, SerOutcome, SerResult, WeatherQuery,
     WeatherResponse,
