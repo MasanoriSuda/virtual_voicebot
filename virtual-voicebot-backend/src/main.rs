@@ -32,6 +32,87 @@ const SIP_INPUT_CHANNEL_CAPACITY: usize = 256;
 const SIP_SEND_CHANNEL_CAPACITY: usize = 256;
 const SESSION_OUT_CHANNEL_CAPACITY: usize = 128;
 
+fn sanitized_display_url_for_log(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return "none".to_string();
+    }
+
+    if let Ok(mut parsed) = reqwest::Url::parse(trimmed) {
+        let _ = parsed.set_username("");
+        let _ = parsed.set_password(None);
+        parsed.set_query(None);
+        parsed.set_fragment(None);
+        return parsed.to_string().trim_end_matches('/').to_string();
+    }
+
+    if let Some((scheme, rest)) = trimmed.split_once("://") {
+        let host_part = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
+        let host_part = host_part
+            .split(['?', '#'])
+            .next()
+            .unwrap_or(host_part)
+            .trim_end_matches('/');
+        return format!("{scheme}://{host_part}");
+    }
+
+    trimmed
+        .rsplit_once('@')
+        .map_or(trimmed, |(_, host)| host)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(trimmed)
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn sanitize_optional_url(url: Option<&str>) -> String {
+    url.map(sanitized_display_url_for_log)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn log_ai_config() {
+    let ai = config::ai_config();
+
+    let asr_streaming = config::voicebot_asr_streaming_enabled();
+    let asr_local_url = if asr_streaming {
+        sanitized_display_url_for_log(&config::asr_streaming_server_url())
+    } else {
+        sanitized_display_url_for_log(&ai.asr_local_server_url)
+    };
+    let asr_raspi_url = sanitize_optional_url(ai.asr_raspi_url.as_deref());
+    log::info!(
+        "[main] startup ai-config asr_streaming={} asr_local_enabled={} asr_local_url={} asr_raspi_enabled={} asr_raspi_url={}",
+        asr_streaming,
+        ai.asr_local_server_enabled,
+        asr_local_url,
+        ai.asr_raspi_enabled,
+        asr_raspi_url,
+    );
+
+    let llm_raspi_url = sanitize_optional_url(ai.llm_raspi_url.as_deref());
+    log::info!(
+        "[main] startup ai-config llm_streaming={} llm_local_enabled={} llm_local_url={} llm_model={} llm_raspi_enabled={} llm_raspi_url={}",
+        config::voicebot_streaming_enabled(),
+        ai.llm_local_server_enabled,
+        sanitized_display_url_for_log(&ai.llm_local_server_url),
+        ai.llm_local_model,
+        ai.llm_raspi_enabled,
+        llm_raspi_url,
+    );
+
+    let tts_raspi_url = sanitize_optional_url(ai.tts_raspi_base_url.as_deref());
+    log::info!(
+        "[main] startup ai-config tts_streaming={} tts_local_enabled={} tts_local_url={} tts_raspi_enabled={} tts_raspi_url={}",
+        config::voicebot_tts_streaming_enabled(),
+        ai.tts_local_server_enabled,
+        sanitized_display_url_for_log(&ai.tts_local_server_base_url),
+        ai.tts_raspi_enabled,
+        tts_raspi_url,
+    );
+}
+
 /// Starts the SIP/RTP server, initializes services and shared state, and runs the main event loop.
 ///
 /// This initializes logging and AI prompts, binds SIP (UDP/TCP) and RTP sockets, spawns the
@@ -62,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
     let rtp_cfg = config::rtp_config().clone();
     let app_cfg = config::AppRuntimeConfig::from_env();
     let session_cfg = Arc::new(config::SessionRuntimeConfig::from_env(&cfg));
+    log_ai_config();
     let sip_bind_ip = cfg.sip_bind_ip;
     let sip_port = cfg.sip_port;
     let rtp_port_cfg = cfg.rtp_port;
@@ -538,4 +620,63 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sanitize_optional_url, sanitized_display_url_for_log};
+
+    #[test]
+    fn sanitized_display_url_for_log_returns_none_for_empty_or_whitespace() {
+        assert_eq!(sanitized_display_url_for_log(""), "none");
+        assert_eq!(sanitized_display_url_for_log("   \t  "), "none");
+    }
+
+    #[test]
+    fn sanitized_display_url_for_log_trims_trailing_slash_and_strips_userinfo() {
+        assert_eq!(
+            sanitized_display_url_for_log("http://user:pass@example.com:8080/api/"),
+            "http://example.com:8080/api"
+        );
+        assert_eq!(
+            sanitized_display_url_for_log("https://example.com/base/"),
+            "https://example.com/base"
+        );
+        assert_eq!(
+            sanitized_display_url_for_log("https://user:pass@example.com/base/?token=secret#frag"),
+            "https://example.com/base"
+        );
+    }
+
+    #[test]
+    fn sanitized_display_url_for_log_handles_invalid_strings_with_and_without_scheme() {
+        assert_eq!(
+            sanitized_display_url_for_log("custom scheme://user:pass@host.local/path"),
+            "custom scheme://host.local/path"
+        );
+        assert_eq!(
+            sanitized_display_url_for_log(
+                "custom scheme://user:pass@host.local/path?token=secret#frag"
+            ),
+            "custom scheme://host.local/path"
+        );
+        assert_eq!(
+            sanitized_display_url_for_log("not a url@host.local/path?token=secret#frag"),
+            "host.local/path"
+        );
+        assert_eq!(
+            sanitized_display_url_for_log("just-hostname"),
+            "just-hostname"
+        );
+    }
+
+    #[test]
+    fn sanitize_optional_url_handles_some_and_none() {
+        assert_eq!(
+            sanitize_optional_url(Some("http://user:pass@example.com/")),
+            "http://example.com"
+        );
+        assert_eq!(sanitize_optional_url(Some("   ")), "none");
+        assert_eq!(sanitize_optional_url(None), "none");
+    }
 }
