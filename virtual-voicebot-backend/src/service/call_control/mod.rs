@@ -983,13 +983,13 @@ impl AppWorker {
         sentence: String,
         generation_id: u64,
     ) {
-        if config::voicebot_streaming_enabled() && config::voicebot_tts_streaming_enabled() {
-            if self
+        if config::voicebot_streaming_enabled()
+            && config::voicebot_tts_streaming_enabled()
+            && self
                 .try_enqueue_tts_sentence_streaming(call_id, &sentence, generation_id)
                 .await
-            {
-                return;
-            }
+        {
+            return;
         }
 
         if let Err(e) = self
@@ -1485,6 +1485,299 @@ fn is_spec_question(input: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex, Once, OnceLock};
+
+    use futures_util::stream;
+    use tokio::sync::{mpsc as tokio_mpsc, Mutex as AsyncMutex};
+    use tokio::time::Duration;
+
+    use crate::interface::notification::NoopNotification;
+    use crate::shared::error::ai::{
+        AsrError, IntentError, LlmError, SerError, TtsError, WeatherError,
+    };
+    use crate::shared::ports::ai::{
+        AiFuture, AsrChunk, AsrPort, ChatMessage, IntentPort, LlmPort, SerInputPcm, SerOutcome,
+        SerPort, TtsPort, TtsStream, TtsStreamPort, WeatherPort, WeatherQuery, WeatherResponse,
+    };
+    use crate::shared::ports::notification::NotificationService;
+    use crate::shared::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
+
+    #[derive(Clone)]
+    struct FakeAiPort {
+        state: Arc<Mutex<FakeAiState>>,
+    }
+
+    #[derive(Debug)]
+    struct FakeAiState {
+        synth_to_wav_calls: usize,
+        synth_to_wav_paths: VecDeque<PathBuf>,
+    }
+
+    impl FakeAiPort {
+        fn new(paths: Vec<PathBuf>) -> (Self, Arc<Mutex<FakeAiState>>) {
+            let state = Arc::new(Mutex::new(FakeAiState {
+                synth_to_wav_calls: 0,
+                synth_to_wav_paths: paths.into(),
+            }));
+            (
+                Self {
+                    state: Arc::clone(&state),
+                },
+                state,
+            )
+        }
+    }
+
+    impl AsrPort for FakeAiPort {
+        fn transcribe_chunks(
+            &self,
+            _call_id: String,
+            _chunks: Vec<AsrChunk>,
+        ) -> AiFuture<Result<String, AsrError>> {
+            Box::pin(async { Err(AsrError::ServiceUnavailable) })
+        }
+    }
+
+    impl IntentPort for FakeAiPort {
+        fn classify_intent(
+            &self,
+            _call_id: String,
+            _text: String,
+        ) -> AiFuture<Result<String, IntentError>> {
+            Box::pin(async { Err(IntentError::UnknownIntent) })
+        }
+    }
+
+    impl LlmPort for FakeAiPort {
+        fn generate_answer(
+            &self,
+            _call_id: String,
+            _messages: Vec<ChatMessage>,
+        ) -> AiFuture<Result<String, LlmError>> {
+            Box::pin(async { Err(LlmError::GenerationFailed("unused".to_string())) })
+        }
+    }
+
+    impl WeatherPort for FakeAiPort {
+        fn handle_weather(
+            &self,
+            _call_id: String,
+            _query: WeatherQuery,
+        ) -> AiFuture<Result<WeatherResponse, WeatherError>> {
+            Box::pin(async { Err(WeatherError::ServiceUnavailable) })
+        }
+    }
+
+    impl TtsPort for FakeAiPort {
+        fn synth_to_wav(
+            &self,
+            _call_id: String,
+            _text: String,
+            _path: Option<String>,
+        ) -> AiFuture<Result<PathBuf, TtsError>> {
+            let state = Arc::clone(&self.state);
+            Box::pin(async move {
+                let mut state = state.lock().expect("fake ai mutex poisoned");
+                state.synth_to_wav_calls += 1;
+                let path = state
+                    .synth_to_wav_paths
+                    .pop_front()
+                    .unwrap_or_else(|| PathBuf::from("/tmp/fake_sequential_tts.wav"));
+                Ok(path)
+            })
+        }
+    }
+
+    impl SerPort for FakeAiPort {
+        fn analyze(&self, _input: SerInputPcm) -> AiFuture<Result<SerOutcome, SerError>> {
+            Box::pin(async {
+                Ok(SerOutcome {
+                    session_id: "test".to_string(),
+                    stream_id: "test".to_string(),
+                    emotion: crate::shared::ports::ai::Emotion::Neutral,
+                    confidence: 0.0,
+                    arousal: None,
+                    valence: None,
+                })
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct FakeTtsStreamPort {
+        state: Arc<Mutex<FakeTtsStreamState>>,
+    }
+
+    struct FakeTtsStreamState {
+        scripts: VecDeque<TtsStreamScript>,
+        synth_stream_calls: usize,
+    }
+
+    enum TtsStreamScript {
+        Pending,
+        Items(Vec<Result<Vec<u8>, TtsError>>),
+    }
+
+    impl FakeTtsStreamPort {
+        fn new(scripts: Vec<TtsStreamScript>) -> (Self, Arc<Mutex<FakeTtsStreamState>>) {
+            let state = Arc::new(Mutex::new(FakeTtsStreamState {
+                scripts: scripts.into(),
+                synth_stream_calls: 0,
+            }));
+            (
+                Self {
+                    state: Arc::clone(&state),
+                },
+                state,
+            )
+        }
+    }
+
+    impl TtsStreamPort for FakeTtsStreamPort {
+        fn synth_stream(
+            &self,
+            _call_id: String,
+            _text: String,
+        ) -> AiFuture<Result<TtsStream, TtsError>> {
+            let script = {
+                let mut state = self.state.lock().expect("fake tts stream mutex poisoned");
+                state.synth_stream_calls += 1;
+                state.scripts.pop_front()
+            };
+            Box::pin(async move {
+                let stream: TtsStream = match script.unwrap_or(TtsStreamScript::Pending) {
+                    TtsStreamScript::Pending => {
+                        Box::pin(stream::pending::<Result<Vec<u8>, TtsError>>())
+                    }
+                    TtsStreamScript::Items(items) => Box::pin(stream::iter(items)),
+                };
+                Ok(stream)
+            })
+        }
+    }
+
+    fn init_tts_streaming_test_env_once() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            std::env::set_var("VOICEBOT_STREAMING_ENABLED", "true");
+            std::env::set_var("VOICEBOT_TTS_STREAMING_ENABLED", "true");
+            std::env::set_var("VOICEBOT_TTS_STREAMING_EARLY_START_ENABLED", "true");
+            std::env::set_var("TTS_STREAMING_FIRST_CHUNK_TIMEOUT_MS", "20");
+            std::env::set_var("TTS_STREAMING_TOTAL_TIMEOUT_MS", "500");
+            std::env::set_var("TTS_STREAMING_EARLY_START_BYTES", "8");
+        });
+    }
+
+    fn test_lock() -> &'static AsyncMutex<()> {
+        static LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| AsyncMutex::new(()))
+    }
+
+    fn build_tts_test_worker(
+        ai_port: Arc<dyn AiServices>,
+        tts_stream_port: Option<Arc<dyn TtsStreamPort>>,
+    ) -> (
+        AppWorker,
+        CallId,
+        tokio_mpsc::Receiver<(CallId, SessionOut)>,
+    ) {
+        let call_id = CallId::new("call-tts-stream-test").expect("valid call id");
+        let (session_out_tx, session_out_rx) = tokio_mpsc::channel(16);
+        let (_app_tx, app_rx) = app_event_channel(APP_EVENT_CHANNEL_CAPACITY);
+        let phone_lookup: Arc<dyn PhoneLookupPort> = Arc::new(NoopPhoneLookup::new());
+        let notification_port: Arc<dyn NotificationService> = Arc::new(NoopNotification::new());
+        let worker = AppWorker::new(
+            call_id.clone(),
+            session_out_tx,
+            app_rx,
+            ai_port,
+            None,
+            None,
+            tts_stream_port,
+            None,
+            phone_lookup,
+            notification_port,
+            AppRuntimeConfig {
+                phone_lookup_enabled: false,
+            },
+        );
+        (worker, call_id, session_out_rx)
+    }
+
+    async fn recv_session_out(
+        rx: &mut tokio_mpsc::Receiver<(CallId, SessionOut)>,
+    ) -> (CallId, SessionOut) {
+        timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("session_out recv timeout")
+            .expect("session_out channel closed")
+    }
+
+    fn collect_enqueue_events(items: Vec<(CallId, SessionOut)>) -> Vec<(CallId, String, u64)> {
+        items
+            .into_iter()
+            .map(|(call_id, out)| match out {
+                SessionOut::AppEnqueueBotAudioFile {
+                    path,
+                    generation_id,
+                } => (call_id, path, generation_id),
+                other => panic!("unexpected SessionOut: {other:?}"),
+            })
+            .collect()
+    }
+
+    fn build_pcm16_mono_wav(samples: &[i16], sample_rate: u32) -> Vec<u8> {
+        let mut pcm = Vec::with_capacity(samples.len() * 2);
+        for s in samples {
+            pcm.extend_from_slice(&s.to_le_bytes());
+        }
+        let data_len = pcm.len() as u32;
+        let byte_rate = sample_rate * 2;
+        let mut out = Vec::with_capacity(44 + pcm.len());
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_len).to_le_bytes());
+        out.extend_from_slice(b"WAVE");
+        out.extend_from_slice(b"fmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&sample_rate.to_le_bytes());
+        out.extend_from_slice(&byte_rate.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_len.to_le_bytes());
+        out.extend_from_slice(&pcm);
+        out
+    }
+
+    fn split_bytes(bytes: Vec<u8>, sizes: &[usize]) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        for &size in sizes {
+            if offset >= bytes.len() {
+                break;
+            }
+            let end = (offset + size).min(bytes.len());
+            out.push(bytes[offset..end].to_vec());
+            offset = end;
+        }
+        if offset < bytes.len() {
+            out.push(bytes[offset..].to_vec());
+        }
+        out
+    }
+
+    fn parse_segment_index_from_tts_stream_tmp(path: &str) -> Option<usize> {
+        let file = path.rsplit('/').next()?;
+        let stem = file.strip_suffix(".wav")?;
+        let mut parts = stem.rsplitn(3, '_');
+        let _ts = parts.next()?;
+        let seg = parts.next()?;
+        seg.parse::<usize>().ok()
+    }
 
     #[test]
     fn sorry_wav_path_points_to_data_dir() {
@@ -1500,5 +1793,160 @@ mod tests {
     #[test]
     fn spec_filter_allows_normal_text() {
         assert!(!is_spec_question("今日の天気は？"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn enqueue_tts_sentence_falls_back_to_sequential_on_first_chunk_timeout() {
+        let _guard = test_lock().lock().await;
+        init_tts_streaming_test_env_once();
+
+        let (fake_ai, fake_ai_state) =
+            FakeAiPort::new(vec![PathBuf::from("/tmp/fallback_seq.wav")]);
+        let (fake_tts_stream_port, fake_tts_stream_state) =
+            FakeTtsStreamPort::new(vec![TtsStreamScript::Pending]);
+        let tts_stream_port: Arc<dyn TtsStreamPort> = Arc::new(fake_tts_stream_port);
+        let (mut worker, call_id, mut session_out_rx) =
+            build_tts_test_worker(Arc::new(fake_ai), Some(tts_stream_port));
+
+        worker
+            .enqueue_tts_sentence(&call_id, "テスト".to_string(), 101)
+            .await;
+
+        let synth_to_wav_calls = {
+            let state = fake_ai_state.lock().expect("fake ai mutex poisoned");
+            state.synth_to_wav_calls
+        };
+        assert_eq!(
+            synth_to_wav_calls, 1,
+            "sequential fallback should call synth_to_wav"
+        );
+        let synth_stream_calls = {
+            let tts_state = fake_tts_stream_state
+                .lock()
+                .expect("fake tts stream mutex poisoned");
+            tts_state.synth_stream_calls
+        };
+        assert_eq!(synth_stream_calls, 1, "streaming path should be attempted");
+
+        let (event_call_id, out) = recv_session_out(&mut session_out_rx).await;
+        assert_eq!(event_call_id, call_id);
+        match out {
+            SessionOut::AppEnqueueBotAudioFile {
+                path,
+                generation_id,
+            } => {
+                assert_eq!(path, "/tmp/fallback_seq.wav");
+                assert_eq!(generation_id, 101);
+            }
+            other => panic!("unexpected SessionOut: {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn try_enqueue_tts_sentence_streaming_early_start_keeps_partial_on_error_without_fallback(
+    ) {
+        let _guard = test_lock().lock().await;
+        init_tts_streaming_test_env_once();
+
+        let wav = build_pcm16_mono_wav(&[1, 2, 3, 4, 5, 6], 24_000);
+        let mut chunks = split_bytes(wav, &[56]); // header + enough PCM for >=1 segment
+        chunks.push(Vec::new()); // no-op chunk is fine
+        let mut items: Vec<Result<Vec<u8>, TtsError>> = chunks
+            .into_iter()
+            .filter(|c| !c.is_empty())
+            .map(Ok)
+            .collect();
+        items.push(Err(TtsError::SynthesisFailed("stream broke".to_string())));
+
+        let (fake_ai, fake_ai_state) =
+            FakeAiPort::new(vec![PathBuf::from("/tmp/should_not_be_used.wav")]);
+        let (fake_tts_stream_port, _fake_tts_stream_state) =
+            FakeTtsStreamPort::new(vec![TtsStreamScript::Items(items)]);
+        let tts_stream_port: Arc<dyn TtsStreamPort> = Arc::new(fake_tts_stream_port);
+        let (mut worker, call_id, mut session_out_rx) =
+            build_tts_test_worker(Arc::new(fake_ai), Some(tts_stream_port));
+
+        let ok = worker
+            .try_enqueue_tts_sentence_streaming(&call_id, "途中で落ちる", 202)
+            .await;
+        assert!(ok, "partial playback emitted => no sequential fallback");
+
+        let synth_to_wav_calls = {
+            let state = fake_ai_state.lock().expect("fake ai mutex poisoned");
+            state.synth_to_wav_calls
+        };
+        assert_eq!(
+            synth_to_wav_calls, 0,
+            "sequential fallback must not run after partial early-start output"
+        );
+
+        let first = recv_session_out(&mut session_out_rx).await;
+        let events = collect_enqueue_events(vec![first]);
+        assert_eq!(events[0].0, call_id);
+        assert_eq!(events[0].2, 202);
+        assert!(parse_segment_index_from_tts_stream_tmp(&events[0].1).is_some());
+        let _ = tokio::fs::remove_file(&events[0].1).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn try_enqueue_tts_sentence_streaming_early_start_emits_multiple_enqueues_in_order() {
+        let _guard = test_lock().lock().await;
+        init_tts_streaming_test_env_once();
+
+        let wav = build_pcm16_mono_wav(&[10, 20, 30, 40, 50, 60, 70, 80, 90, 100], 24_000);
+        let items = split_bytes(wav, &[50, 8, 8, 8, 8])
+            .into_iter()
+            .map(Ok)
+            .collect::<Vec<_>>();
+
+        let (fake_ai, fake_ai_state) =
+            FakeAiPort::new(vec![PathBuf::from("/tmp/should_not_be_used.wav")]);
+        let (fake_tts_stream_port, _fake_tts_stream_state) =
+            FakeTtsStreamPort::new(vec![TtsStreamScript::Items(items)]);
+        let tts_stream_port: Arc<dyn TtsStreamPort> = Arc::new(fake_tts_stream_port);
+        let (mut worker, call_id, mut session_out_rx) =
+            build_tts_test_worker(Arc::new(fake_ai), Some(tts_stream_port));
+
+        let ok = worker
+            .try_enqueue_tts_sentence_streaming(&call_id, "複数セグメント", 303)
+            .await;
+        assert!(ok);
+
+        let synth_to_wav_calls = {
+            let state = fake_ai_state.lock().expect("fake ai mutex poisoned");
+            state.synth_to_wav_calls
+        };
+        assert_eq!(
+            synth_to_wav_calls, 0,
+            "successful streaming should not fallback"
+        );
+
+        let mut raw_events = Vec::new();
+        for _ in 0..3 {
+            raw_events.push(recv_session_out(&mut session_out_rx).await);
+        }
+        let events = collect_enqueue_events(raw_events);
+        assert!(events.len() >= 3);
+        for (event_call_id, _path, generation_id) in &events {
+            assert_eq!(event_call_id, &call_id);
+            assert_eq!(*generation_id, 303);
+        }
+
+        let indices: Vec<usize> = events
+            .iter()
+            .map(|(_, path, _)| {
+                parse_segment_index_from_tts_stream_tmp(path)
+                    .expect("segment index must be encoded in tmp file name")
+            })
+            .collect();
+        assert_eq!(
+            indices,
+            vec![0, 1, 2],
+            "segments should be enqueued in order"
+        );
+
+        for (_, path, _) in events {
+            let _ = tokio::fs::remove_file(path).await;
+        }
     }
 }
