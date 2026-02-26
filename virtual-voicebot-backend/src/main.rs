@@ -259,6 +259,11 @@ async fn main() -> anyhow::Result<()> {
                                 } else {
                                     None
                                 },
+                                if config::voicebot_tts_streaming_enabled() {
+                                    Some(ai_port.clone())
+                                } else {
+                                    None
+                                },
                                 audio_chunk_rx,
                                 phone_lookup.clone(),
                                 notification_port.clone(),

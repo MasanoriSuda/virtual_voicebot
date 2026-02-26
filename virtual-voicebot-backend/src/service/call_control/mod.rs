@@ -7,7 +7,9 @@ mod router;
 mod sentence_accumulator;
 
 use std::future::pending;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use tokio_stream::StreamExt;
@@ -19,9 +21,10 @@ use crate::service::call_control::router::{
 };
 use crate::service::call_control::sentence_accumulator::SentenceAccumulator;
 use crate::shared::config::{self, AppRuntimeConfig};
+use crate::shared::error::ai::TtsError;
 use crate::shared::ports::ai::{
     AiServices, AsrChunk, AsrStreamHandle, AsrStreamPort, ChatMessage, LlmStreamEvent,
-    LlmStreamPort, Role, SerInputPcm, WeatherQuery,
+    LlmStreamPort, Role, SerInputPcm, TtsStream, TtsStreamPort, WeatherQuery,
 };
 use crate::shared::ports::notification::{
     NotificationFuture, NotificationService as NotificationPort,
@@ -106,6 +109,7 @@ const APP_HISTORY_MAX_MESSAGES: usize = 20;
 ///     None,
 ///     None,
 ///     None,
+///     None,
 ///     phone_lookup,
 ///     notification_port,
 ///     AppRuntimeConfig::from_env(),
@@ -122,6 +126,7 @@ pub fn spawn_app_worker(
     ai_port: Arc<dyn AiServices>,
     llm_stream_port: Option<Arc<dyn LlmStreamPort>>,
     asr_stream_port: Option<Arc<dyn AsrStreamPort>>,
+    tts_stream_port: Option<Arc<dyn TtsStreamPort>>,
     audio_chunk_rx: Option<AudioChunkRx>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
     notification_port: Arc<dyn NotificationPort>,
@@ -135,6 +140,7 @@ pub fn spawn_app_worker(
         ai_port,
         llm_stream_port,
         asr_stream_port,
+        tts_stream_port,
         audio_chunk_rx,
         phone_lookup,
         notification_port,
@@ -153,6 +159,7 @@ struct AppWorker {
     ai_port: Arc<dyn AiServices>,
     llm_stream_port: Option<Arc<dyn LlmStreamPort>>,
     asr_stream_port: Option<Arc<dyn AsrStreamPort>>,
+    tts_stream_port: Option<Arc<dyn TtsStreamPort>>,
     audio_chunk_rx: Option<AudioChunkRx>,
     phone_lookup: Arc<dyn PhoneLookupPort>,
     router: Router,
@@ -229,6 +236,7 @@ impl AppWorker {
         ai_port: Arc<dyn AiServices>,
         llm_stream_port: Option<Arc<dyn LlmStreamPort>>,
         asr_stream_port: Option<Arc<dyn AsrStreamPort>>,
+        tts_stream_port: Option<Arc<dyn TtsStreamPort>>,
         audio_chunk_rx: Option<AudioChunkRx>,
         phone_lookup: Arc<dyn PhoneLookupPort>,
         notification_port: Arc<dyn NotificationPort>,
@@ -243,6 +251,7 @@ impl AppWorker {
             ai_port,
             llm_stream_port,
             asr_stream_port,
+            tts_stream_port,
             audio_chunk_rx,
             phone_lookup,
             router: Router::new(),
@@ -935,27 +944,8 @@ impl AppWorker {
         });
 
         while let Some(sentence) = sentence_rx.recv().await {
-            match self
-                .ai_port
-                .synth_to_wav(call_id.to_string(), sentence, None)
-                .await
-            {
-                Ok(wav_path) => {
-                    let _ = self
-                        .session_out_tx
-                        .send((
-                            self.call_id.clone(),
-                            SessionOut::AppEnqueueBotAudioFile {
-                                path: wav_path.to_string_lossy().to_string(),
-                                generation_id,
-                            },
-                        ))
-                        .await;
-                }
-                Err(e) => {
-                    log::warn!("[app {call_id}] TTS failed: {e:?}");
-                }
-            }
+            self.enqueue_tts_sentence(call_id, sentence, generation_id)
+                .await;
         }
 
         let (full_answer, sentences_sent, had_error) = match consumer.await {
@@ -977,6 +967,167 @@ impl AppWorker {
             self.push_history(user_query, full_answer);
         }
         Ok(())
+    }
+
+    async fn enqueue_tts_sentence(
+        &mut self,
+        call_id: &CallId,
+        sentence: String,
+        generation_id: u64,
+    ) {
+        if config::voicebot_streaming_enabled() && config::voicebot_tts_streaming_enabled() {
+            if self
+                .try_enqueue_tts_sentence_streaming(call_id, &sentence, generation_id)
+                .await
+            {
+                return;
+            }
+        }
+
+        if let Err(e) = self
+            .enqueue_tts_sentence_sequential(call_id, sentence, generation_id)
+            .await
+        {
+            log::warn!("[app {call_id}] TTS failed: {e:?}");
+        }
+    }
+
+    async fn enqueue_tts_sentence_sequential(
+        &mut self,
+        call_id: &CallId,
+        sentence: String,
+        generation_id: u64,
+    ) -> Result<(), TtsError> {
+        let wav_path = self
+            .ai_port
+            .synth_to_wav(call_id.to_string(), sentence, None)
+            .await?;
+        self.enqueue_streaming_bot_audio_file(wav_path, generation_id)
+            .await;
+        Ok(())
+    }
+
+    async fn try_enqueue_tts_sentence_streaming(
+        &mut self,
+        call_id: &CallId,
+        sentence: &str,
+        generation_id: u64,
+    ) -> bool {
+        let Some(port) = self.tts_stream_port.clone() else {
+            return false;
+        };
+
+        let stream = match port
+            .synth_stream(call_id.to_string(), sentence.to_string())
+            .await
+        {
+            Ok(stream) => stream,
+            Err(e) => {
+                log::warn!("[tts stream {call_id}] synth_stream start failed: {e}; fallback");
+                return false;
+            }
+        };
+
+        match self
+            .collect_tts_stream_to_tmp(call_id, stream, generation_id)
+            .await
+        {
+            Ok(path) => {
+                self.enqueue_streaming_bot_audio_file(path, generation_id)
+                    .await;
+                true
+            }
+            Err(e) => {
+                log::warn!("[tts stream {call_id}] collect/write failed: {e}; fallback");
+                false
+            }
+        }
+    }
+
+    async fn collect_tts_stream_to_tmp(
+        &self,
+        call_id: &CallId,
+        stream: TtsStream,
+        generation_id: u64,
+    ) -> Result<PathBuf, TtsError> {
+        let first_chunk_timeout = config::tts_streaming_first_chunk_timeout();
+        let total_timeout = config::tts_streaming_total_timeout();
+        let tmp_path = self.tts_stream_tmp_path(call_id, generation_id);
+
+        let wav_bytes = timeout(total_timeout, async {
+            tokio::pin!(stream);
+            let mut buf = Vec::<u8>::new();
+
+            let first = tokio::select! {
+                item = stream.next() => item,
+                _ = sleep(first_chunk_timeout) => {
+                    return Err(TtsError::SynthesisFailed(format!(
+                        "first chunk timeout ({} ms)",
+                        first_chunk_timeout.as_millis()
+                    )));
+                }
+            };
+
+            match first {
+                Some(Ok(bytes)) => buf.extend_from_slice(&bytes),
+                Some(Err(e)) => return Err(e),
+                None => return Err(TtsError::SynthesisFailed("empty TTS stream".to_string())),
+            }
+
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(bytes) => buf.extend_from_slice(&bytes),
+                    Err(e) => return Err(e),
+                }
+            }
+
+            if buf.is_empty() {
+                return Err(TtsError::SynthesisFailed("empty TTS stream".to_string()));
+            }
+
+            Ok(buf)
+        })
+        .await
+        .map_err(|_| {
+            TtsError::SynthesisFailed(format!("total timeout ({} ms)", total_timeout.as_millis()))
+        })??;
+
+        tokio::fs::write(&tmp_path, &wav_bytes)
+            .await
+            .map_err(|e| TtsError::SynthesisFailed(format!("tmp wav write failed: {e}")))?;
+        Ok(tmp_path)
+    }
+
+    fn tts_stream_tmp_path(&self, call_id: &CallId, generation_id: u64) -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let safe_call_id: String = call_id
+            .to_string()
+            .chars()
+            .map(|c| match c {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '.' | '@' => c,
+                _ => '_',
+            })
+            .collect();
+        PathBuf::from(format!(
+            "/tmp/tts_stream_output_{}_{}_{}.wav",
+            safe_call_id, generation_id, ts
+        ))
+    }
+
+    async fn enqueue_streaming_bot_audio_file(&self, wav_path: PathBuf, generation_id: u64) {
+        let _ = self
+            .session_out_tx
+            .send((
+                self.call_id.clone(),
+                SessionOut::AppEnqueueBotAudioFile {
+                    path: wav_path.to_string_lossy().to_string(),
+                    generation_id,
+                },
+            ))
+            .await;
     }
 
     /// Triggers a single ringing notification for the call if one has not already been sent.
