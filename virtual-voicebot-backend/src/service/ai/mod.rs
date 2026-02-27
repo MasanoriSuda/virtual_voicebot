@@ -2592,8 +2592,7 @@ mod tests {
     use super::{
         call_ollama_for_weather, call_openai_chat_for_stage, call_openai_intent, extract_base_url,
         join_url_path, local_services_all_healthy, parse_ollama_stream_line, probe_once,
-        sanitized_display_url,
-        synth_openai_tts_for_stage, transcribe_with_openai_for_stage,
+        sanitized_display_url, synth_openai_tts_for_stage, transcribe_with_openai_for_stage,
         validate_openai_tts_wav_bytes, wrap_openai_tts_pcm_as_wav, ChatMessage, LlmError,
         LocalServiceEntry, LocalServicesMap, Role, ASR_FALLBACK_ORDER, LLM_FALLBACK_ORDER,
         TTS_FALLBACK_ORDER,

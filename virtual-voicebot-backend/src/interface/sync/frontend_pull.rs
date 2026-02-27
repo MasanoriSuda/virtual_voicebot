@@ -13,8 +13,9 @@ use tokio::time::{interval, MissedTickBehavior};
 use uuid::Uuid;
 
 use crate::interface::sync::converters::{
-    apply_frontend_snapshot, default_anonymous_action, default_default_action, parse_frontend_updated_at,
-    CallActionsPayload, CallerGroup, ConverterError, FrontendAnnouncement, IvrFlowDefinition, StoredAction,
+    apply_frontend_snapshot, default_anonymous_action, default_default_action,
+    parse_frontend_updated_at, CallActionsPayload, CallerGroup, ConverterError,
+    FrontendAnnouncement, IvrFlowDefinition, StoredAction,
 };
 use crate::shared::config::{self, SyncConfig};
 use crate::shared::utils::{extract_url_path, is_safe_announcement_url_path};
@@ -413,7 +414,10 @@ async fn download_audio_file(
     local_path: &Path,
 ) -> anyhow::Result<()> {
     if !is_safe_announcement_url_path(url_path) {
-        return Err(anyhow::anyhow!("unsafe announcement url path: {}", url_path));
+        return Err(anyhow::anyhow!(
+            "unsafe announcement url path: {}",
+            url_path
+        ));
     }
 
     let full_url = format!("{}{}", frontend_base_url.trim_end_matches('/'), url_path);
