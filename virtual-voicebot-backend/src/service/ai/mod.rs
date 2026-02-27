@@ -31,9 +31,9 @@ use crate::shared::config;
 use crate::shared::error::ai::{AsrError, IntentError, LlmError, TtsError, WeatherError};
 use crate::shared::ports::ai::{
     asr_audio_channel, AiFuture, AsrAudioMsg, AsrChunk, AsrPort, AsrStreamEvent, AsrStreamHandle,
-    AsrStreamPort, ChatMessage, IntentPort, LlmPort, LlmStream, LlmStreamEvent, LlmStreamPort,
-    Role, SerInputPcm, SerOutcome, SerPort, TtsPort, TtsStream, TtsStreamPort, WeatherPort,
-    WeatherQuery,
+    AsrStreamPort, ChatMessage, Intent, IntentPort, LlmPort, LlmStream, LlmStreamEvent,
+    LlmStreamPort, Role, SerInputPcm, SerOutcome, SerPort, TtsPort, TtsStream, TtsStreamPort,
+    WeatherPort, WeatherQuery,
 };
 use crate::shared::utils::mask_pii;
 
@@ -316,14 +316,6 @@ const OPENAI_TTS_MODEL: &str = "gpt-4o-mini-tts";
 const OPENAI_TTS_VOICE: &str = "alloy";
 const OPENAI_TTS_PCM_SAMPLE_RATE: u32 = 24_000;
 
-fn openai_endpoint_url(base_url: &str, path: &str) -> String {
-    format!(
-        "{}/{}",
-        base_url.trim_end_matches('/'),
-        path.trim_start_matches('/')
-    )
-}
-
 fn openai_api_key(ai_cfg: &config::AiConfig) -> Option<&str> {
     ai_cfg
         .openai_api_key
@@ -584,7 +576,7 @@ async fn call_whisper_stream(
 
     let (ws, _) = timeout(connect_timeout, connect_async(endpoint_url))
         .await
-        .map_err(|_| AsrError::Timeout)?
+        .map_err(|_| AsrError::Timeout("ASR stream connect timeout".into()))?
         .map_err(|e| AsrError::TranscriptionFailed(e.to_string()))?;
 
     let (mut ws_tx, mut ws_rx) = ws.split();
@@ -605,7 +597,9 @@ async fn call_whisper_stream(
         loop {
             tokio::select! {
                 _ = &mut first_partial_timer, if !first_partial_seen => {
-                    let _ = final_tx.send(Err(AsrError::Timeout));
+                    let _ = final_tx.send(Err(AsrError::Timeout(
+                        "ASR stream first partial timeout".into(),
+                    )));
                     let _ = ws_tx.close().await;
                     return;
                 }
@@ -616,7 +610,13 @@ async fn call_whisper_stream(
                         pending::<()>().await;
                     }
                 }, if waiting_final => {
-                    let _ = final_tx.send(Ok(last_partial));
+                    if last_partial.is_empty() {
+                        let _ = final_tx.send(Err(AsrError::TranscriptionFailed(
+                            "ASR stream ended without final text".to_string(),
+                        )));
+                    } else {
+                        let _ = final_tx.send(Ok(last_partial));
+                    }
                     let _ = ws_tx.close().await;
                     return;
                 }
@@ -681,7 +681,13 @@ async fn call_whisper_stream(
                         }
                         Some(Ok(WsMessage::Close(_))) => {
                             if waiting_final {
-                                let _ = final_tx.send(Ok(last_partial));
+                                if last_partial.is_empty() {
+                                    let _ = final_tx.send(Err(AsrError::TranscriptionFailed(
+                                        "ASR stream ended without final text".to_string(),
+                                    )));
+                                } else {
+                                    let _ = final_tx.send(Ok(last_partial));
+                                }
                             } else {
                                 let _ = final_tx.send(Err(AsrError::TranscriptionFailed(
                                     "ASR stream closed before final".to_string(),
@@ -702,7 +708,13 @@ async fn call_whisper_stream(
                         }
                         None => {
                             if waiting_final {
-                                let _ = final_tx.send(Ok(last_partial));
+                                if last_partial.is_empty() {
+                                    let _ = final_tx.send(Err(AsrError::TranscriptionFailed(
+                                        "ASR stream ended without final text".to_string(),
+                                    )));
+                                } else {
+                                    let _ = final_tx.send(Ok(last_partial));
+                                }
                             } else {
                                 let _ = final_tx.send(Err(AsrError::TranscriptionFailed(
                                     "ASR stream ended before final".to_string(),
@@ -750,7 +762,7 @@ pub(super) async fn call_openai_chat_for_stage(
     http_timeout: Duration,
 ) -> Result<String> {
     let client = http_client(http_timeout)?;
-    let url = openai_endpoint_url(base_url, "/chat/completions");
+    let url = join_url_path(base_url, "/chat/completions");
     let req = OpenAiChatCompletionsRequest {
         model: model.to_string(),
         messages: build_openai_chat_messages(messages, system_prompt),
@@ -790,7 +802,7 @@ pub(crate) async fn call_openai_intent(
     http_timeout: Duration,
 ) -> Result<String> {
     let client = http_client(http_timeout)?;
-    let url = openai_endpoint_url(base_url, "/chat/completions");
+    let url = join_url_path(base_url, "/chat/completions");
     let messages = vec![ChatMessage {
         role: Role::User,
         content: text.to_string(),
@@ -835,7 +847,7 @@ async fn transcribe_with_openai_for_stage(
     http_timeout: Duration,
 ) -> Result<String> {
     let client = http_client(http_timeout)?;
-    let url = openai_endpoint_url(base_url, "/audio/transcriptions");
+    let url = join_url_path(base_url, "/audio/transcriptions");
     let bytes = tokio::fs::read(wav_path).await?;
     let part = multipart::Part::bytes(bytes)
         .file_name("question.wav")
@@ -922,7 +934,7 @@ async fn synth_openai_tts_for_stage(
     http_timeout: Duration,
 ) -> Result<Vec<u8>> {
     let client = http_client(http_timeout)?;
-    let url = openai_endpoint_url(base_url, "/audio/speech");
+    let url = join_url_path(base_url, "/audio/speech");
     let req = OpenAiSpeechRequest {
         model: OPENAI_TTS_MODEL.to_string(),
         voice: OPENAI_TTS_VOICE.to_string(),
@@ -948,12 +960,42 @@ async fn synth_openai_tts_for_stage(
     Ok(wav)
 }
 
-fn map_tts_response_stream(resp: reqwest::Response) -> TtsStream {
-    Box::pin(resp.bytes_stream().map(|chunk| {
-        chunk
-            .map(|bytes| bytes.to_vec())
-            .map_err(|e| TtsError::SynthesisFailed(e.to_string()))
-    }))
+const TTS_STREAM_CHANNEL_CAPACITY: usize = 32;
+
+fn map_tts_response_stream(resp: reqwest::Response, read_timeout: Duration) -> TtsStream {
+    let (tx, rx) = mpsc::channel::<Result<Vec<u8>, TtsError>>(TTS_STREAM_CHANNEL_CAPACITY);
+    tokio::spawn(async move {
+        let mut bytes_stream = resp.bytes_stream();
+        loop {
+            if tx.is_closed() {
+                return;
+            }
+            let next_result =
+                timeout(read_timeout, FuturesStreamExt::next(&mut bytes_stream)).await;
+            match next_result {
+                Ok(Some(Ok(bytes))) => {
+                    if tx.send(Ok(bytes.to_vec())).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(Some(Err(e))) => {
+                    let _ = tx.send(Err(TtsError::SynthesisFailed(e.to_string()))).await;
+                    return;
+                }
+                Ok(None) => return,
+                Err(_) => {
+                    let _ = tx
+                        .send(Err(TtsError::SynthesisFailed(format!(
+                            "tts stream read timeout ({} ms)",
+                            read_timeout.as_millis()
+                        ))))
+                        .await;
+                    return;
+                }
+            }
+        }
+    });
+    Box::pin(ReceiverStream::new(rx))
 }
 
 async fn synth_openai_tts_stream_for_stage(
@@ -963,7 +1005,8 @@ async fn synth_openai_tts_stream_for_stage(
     connect_timeout: Duration,
 ) -> Result<TtsStream> {
     let client = http_client_for_stream(connect_timeout)?;
-    let url = openai_endpoint_url(base_url, "/audio/speech");
+    let read_timeout = config::tts_streaming_first_chunk_timeout();
+    let url = join_url_path(base_url, "/audio/speech");
     let req = OpenAiSpeechRequest {
         model: OPENAI_TTS_MODEL.to_string(),
         voice: OPENAI_TTS_VOICE.to_string(),
@@ -982,7 +1025,7 @@ async fn synth_openai_tts_stream_for_stage(
         let body_len = resp.bytes().await?.len();
         anyhow::bail!("OpenAI TTS HTTP error {} (body_len={})", status, body_len);
     }
-    Ok(map_tts_response_stream(resp))
+    Ok(map_tts_response_stream(resp, read_timeout))
 }
 
 async fn synth_zundamon_stream_for_stage(
@@ -992,9 +1035,10 @@ async fn synth_zundamon_stream_for_stage(
     connect_timeout: Duration,
 ) -> Result<TtsStream> {
     let query_client = http_client(startup_timeout)?;
+    let read_timeout = config::tts_streaming_first_chunk_timeout();
     let speaker_id = 3; // ずんだもん ノーマル
 
-    let query_url = tts_endpoint_url(base_url, "/audio_query");
+    let query_url = join_url_path(base_url, "/audio_query");
     let query_resp = query_client
         .post(query_url)
         .query(&[("text", text), ("speaker", &speaker_id.to_string())])
@@ -1008,7 +1052,7 @@ async fn synth_zundamon_stream_for_stage(
     }
 
     let stream_client = http_client_for_stream(connect_timeout)?;
-    let synth_url = tts_endpoint_url(base_url, "/synthesis");
+    let synth_url = join_url_path(base_url, "/synthesis");
     let synth_resp = stream_client
         .post(synth_url)
         .query(&[("speaker", &speaker_id.to_string())])
@@ -1023,7 +1067,7 @@ async fn synth_zundamon_stream_for_stage(
         anyhow::bail!("synthesis error {} ({} bytes)", status, body_len);
     }
 
-    Ok(map_tts_response_stream(synth_resp))
+    Ok(map_tts_response_stream(synth_resp, read_timeout))
 }
 
 async fn try_tts_stream_stage<F, Fut>(
@@ -1918,7 +1962,7 @@ impl IntentPort for DefaultAiPort {
         &self,
         call_id: String,
         text: String,
-    ) -> AiFuture<Result<String, IntentError>> {
+    ) -> AiFuture<Result<Intent, IntentError>> {
         Box::pin(async move {
             intent::classify_intent(&call_id, text)
                 .await
@@ -2204,14 +2248,6 @@ pub async fn synth_zundamon_wav(call_id: &str, text: &str, out_path: &str) -> Re
     anyhow::bail!("all TTS stages failed")
 }
 
-fn tts_endpoint_url(base_url: &str, path: &str) -> String {
-    format!(
-        "{}/{}",
-        base_url.trim_end_matches('/'),
-        path.trim_start_matches('/')
-    )
-}
-
 async fn synth_zundamon_for_stage(
     base_url: &str,
     _call_id: &str,
@@ -2221,7 +2257,7 @@ async fn synth_zundamon_for_stage(
     let client = http_client(http_timeout)?;
     let speaker_id = 3; // ずんだもん ノーマル
 
-    let query_url = tts_endpoint_url(base_url, "/audio_query");
+    let query_url = join_url_path(base_url, "/audio_query");
     let query_resp = client
         .post(query_url)
         .query(&[("text", text), ("speaker", &speaker_id.to_string())])
@@ -2234,7 +2270,7 @@ async fn synth_zundamon_for_stage(
         anyhow::bail!("audio_query error {} ({} bytes)", status, query_body.len());
     }
 
-    let synth_url = tts_endpoint_url(base_url, "/synthesis");
+    let synth_url = join_url_path(base_url, "/synthesis");
     let synth_resp = client
         .post(synth_url)
         .query(&[("speaker", &speaker_id.to_string())])
@@ -2542,8 +2578,8 @@ mod tests {
 
     use super::{
         call_ollama_for_weather, call_openai_chat_for_stage, call_openai_intent, extract_base_url,
-        openai_endpoint_url, parse_ollama_stream_line, probe_once, sanitized_display_url,
-        synth_openai_tts_for_stage, transcribe_with_openai_for_stage, tts_endpoint_url,
+        join_url_path, parse_ollama_stream_line, probe_once, sanitized_display_url,
+        synth_openai_tts_for_stage, transcribe_with_openai_for_stage,
         validate_openai_tts_wav_bytes, wrap_openai_tts_pcm_as_wav, ChatMessage, LlmError, Role,
         ASR_FALLBACK_ORDER, LLM_FALLBACK_ORDER, TTS_FALLBACK_ORDER,
     };
@@ -2636,13 +2672,13 @@ mod tests {
     }
 
     #[test]
-    fn tts_endpoint_url_handles_slashes() {
+    fn join_url_path_handles_slashes_for_tts_paths() {
         assert_eq!(
-            tts_endpoint_url("http://localhost:50021/", "/audio_query"),
+            join_url_path("http://localhost:50021/", "/audio_query"),
             "http://localhost:50021/audio_query"
         );
         assert_eq!(
-            tts_endpoint_url("http://localhost:50021", "synthesis"),
+            join_url_path("http://localhost:50021", "synthesis"),
             "http://localhost:50021/synthesis"
         );
     }
@@ -2752,13 +2788,13 @@ mod tests {
     }
 
     #[test]
-    fn openai_endpoint_url_handles_slashes() {
+    fn join_url_path_handles_slashes_for_openai_paths() {
         assert_eq!(
-            openai_endpoint_url("https://api.openai.com/v1/", "/chat/completions"),
+            join_url_path("https://api.openai.com/v1/", "/chat/completions"),
             "https://api.openai.com/v1/chat/completions"
         );
         assert_eq!(
-            openai_endpoint_url("https://proxy.example/v1", "audio/speech"),
+            join_url_path("https://proxy.example/v1", "audio/speech"),
             "https://proxy.example/v1/audio/speech"
         );
     }

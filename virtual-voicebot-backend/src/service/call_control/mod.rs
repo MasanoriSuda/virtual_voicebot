@@ -500,22 +500,16 @@ impl AppWorker {
             return self.transcribe_asr(call_id, pcm_mulaw).await;
         }
 
-        match timeout(config::asr_streaming_final_timeout(), handle.final_rx).await {
-            Ok(Ok(Ok(text))) => text,
-            Ok(Ok(Err(e))) => {
+        match handle.final_rx.await {
+            Ok(Ok(text)) => text,
+            Ok(Err(e)) => {
                 log::warn!(
                     "[asr stream {call_id}] consumer task error: {e}; fallback to sequential"
                 );
                 self.transcribe_asr(call_id, pcm_mulaw).await
             }
-            Ok(Err(_)) => {
-                log::warn!("[asr stream {call_id}] consumer task dropped; fallback to sequential");
-                self.transcribe_asr(call_id, pcm_mulaw).await
-            }
             Err(_) => {
-                log::warn!(
-                    "[asr stream {call_id}] final result wait timeout; fallback to sequential"
-                );
+                log::warn!("[asr stream {call_id}] consumer task dropped; fallback to sequential");
                 self.transcribe_asr(call_id, pcm_mulaw).await
             }
         }
@@ -1487,7 +1481,7 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex, Once, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
 
     use futures_util::stream;
     use tokio::sync::{mpsc as tokio_mpsc, Mutex as AsyncMutex};
@@ -1498,8 +1492,9 @@ mod tests {
         AsrError, IntentError, LlmError, SerError, TtsError, WeatherError,
     };
     use crate::shared::ports::ai::{
-        AiFuture, AsrChunk, AsrPort, ChatMessage, IntentPort, LlmPort, SerInputPcm, SerOutcome,
-        SerPort, TtsPort, TtsStream, TtsStreamPort, WeatherPort, WeatherQuery, WeatherResponse,
+        AiFuture, AsrChunk, AsrPort, ChatMessage, Intent, IntentPort, LlmPort, SerInputPcm,
+        SerOutcome, SerPort, TtsPort, TtsStream, TtsStreamPort, WeatherPort, WeatherQuery,
+        WeatherResponse,
     };
     use crate::shared::ports::notification::NotificationService;
     use crate::shared::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
@@ -1545,7 +1540,7 @@ mod tests {
             &self,
             _call_id: String,
             _text: String,
-        ) -> AiFuture<Result<String, IntentError>> {
+        ) -> AiFuture<Result<Intent, IntentError>> {
             Box::pin(async { Err(IntentError::UnknownIntent) })
         }
     }
@@ -1658,16 +1653,42 @@ mod tests {
         }
     }
 
-    fn init_tts_streaming_test_env_once() {
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
-            std::env::set_var("VOICEBOT_STREAMING_ENABLED", "true");
-            std::env::set_var("VOICEBOT_TTS_STREAMING_ENABLED", "true");
-            std::env::set_var("VOICEBOT_TTS_STREAMING_EARLY_START_ENABLED", "true");
-            std::env::set_var("TTS_STREAMING_FIRST_CHUNK_TIMEOUT_MS", "20");
-            std::env::set_var("TTS_STREAMING_TOTAL_TIMEOUT_MS", "500");
-            std::env::set_var("TTS_STREAMING_EARLY_START_BYTES", "8");
-        });
+    struct ScopedTestEnv {
+        previous: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl ScopedTestEnv {
+        fn set(entries: &[(&'static str, &'static str)]) -> Self {
+            let mut previous = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                previous.push((*key, std::env::var(key).ok()));
+                std::env::set_var(key, value);
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for ScopedTestEnv {
+        fn drop(&mut self) {
+            for (key, prev) in self.previous.drain(..).rev() {
+                if let Some(value) = prev {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    fn init_tts_streaming_test_env() -> ScopedTestEnv {
+        ScopedTestEnv::set(&[
+            ("VOICEBOT_STREAMING_ENABLED", "true"),
+            ("VOICEBOT_TTS_STREAMING_ENABLED", "true"),
+            ("VOICEBOT_TTS_STREAMING_EARLY_START_ENABLED", "true"),
+            ("TTS_STREAMING_FIRST_CHUNK_TIMEOUT_MS", "20"),
+            ("TTS_STREAMING_TOTAL_TIMEOUT_MS", "500"),
+            ("TTS_STREAMING_EARLY_START_BYTES", "8"),
+        ])
     }
 
     fn test_lock() -> &'static AsyncMutex<()> {
@@ -1798,7 +1819,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn enqueue_tts_sentence_falls_back_to_sequential_on_first_chunk_timeout() {
         let _guard = test_lock().lock().await;
-        init_tts_streaming_test_env_once();
+        let _env_guard = init_tts_streaming_test_env();
 
         let (fake_ai, fake_ai_state) =
             FakeAiPort::new(vec![PathBuf::from("/tmp/fallback_seq.wav")]);
@@ -1846,7 +1867,7 @@ mod tests {
     async fn try_enqueue_tts_sentence_streaming_early_start_keeps_partial_on_error_without_fallback(
     ) {
         let _guard = test_lock().lock().await;
-        init_tts_streaming_test_env_once();
+        let _env_guard = init_tts_streaming_test_env();
 
         let wav = build_pcm16_mono_wav(&[1, 2, 3, 4, 5, 6], 24_000);
         let mut chunks = split_bytes(wav, &[56]); // header + enough PCM for >=1 segment
@@ -1891,7 +1912,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn try_enqueue_tts_sentence_streaming_early_start_emits_multiple_enqueues_in_order() {
         let _guard = test_lock().lock().await;
-        init_tts_streaming_test_env_once();
+        let _env_guard = init_tts_streaming_test_env();
 
         let wav = build_pcm16_mono_wav(&[10, 20, 30, 40, 50, 60, 70, 80, 90, 100], 24_000);
         let items = split_bytes(wav, &[50, 8, 8, 8, 8])

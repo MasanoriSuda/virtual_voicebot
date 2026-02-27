@@ -10,7 +10,7 @@ services:
     volumes:
       - .:/workspaces/virtual-voicebot-backend
     environment:
-      PUBLIC_IP: 127.0.0.1
+      LOCAL_IP: 127.0.0.1
       OLLAMA_URL: http://ollama:11434
       LLM_LOCAL_SERVER_URL: http://ollama:11434/api/chat
       TTS_LOCAL_SERVER_BASE_URL: http://voicevox:50021

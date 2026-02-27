@@ -115,15 +115,16 @@ impl SessionCoordinator {
     }
 
     pub(crate) fn finish_playback(&mut self, restart_ivr_timeout: bool) {
-        if let Some(next) = self.playback_queue.pop_front() {
-            if let Err(e) = self.begin_playback_frames(next.frames, Some(next.generation_id)) {
-                warn!(
-                    "[session {}] failed to start queued playback generation={}: {:?}",
-                    self.call_id, next.generation_id, e
-                );
-                self.finish_playback(restart_ivr_timeout);
+        while let Some(next) = self.playback_queue.pop_front() {
+            match self.begin_playback_frames(next.frames, Some(next.generation_id)) {
+                Ok(()) => return,
+                Err(e) => {
+                    warn!(
+                        "[session {}] failed to start queued playback generation={}: {:?}",
+                        self.call_id, next.generation_id, e
+                    );
+                }
             }
-            return;
         }
         self.clear_playback_state();
 

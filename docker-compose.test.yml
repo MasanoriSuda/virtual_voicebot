@@ -6,6 +6,9 @@ services:
     environment:
       DATABASE_URL: postgres://voicebot:voicebot_test@postgres:5432/voicebot_test
       RECORDING_HTTP_ADDR: 0.0.0.0:18080
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: /workspace/virtual-voicebot-backend
 
   frontend:
@@ -22,6 +25,11 @@ services:
       POSTGRES_DB: voicebot_test
       POSTGRES_USER: voicebot
       POSTGRES_PASSWORD: voicebot_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voicebot -d voicebot_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   e2e:
     build:

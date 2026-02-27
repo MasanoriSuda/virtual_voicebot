@@ -17,6 +17,7 @@ use crate::interface::sync::converters::{
     CallerGroup, ConverterError, FrontendAnnouncement, IvrFlowDefinition, StoredAction,
 };
 use crate::shared::config::{self, SyncConfig};
+use crate::shared::utils::extract_url_path;
 
 const FRONTEND_PULL_MAX_CONNECTIONS: u32 = 5;
 const MAX_ANNOUNCEMENT_AUDIO_BYTES: u64 = 8 * 1024 * 1024;
@@ -139,15 +140,14 @@ impl FrontendPullWorker {
             "[serversync] GET /api/ivr-flows/export: success flows={}",
             flows.len()
         );
+        self.save_snapshot(&groups, &actions, &announcements, &flows)
+            .await?;
         if let Err(error) = self.sync_announcement_audio_cache(&announcements).await {
             log::warn!(
                 "[serversync] announcement audio cache sync failed: {}",
                 error
             );
         }
-
-        self.save_snapshot(&groups, &actions, &announcements, &flows)
-            .await?;
         log::info!("[serversync] frontend pull saved");
         Ok(())
     }
@@ -395,14 +395,14 @@ fn should_download_announcement_audio(
         return true;
     }
 
-    let Some(frontend_updated_at) = frontend_updated_at_raw.and_then(parse_frontend_updated_at)
-    else {
-        return false;
-    };
+    let frontend_updated_at = frontend_updated_at_raw.and_then(parse_frontend_updated_at);
 
     match existing {
-        Some(state) => state.updated_at != frontend_updated_at,
         None => true,
+        Some(state) => match frontend_updated_at {
+            Some(frontend_updated_at) => state.updated_at != frontend_updated_at,
+            None => false,
+        },
     }
 }
 
@@ -490,23 +490,6 @@ async fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn extract_url_path(audio_file_url: &str) -> String {
-    let trimmed = audio_file_url.trim();
-    let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
-    let without_query = without_fragment
-        .split('?')
-        .next()
-        .unwrap_or(without_fragment);
-    if let Some(scheme_sep) = without_query.find("://") {
-        let after_scheme = &without_query[scheme_sep + 3..];
-        if let Some(path_pos) = after_scheme.find('/') {
-            return after_scheme[path_pos..].to_string();
-        }
-        return "/".to_string();
-    }
-    without_query.to_string()
-}
-
 fn is_safe_announcement_url_path(url_path: &str) -> bool {
     let Some(rest) = url_path.strip_prefix("/audio/announcements/") else {
         return false;
@@ -533,9 +516,10 @@ fn announcement_cache_local_path(audio_dir: &Path, url_path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_url_path, is_safe_announcement_url_path, AnnouncementsResponse,
-        CallActionsResponse, NumberGroupsResponse,
+        is_safe_announcement_url_path, AnnouncementsResponse, CallActionsResponse,
+        NumberGroupsResponse,
     };
+    use crate::shared::utils::extract_url_path;
 
     #[test]
     fn number_groups_response_accepts_camel_case_fields() {

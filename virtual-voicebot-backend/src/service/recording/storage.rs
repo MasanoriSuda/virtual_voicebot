@@ -1,6 +1,6 @@
 use hound::WavReader;
 
-use crate::protocol::rtp::codec::linear16_to_mulaw;
+use crate::shared::audio::linear16_to_mulaw;
 use crate::shared::ports::storage::{StorageError, StoragePort};
 
 pub struct FileStoragePort;

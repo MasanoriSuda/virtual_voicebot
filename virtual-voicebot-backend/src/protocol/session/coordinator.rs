@@ -30,6 +30,7 @@ use crate::shared::ports::call_log_port::{
 use crate::shared::ports::ingest::IngestPort;
 use crate::shared::ports::routing_port::RoutingPort;
 use crate::shared::ports::storage::StoragePort;
+use crate::shared::utils::extract_url_path;
 use anyhow::Error;
 use uuid::Uuid;
 // log macros used in handler/service modules
@@ -718,23 +719,6 @@ impl SessionCoordinator {
         self.ingest_persisted = true;
         self.ivr_events.clear();
     }
-}
-
-fn extract_url_path(audio_file_url: &str) -> String {
-    let trimmed = audio_file_url.trim();
-    let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
-    let without_query = without_fragment
-        .split('?')
-        .next()
-        .unwrap_or(without_fragment);
-    if let Some(scheme_sep) = without_query.find("://") {
-        let after_scheme = &without_query[scheme_sep + 3..];
-        if let Some(path_pos) = after_scheme.find('/') {
-            return after_scheme[path_pos..].to_string();
-        }
-        return "/".to_string();
-    }
-    without_query.to_string()
 }
 
 fn is_safe_announcement_url_path(url_path: &str) -> bool {

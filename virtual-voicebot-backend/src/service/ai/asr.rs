@@ -3,6 +3,7 @@
 use anyhow::{anyhow, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::path::{Component, Path};
+use tempfile::Builder;
 
 use crate::protocol::rtp::codec::mulaw_to_linear16;
 use crate::shared::ports::ai::AsrChunk;
@@ -23,19 +24,13 @@ pub async fn transcribe_chunks(call_id: &str, chunks: &[AsrChunk]) -> Result<Str
         }
     }
     let safe_call_id = sanitize_call_id_for_tmp_filename(call_id)?;
-    let wav_path = format!("/tmp/asr_input_{}.wav", safe_call_id);
+    let tmp_wav = Builder::new()
+        .prefix(&format!("asr_input_{}_", safe_call_id))
+        .suffix(".wav")
+        .tempfile_in("/tmp")?;
+    let wav_path = tmp_wav.path().to_path_buf();
     write_mulaw_to_wav(&pcmu, &wav_path)?;
-    let result = super::transcribe_and_log(call_id, &wav_path).await;
-    if let Err(err) = tokio::fs::remove_file(&wav_path).await {
-        if err.kind() != std::io::ErrorKind::NotFound {
-            log::warn!(
-                "[asr {call_id}] failed to remove temporary wav file {}: {}",
-                wav_path,
-                err
-            );
-        }
-    }
-    result
+    super::transcribe_and_log(call_id, &wav_path.to_string_lossy()).await
 }
 
 fn sanitize_call_id_for_tmp_filename(call_id: &str) -> Result<String> {

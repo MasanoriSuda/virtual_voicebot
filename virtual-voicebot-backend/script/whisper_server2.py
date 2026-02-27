@@ -37,6 +37,7 @@ if ASR_OUTPUT_SCRIPT in ("hiragana", "katakana"):
             _k.setMode("H", "K")
         KANA_CONVERTER = _k.getConverter()
     except Exception:
+        logger.exception("failed to initialize KANA_CONVERTER; falling back to raw text output")
         KANA_CONVERTER = None
 
 ASR_ENGINE = os.environ.get("ASR_ENGINE", "kotoba").lower()
@@ -126,6 +127,7 @@ def apply_output_script(text: str) -> str:
     try:
         return KANA_CONVERTER.do(text)
     except Exception:
+        logger.exception("failed to apply KANA_CONVERTER; returning original text")
         return text
 
 
@@ -181,6 +183,9 @@ async def transcribe(file: UploadFile = File(...)):
                         detail=f"upload too large: max={MAX_UPLOAD_SIZE} bytes",
                     )
                 tmp.write(chunk)
+
+        if total_size == 0:
+            raise HTTPException(status_code=400, detail="empty upload")
 
         text = await run_asr_inference(tmp_path)
         return {"text": text}

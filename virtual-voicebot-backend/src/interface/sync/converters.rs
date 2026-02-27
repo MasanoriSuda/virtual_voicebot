@@ -363,11 +363,20 @@ async fn convert_announcements(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("ja");
-        let updated_at = announcement
-            .updated_at
-            .as_ref()
-            .and_then(|value| parse_frontend_updated_at(value))
-            .unwrap_or_else(Utc::now);
+        let updated_at = match announcement.updated_at.as_deref() {
+            Some(raw_updated_at) => match parse_frontend_updated_at(raw_updated_at) {
+                Some(parsed) => parsed,
+                None => {
+                    log::warn!(
+                        "[serversync] invalid announcement.updated_at, fallback to now id={} updated_at={}",
+                        announcement.id,
+                        raw_updated_at
+                    );
+                    Utc::now()
+                }
+            },
+            None => Utc::now(),
+        };
         sqlx::query(
             "INSERT INTO announcements (
                 id, name, description, announcement_type, is_active, folder_id,

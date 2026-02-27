@@ -2,7 +2,8 @@ use std::future::Future;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use log::{error, info, warn};
@@ -31,6 +32,7 @@ const RTP_BUFFER_SIZE: usize = 2048;
 const DEFAULT_SIP_PORT: u16 = 5060;
 const CONTROL_EVENT_RETRY_ATTEMPTS: usize = 3;
 const CONTROL_EVENT_RETRY_DELAY: Duration = Duration::from_millis(10);
+const RTP_DROP_WARN_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub struct BLeg {
@@ -465,6 +467,7 @@ async fn run_transfer(
                 };
                 let shutdown = Arc::new(AtomicBool::new(false));
                 let shutdown_notify = Arc::new(Notify::new());
+                let rtp_drop_warn_state = Arc::new(Mutex::new(RtpDropWarnState::default()));
                 spawn_sip_listener(
                     a_call_id.clone(),
                     b_call_id.clone(),
@@ -480,6 +483,7 @@ async fn run_transfer(
                     media_tx.clone(),
                     shutdown.clone(),
                     shutdown_notify.clone(),
+                    rtp_drop_warn_state,
                 );
 
                 let b_leg = BLeg {
@@ -520,6 +524,7 @@ impl std::error::Error for OutboundError {}
 struct RtpListenerGuard {
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
+    rtp_drop_warn_state: Arc<Mutex<RtpDropWarnState>>,
     started: bool,
 }
 
@@ -528,6 +533,7 @@ impl RtpListenerGuard {
         Self {
             shutdown,
             shutdown_notify,
+            rtp_drop_warn_state: Arc::new(Mutex::new(RtpDropWarnState::default())),
             started: false,
         }
     }
@@ -547,6 +553,7 @@ impl RtpListenerGuard {
             media_tx,
             self.shutdown.clone(),
             self.shutdown_notify.clone(),
+            self.rtp_drop_warn_state.clone(),
         );
         self.started = true;
     }
@@ -1057,6 +1064,7 @@ fn spawn_rtp_listener(
     media_tx: mpsc::Sender<SessionMediaIn>,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
+    rtp_drop_warn_state: Arc<Mutex<RtpDropWarnState>>,
 ) {
     tokio::spawn(async move {
         let mut buf = vec![0u8; RTP_BUFFER_SIZE];
@@ -1091,9 +1099,10 @@ fn spawn_rtp_listener(
                     }) {
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(_)) => {
-                            warn!(
-                                "[b2bua {} stream=b-leg] B-leg RTP drop: channel full",
-                                a_call_id
+                            warn_rtp_drop_if_needed(
+                                a_call_id.as_str(),
+                                "b-leg",
+                                rtp_drop_warn_state.as_ref(),
                             );
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -1109,6 +1118,40 @@ fn spawn_rtp_listener(
         }
         info!("[b2bua {}] rtp listener ended", a_call_id);
     });
+}
+
+#[derive(Debug, Default)]
+struct RtpDropWarnState {
+    last_rtp_drop_warn: Option<Instant>,
+    suppressed_rtp_drops: usize,
+}
+
+fn update_rtp_drop_warn_state(state: &mut RtpDropWarnState, now: Instant) -> Option<usize> {
+    let should_warn = state
+        .last_rtp_drop_warn
+        .map(|last| now.saturating_duration_since(last) >= RTP_DROP_WARN_INTERVAL)
+        .unwrap_or(true);
+    if should_warn {
+        let suppressed = std::mem::take(&mut state.suppressed_rtp_drops);
+        state.last_rtp_drop_warn = Some(now);
+        Some(suppressed)
+    } else {
+        state.suppressed_rtp_drops = state.suppressed_rtp_drops.saturating_add(1);
+        None
+    }
+}
+
+fn warn_rtp_drop_if_needed(call_id: &str, stream_id: &str, state: &Mutex<RtpDropWarnState>) {
+    let mut guard = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(suppressed) = update_rtp_drop_warn_state(&mut guard, Instant::now()) {
+        warn!(
+            "[b2bua {} stream={}] B-leg RTP drop: channel full (suppressed={})",
+            call_id, stream_id, suppressed
+        );
+    }
 }
 
 fn send_b2bua_payload(peer: TransportPeer, payload: Vec<u8>) -> Result<()> {
@@ -1659,5 +1702,28 @@ mod tests {
             build_outbound_from_header("anonymous", "sip.example.com", "b2bua123"),
             "<sip:anonymous@anonymous.invalid>;tag=b2bua123"
         );
+    }
+
+    #[test]
+    fn rtp_drop_warn_state_rate_limits_and_tracks_suppressed_count() {
+        let mut state = RtpDropWarnState::default();
+        let base = Instant::now();
+
+        assert_eq!(update_rtp_drop_warn_state(&mut state, base), Some(0));
+        assert_eq!(
+            update_rtp_drop_warn_state(&mut state, base + Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(
+            update_rtp_drop_warn_state(&mut state, base + Duration::from_secs(2)),
+            None
+        );
+        assert_eq!(state.suppressed_rtp_drops, 2);
+
+        assert_eq!(
+            update_rtp_drop_warn_state(&mut state, base + RTP_DROP_WARN_INTERVAL),
+            Some(2)
+        );
+        assert_eq!(state.suppressed_rtp_drops, 0);
     }
 }
