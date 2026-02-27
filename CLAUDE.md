@@ -8,8 +8,9 @@
   - 要件仕様：docs/requirements/** , virtual-voicebot-backend/docs/requirements/** , virtual-voicebot-frontend/docs/requirements/**
   - 設計書：docs/design/** , virtual-voicebot-backend/docs/design/** , virtual-voicebot-frontend/docs/design/**
   - テスト仕様：virtual-voicebot-backend/docs/test/** , virtual-voicebot-frontend/docs/test/**
-  - **ステアリング（差分仕様）：Draft 作成のみ**
+  - **ステアリング（差分仕様）：全フェーズ担当**
     - 新規ステアリングの作成（Status: Draft）
+    - Review 時のレビュー指摘対応・修正（Status: Review）
     - 配置先: Backend → `virtual-voicebot-backend/docs/steering/`
     - 配置先: Frontend → `virtual-voicebot-frontend/docs/steering/`
     - 配置先: 横断（Frontend-Backend 連携）→ `docs/steering/`
@@ -20,16 +21,16 @@
 
 ### Claude Code の禁止事項
 
-- **Review 以降のステアリング編集は行わない**
-  - Status: Review/Approved のステアリングは Codex が修正する（レビュー必須）
-  - Claude Code は Draft 作成後、レビュー依頼を受けた場合のみ関与
+- **プロダクションコードの実装・修正は行わない**
+- **Status を勝手に変更しない**（Status 更新は人間が判断）
+- **ストーリー（§2）変更は必ず Issue で合意を得てから行う**
 
 ### 責務の境界（Codex との分担）
 
 | 成果物 | Claude Code | Codex | 条件 |
 |--------|-------------|-------|------|
 | ステアリング（新規Draft作成） | ✓ 担当 | ❌ 禁止 | - |
-| ステアリング（Review時修正） | ❌ 禁止 | ✓ 可 | Status: Review/Approved + レビュー必須 |
+| ステアリング（Review時修正） | ✓ 担当 | ❌ 禁止 | - |
 | ステアリング（段取り更新） | - | ✓ 担当 | Status: Approved以降 |
 | 本体仕様書（RD/BD/DD/UT等） | ✓ 担当 | △ 可 | **DOCS_OK 必須** |
 | README/CONTRIBUTING/規約 | ✓ 担当 | △ 可 | **DOCS_OK 必須** |

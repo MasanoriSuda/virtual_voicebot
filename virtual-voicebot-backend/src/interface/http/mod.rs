@@ -158,6 +158,27 @@ async fn handle_conn(
         return write_json_response(socket, 200, "OK", json.as_bytes()).await;
     }
 
+    if method == "GET" && path == "/api/local-services/status" {
+        let json = match get_local_services_status_json(config::ai_config()).await {
+            Ok(json) => json,
+            Err(error) => {
+                log::warn!(
+                    "[http] local services status probe failed: call_id=- {}",
+                    error
+                );
+                return write_sync_error_response(
+                    socket,
+                    500,
+                    "Internal Server Error",
+                    "INTERNAL_ERROR",
+                    "Local services probe failed",
+                )
+                .await;
+            }
+        };
+        return write_json_response(socket, 200, "OK", json.as_bytes()).await;
+    }
+
     let is_get = method == "GET";
     let is_head = method == "HEAD";
     if (!is_get && !is_head) || !path.starts_with("/recordings/") {
@@ -413,6 +434,15 @@ async fn get_sync_status_json(pool: &PgPool) -> Result<String, std::io::Error> {
         },
     };
 
+    serde_json::to_string(&response).map_err(std::io::Error::other)
+}
+
+async fn get_local_services_status_json(
+    ai_cfg: &config::AiConfig,
+) -> Result<String, std::io::Error> {
+    let response = crate::service::ai::probe_local_services_status(ai_cfg)
+        .await
+        .map_err(std::io::Error::other)?;
     serde_json::to_string(&response).map_err(std::io::Error::other)
 }
 

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sqlx::{Postgres, Row, Transaction};
@@ -104,6 +105,7 @@ pub struct FrontendAnnouncement {
     pub tts_text: Option<String>,
     pub duration_sec: Option<f64>,
     pub language: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 pub fn default_anonymous_action() -> StoredAction {
@@ -361,12 +363,26 @@ async fn convert_announcements(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("ja");
+        let updated_at = match announcement.updated_at.as_deref() {
+            Some(raw_updated_at) => match parse_frontend_updated_at(raw_updated_at) {
+                Some(parsed) => parsed,
+                None => {
+                    log::warn!(
+                        "[serversync] invalid announcement.updated_at, fallback to now id={} updated_at={}",
+                        announcement.id,
+                        raw_updated_at
+                    );
+                    Utc::now()
+                }
+            },
+            None => Utc::now(),
+        };
         sqlx::query(
             "INSERT INTO announcements (
                 id, name, description, announcement_type, is_active, folder_id,
                 audio_file_url, tts_text, duration_sec, language, version, created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9, 1, NOW(), NOW())
+             VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9, 1, NOW(), $10)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 description = EXCLUDED.description,
@@ -377,7 +393,7 @@ async fn convert_announcements(
                 tts_text = EXCLUDED.tts_text,
                 duration_sec = EXCLUDED.duration_sec,
                 language = EXCLUDED.language,
-                updated_at = NOW()",
+                updated_at = EXCLUDED.updated_at",
         )
         .bind(announcement.id)
         .bind(announcement.name.trim())
@@ -388,6 +404,7 @@ async fn convert_announcements(
         .bind(tts_text)
         .bind(duration_sec)
         .bind(language)
+        .bind(updated_at)
         .execute(&mut **tx)
         .await?;
     }
@@ -679,6 +696,12 @@ fn normalize_optional_text(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+pub fn parse_frontend_updated_at(raw: &str) -> Option<DateTime<Utc>> {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Utc))
 }
 
 fn normalize_action_code(raw: &str) -> String {

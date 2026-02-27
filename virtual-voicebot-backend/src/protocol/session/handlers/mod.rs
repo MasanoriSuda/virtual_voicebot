@@ -16,7 +16,7 @@ use crate::protocol::session::types::{
     SessionTimerInfo,
 };
 use crate::service::routing::{ActionConfig, ActionExecutor, RuleEvaluator};
-use crate::shared::ports::app::{AppEvent, EndReason};
+use crate::shared::ports::app::{AppEvent, EndReason, RtpAudioChunk};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -585,6 +585,20 @@ impl SessionCoordinator {
                     );
                 }
             }
+            (
+                SessState::Established,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path,
+                    generation_id,
+                },
+            ) => {
+                if let Err(e) = self.enqueue_playback(&path, generation_id).await {
+                    warn!(
+                        "[session {}] failed to enqueue app audio: {:?}",
+                        self.call_id, e
+                    );
+                }
+            }
             (_, SessionControlIn::AppHangup) => {
                 warn!("[session {}] app requested hangup", self.call_id);
                 self.stop_ring_delay();
@@ -606,10 +620,16 @@ impl SessionCoordinator {
                     .try_send((self.call_id.clone(), SessionOut::SipSendBye));
                 self.send_call_ended(EndReason::AppHangup);
             }
-            (_, SessionControlIn::AppTransferRequest { person }) => {
+            (SessState::Established, SessionControlIn::AppTransferRequest { person }) => {
                 if !self.start_b2bua_transfer(person.as_str()) {
                     return false;
                 }
+            }
+            (state, SessionControlIn::AppTransferRequest { person }) => {
+                warn!(
+                    "[session {}] AppTransferRequest ignored in state {:?} (person={})",
+                    self.call_id, state, person
+                );
             }
             (_, SessionControlIn::SipSessionExpires { timer }) => {
                 self.update_session_expires(timer);
@@ -724,7 +744,27 @@ impl SessionCoordinator {
                     }
                     self.recording.push_b_leg_tx(&payload);
                 } else if self.ivr_state == IvrState::VoicebotMode {
-                    if let Some(buffer) = self.capture.ingest(&payload) {
+                    let was_in_speech = self.capture.is_in_speech();
+                    let capture_result = self.capture.ingest(&payload);
+                    let is_in_speech = self.capture.is_in_speech();
+
+                    if (was_in_speech || is_in_speech)
+                        && crate::shared::config::voicebot_asr_streaming_enabled()
+                    {
+                        if let Some(tx) = &self.audio_chunk_tx {
+                            if let Err(err) = tx.try_send_latest(RtpAudioChunk {
+                                call_id: self.call_id.clone(),
+                                pcm_mulaw: payload.clone(),
+                            }) {
+                                warn!(
+                                    "[session {}] dropped audio chunk event: {:?}",
+                                    self.call_id, err
+                                );
+                            }
+                        }
+                    }
+
+                    if let Some(buffer) = capture_result {
                         info!(
                             "[session {}] buffered audio ready for app ({} bytes)",
                             self.call_id,
@@ -887,7 +927,6 @@ impl SessionCoordinator {
                     return;
                 }
                 if self.ivr_state == IvrState::B2buaMode {
-                    self.align_rtp_clock();
                     self.recording.push_tx(&payload);
                     self.recording.push_b_leg_rx(&payload);
                     self.rtp.send_payload(self.call_id.as_str(), payload);
@@ -990,11 +1029,14 @@ impl SessionCoordinator {
         self.ivr_max_retries = normalize_max_retries(menu.max_retries);
         self.ivr_timeout_override =
             Some(Duration::from_secs(normalize_timeout_sec(menu.timeout_sec)));
-        self.ivr_menu_audio_file_url = Some(
-            menu.audio_file_url
-                .map(super::map_audio_file_url_to_local_path)
+        let resolved_menu_path = match menu.audio_file_url.clone() {
+            Some(url) => self
+                .resolve_audio_file_url(url)
+                .await
                 .unwrap_or_else(|| super::IVR_INTRO_WAV_PATH.to_string()),
-        );
+            None => super::IVR_INTRO_WAV_PATH.to_string(),
+        };
+        self.ivr_menu_audio_file_url = Some(resolved_menu_path);
         let menu_path = self
             .ivr_menu_audio_file_url
             .as_ref()
@@ -1271,12 +1313,14 @@ impl SessionCoordinator {
                     Some("voicebot_started"),
                 );
                 let intro_path = if action.include_announcement.unwrap_or(false) {
-                    action
-                        .announcement_audio_file_url
-                        .as_ref()
-                        .cloned()
-                        .map(super::map_audio_file_url_to_local_path)
-                        .or_else(|| Some(super::VOICEBOT_INTRO_WAV_PATH.to_string()))
+                    match action.announcement_audio_file_url.clone() {
+                        Some(url) => Some(
+                            self.resolve_audio_file_url(url)
+                                .await
+                                .unwrap_or_else(|| super::VOICEBOT_INTRO_WAV_PATH.to_string()),
+                        ),
+                        None => Some(super::VOICEBOT_INTRO_WAV_PATH.to_string()),
+                    }
                 } else {
                     None
                 };
@@ -1656,6 +1700,7 @@ mod tests {
             control_tx,
             media_tx,
             app_tx,
+            audio_chunk_tx: None,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
             call_log_port: Arc::new(DummyCallLogPort),
@@ -1673,6 +1718,8 @@ mod tests {
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             playback: None,
+            playback_generation_id: None,
+            playback_queue: std::collections::VecDeque::new(),
             speaking: false,
             capture: AudioCapture::new(runtime_cfg.vad.clone()),
             intro_sent: false,
@@ -1896,5 +1943,141 @@ mod tests {
             session.invite_rejected,
             "outbound mode should mark invite_rejected"
         );
+    }
+
+    #[tokio::test]
+    async fn app_transfer_request_is_ignored_outside_established() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
+
+        let advance = session
+            .handle_control_event(
+                SessState::Terminated,
+                SessionControlIn::AppTransferRequest {
+                    person: "recording_notice".to_string(),
+                },
+            )
+            .await;
+
+        assert!(
+            advance,
+            "ignored transfer request should keep session loop running"
+        );
+        assert!(
+            session.transfer_cancel.is_none(),
+            "transfer must not be started outside established state"
+        );
+        assert!(
+            session.b_leg.is_none(),
+            "b_leg must remain unset when transfer request is ignored"
+        );
+    }
+
+    #[tokio::test]
+    async fn app_bot_audio_file_enqueue_starts_playback_in_established() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
+
+        let advance = session
+            .handle_control_event(
+                SessState::Established,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path: "/tmp/test.wav".to_string(),
+                    generation_id: 1,
+                },
+            )
+            .await;
+
+        assert!(advance, "enqueue audio should keep session loop running");
+        assert!(
+            session.playback.is_some(),
+            "enqueue on idle playback should start playback immediately"
+        );
+        assert!(
+            session.playback_queue.is_empty(),
+            "idle playback path should not enqueue frames"
+        );
+        assert!(
+            session.sending_audio,
+            "session should enter sending_audio state"
+        );
+    }
+
+    #[tokio::test]
+    async fn app_bot_audio_file_enqueue_is_ignored_outside_established() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
+
+        let advance = session
+            .handle_control_event(
+                SessState::Terminated,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path: "/tmp/test.wav".to_string(),
+                    generation_id: 1,
+                },
+            )
+            .await;
+
+        assert!(advance, "ignored enqueue should keep session loop running");
+        assert!(
+            session.playback.is_none(),
+            "playback must remain stopped when enqueue is ignored"
+        );
+        assert!(
+            session.playback_queue.is_empty(),
+            "queue must remain empty when enqueue is ignored"
+        );
+        assert!(
+            !session.sending_audio,
+            "ignored enqueue must not start audio sending"
+        );
+    }
+
+    #[tokio::test]
+    async fn app_bot_audio_file_enqueue_interrupts_different_generation() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
+
+        let advance_first = session
+            .handle_control_event(
+                SessState::Established,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path: "/tmp/test-1.wav".to_string(),
+                    generation_id: 10,
+                },
+            )
+            .await;
+        assert!(advance_first);
+        assert_eq!(session.playback_generation_id, Some(10));
+        assert!(session.playback_queue.is_empty());
+
+        let advance_same = session
+            .handle_control_event(
+                SessState::Established,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path: "/tmp/test-2.wav".to_string(),
+                    generation_id: 10,
+                },
+            )
+            .await;
+        assert!(advance_same);
+        assert_eq!(session.playback_queue.len(), 1);
+
+        let advance_new = session
+            .handle_control_event(
+                SessState::Established,
+                SessionControlIn::AppBotAudioFileEnqueue {
+                    path: "/tmp/test-3.wav".to_string(),
+                    generation_id: 11,
+                },
+            )
+            .await;
+        assert!(advance_new);
+        assert_eq!(session.playback_generation_id, Some(11));
+        assert!(
+            session.playback_queue.is_empty(),
+            "interrupt-first should clear queued chunks from old generation"
+        );
+        assert!(session.playback.is_some());
     }
 }

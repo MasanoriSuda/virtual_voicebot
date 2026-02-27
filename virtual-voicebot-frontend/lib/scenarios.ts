@@ -14,7 +14,19 @@ export interface ScenariosDatabase {
 }
 
 export function createDefaultScenariosDatabase(): ScenariosDatabase {
+  const now = new Date().toISOString()
   return {
-    scenarios: [],
+    scenarios: [
+      {
+        id: "scenario-default",
+        name: "Temporary Default Scenario",
+        description: "Temporary seed for Refs #212",
+        isActive: true,
+        voicevoxStyleId: 3,
+        systemPrompt: "You are a polite phone assistant. Respond briefly in Japanese.",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
   }
 }

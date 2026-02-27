@@ -42,13 +42,13 @@ const WEATHER_PROMPT_EXAMPLE: &str = "weather_prompt.example.txt";
 static WEATHER_PROMPT_CACHE: OnceLock<String> = OnceLock::new();
 static WEATHER_CACHE: OnceLock<Mutex<HashMap<String, CachedReport>>> = OnceLock::new();
 
-pub async fn handle_weather(query: WeatherQuery) -> Result<String> {
+pub async fn handle_weather(call_id: &str, query: WeatherQuery) -> Result<String> {
     let report = fetch_weather_report(&query).await?;
-    let summary = summarize_weather(&report).await;
+    let summary = summarize_weather(&report, call_id).await;
     Ok(summary)
 }
 
-async fn summarize_weather(report: &WeatherReport) -> String {
+async fn summarize_weather(report: &WeatherReport, call_id: &str) -> String {
     let payload = serde_json::json!({
         "location": report.location,
         "date": report.date,
@@ -59,15 +59,58 @@ async fn summarize_weather(report: &WeatherReport) -> String {
     });
 
     let prompt = weather_prompt();
-    let model = config::ai_config().ollama_model.clone();
+    let ai_cfg = config::ai_config();
     let messages = vec![ChatMessage {
         role: Role::User,
         content: payload.to_string(),
     }];
-    match super::call_ollama_with_prompt(&messages, &prompt, &model).await {
+    let openai_enabled = ai_cfg.openai_llm_enabled
+        && ai_cfg
+            .openai_api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|key| !key.is_empty());
+    if openai_enabled {
+        let timeout = ai_cfg.llm_cloud_timeout;
+        let base_url = ai_cfg.openai_base_url.clone();
+        let api_key = ai_cfg.openai_api_key.clone().unwrap_or_default();
+        match super::call_openai_chat_for_stage(
+            &messages,
+            &prompt,
+            "gpt-4o-mini",
+            &base_url,
+            &api_key,
+            timeout,
+        )
+        .await
+        {
+            Ok(text) => return text,
+            Err(err) => {
+                log::warn!(
+                    "[weather {call_id}] openai summarization failed: base_url={} timeout_ms={} err={err:?}",
+                    base_url,
+                    timeout.as_millis()
+                );
+            }
+        }
+    }
+    if !ai_cfg.llm_local_server_enabled {
+        log::debug!(
+            "[weather {call_id}] LLM_LOCAL_SERVER_ENABLED=false, skipping LLM summarization"
+        );
+        return fallback_summary(report);
+    }
+    let model = ai_cfg.llm_local_model.clone();
+    let endpoint_url = ai_cfg.llm_local_server_url.clone();
+    let timeout = ai_cfg.llm_local_timeout;
+    match super::call_ollama_for_weather(&messages, &prompt, &model, &endpoint_url, timeout).await {
         Ok(text) => text,
         Err(err) => {
-            log::warn!("[weather] summarization failed: {err:?}");
+            log::warn!(
+                "[weather {call_id}] summarization failed: endpoint={} timeout_ms={} err={err:?}",
+                endpoint_url,
+                timeout.as_millis()
+            );
             fallback_summary(report)
         }
     }

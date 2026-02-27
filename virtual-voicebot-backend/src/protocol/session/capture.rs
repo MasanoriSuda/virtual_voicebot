@@ -59,6 +59,10 @@ impl AudioCapture {
         self.reset_state();
     }
 
+    pub fn is_in_speech(&self) -> bool {
+        self.active && matches!(self.state, CaptureState::InSpeech)
+    }
+
     /// Processes a single mu-law audio frame for voice activity detection, accumulating frames into a speech segment and emitting the captured speech when configured end conditions are met.
     ///
     /// This method uses the capture configuration (VAD threshold, start/end silence windows, and min/max speech durations) to decide whether a frame contains voice, to start or continue a speech segment, and to finish and return the collected payload when the segment ends and satisfies the minimum speech duration.
@@ -238,6 +242,34 @@ mod tests {
             }
         }
         assert!(out.is_none());
+    }
+
+    #[test]
+    fn is_in_speech_tracks_lifecycle_transitions() {
+        let cfg = VadConfig {
+            rms_threshold: 600,
+            start_silence_ms: 0,
+            end_silence_ms: 200,
+            min_speech_ms: 100,
+            max_speech_ms: 5_000,
+        };
+        let threshold = cfg.rms_threshold;
+        let mut capture = AudioCapture::new(cfg);
+        let (voice, _) = samples_for_threshold(threshold);
+        let voice_frame = vec![voice; 160];
+
+        assert!(!capture.is_in_speech());
+        assert!(capture.ingest(&voice_frame).is_none());
+        assert!(!capture.is_in_speech());
+
+        capture.start();
+        assert!(!capture.is_in_speech());
+
+        assert!(capture.ingest(&voice_frame).is_none());
+        assert!(capture.is_in_speech());
+
+        capture.reset();
+        assert!(!capture.is_in_speech());
     }
 
     fn samples_for_threshold(threshold: u32) -> (u8, u8) {

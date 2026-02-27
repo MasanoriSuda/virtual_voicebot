@@ -1,0 +1,21 @@
+{
+  "name": "virtual-voicebot Frontend",
+  "dockerComposeFile": ["../docker-compose.yml", "../docker-compose.dev.yml"],
+  "service": "frontend",
+  "workspaceFolder": "/app",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss"
+      ],
+      "settings": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.formatOnSave": true
+      }
+    }
+  },
+  "remoteUser": "node",
+  "postCreateCommand": "pnpm install"
+}

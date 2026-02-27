@@ -1,14 +1,8 @@
 {
-  "name": "virtual-voicebot-backend DevContainer",
-  "build": {
-    "dockerfile": "../virtual-voicebot-backend/Dockerfile",
-    "context": "../virtual-voicebot-backend",
-    "target": "build"
-  },
-
-  // ★ VS Code がデフォルトでマウントする場所
-  "workspaceFolder": "/workspaces/virtual-voicebot-backend",
-
+  "name": "virtual-voicebot Backend",
+  "dockerComposeFile": ["../docker-compose.yml", "../docker-compose.dev.yml"],
+  "service": "backend",
+  "workspaceFolder": "/workspace",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -18,9 +12,6 @@
       ]
     }
   },
-
   "remoteUser": "root",
-
-  // デフォルトの workspaceFolder(/workspaces/virtual-voicebot-backend) でそのままビルド
   "postCreateCommand": "cargo build || true"
 }

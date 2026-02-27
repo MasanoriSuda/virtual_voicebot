@@ -1,0 +1,13 @@
+services:
+  backend:
+    environment:
+      RUST_LOG: info
+    stdin_open: true
+    tty: true
+
+  frontend:
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    stdin_open: true
+    tty: true

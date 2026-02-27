@@ -5,7 +5,9 @@ use std::sync::OnceLock;
 
 use anyhow::Result;
 
-use crate::shared::ports::ai::ChatMessage;
+use crate::shared::config;
+use crate::shared::error::ai::LlmError;
+use crate::shared::ports::ai::{ChatMessage, LlmStream};
 
 const DEFAULT_SYSTEM_PROMPT: &str = "あなたはボイスボットです。120文字以内で回答してください。";
 const PROMPT_FILE_NAME: &str = "prompt.local.txt";
@@ -56,8 +58,37 @@ fn read_prompt_file() -> Option<String> {
 }
 
 /// LLM 呼び出しの薄いI/F（挙動は ai::handle_user_question_from_whisper のLLM部分と同じ）
-pub async fn generate_answer(messages: Vec<ChatMessage>) -> Result<String> {
-    super::handle_user_question_from_whisper_llm_only(messages).await
+pub async fn generate_answer(call_id: &str, messages: Vec<ChatMessage>) -> Result<String> {
+    super::handle_user_question_from_whisper_llm_only(call_id, messages).await
+}
+
+/// LLM 呼び出しのストリーム版ラッパ（初回スコープは Ollama local のみ）。
+pub async fn generate_answer_stream(
+    call_id: &str,
+    messages: Vec<ChatMessage>,
+) -> std::result::Result<LlmStream, LlmError> {
+    let ai_cfg = config::ai_config();
+    if !ai_cfg.llm_local_server_enabled {
+        return Err(LlmError::GenerationFailed(
+            "LLM local streaming is disabled".to_string(),
+        ));
+    }
+
+    let system_prompt = system_prompt();
+    let first_token_timeout = config::llm_streaming_first_token_timeout();
+    super::call_ollama_for_chat_stream(
+        &messages,
+        &system_prompt,
+        &ai_cfg.llm_local_model,
+        &ai_cfg.llm_local_server_url,
+        config::llm_streaming_connect_timeout(),
+        first_token_timeout,
+    )
+    .await
+    .map_err(|e| {
+        log::warn!("[llm {call_id}] local streaming failed to start: {e}");
+        e
+    })
 }
 
 /// LLM 呼び出しの薄いラッパ（挙動は ai::handle_user_question_from_whisper と同じ）。

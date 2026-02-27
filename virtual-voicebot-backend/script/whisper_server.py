@@ -114,6 +114,11 @@ def apply_output_script(text: str) -> str:
     except Exception:
         return text
 
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok", "engine": ASR_ENGINE}
+
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
     # 一時ファイルに保存

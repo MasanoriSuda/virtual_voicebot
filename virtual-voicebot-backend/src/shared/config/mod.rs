@@ -30,6 +30,135 @@ impl AppRuntimeConfig {
     }
 }
 
+static VOICEBOT_STREAMING_ENABLED: OnceLock<bool> = OnceLock::new();
+static VOICEBOT_ASR_STREAMING_ENABLED: OnceLock<bool> = OnceLock::new();
+static VOICEBOT_TTS_STREAMING_ENABLED: OnceLock<bool> = OnceLock::new();
+static VOICEBOT_STREAMING_SENTENCE_MAX_CHARS: OnceLock<usize> = OnceLock::new();
+static VOICEBOT_STREAMING_SENTENCE_MAX_WAIT: OnceLock<Duration> = OnceLock::new();
+static VOICEBOT_STREAMING_SENTENCE_CHANNEL_CAPACITY: OnceLock<usize> = OnceLock::new();
+static LLM_STREAMING_CONNECT_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static LLM_STREAMING_FIRST_TOKEN_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static LLM_STREAMING_TOTAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static TTS_STREAMING_CONNECT_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static TTS_STREAMING_FIRST_CHUNK_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static TTS_STREAMING_TOTAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static TTS_STREAMING_EARLY_START_ENABLED: OnceLock<bool> = OnceLock::new();
+static TTS_STREAMING_EARLY_START_BYTES: OnceLock<usize> = OnceLock::new();
+static ASR_STREAMING_SERVER_URL: OnceLock<String> = OnceLock::new();
+static ASR_STREAMING_CONNECT_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static ASR_STREAMING_FIRST_PARTIAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static ASR_STREAMING_FINAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+pub fn voicebot_streaming_enabled() -> bool {
+    *VOICEBOT_STREAMING_ENABLED.get_or_init(|| env_bool("VOICEBOT_STREAMING_ENABLED", false))
+}
+
+pub fn voicebot_asr_streaming_enabled() -> bool {
+    *VOICEBOT_ASR_STREAMING_ENABLED
+        .get_or_init(|| env_bool("VOICEBOT_ASR_STREAMING_ENABLED", false))
+}
+
+pub fn voicebot_tts_streaming_enabled() -> bool {
+    *VOICEBOT_TTS_STREAMING_ENABLED
+        .get_or_init(|| env_bool("VOICEBOT_TTS_STREAMING_ENABLED", false))
+}
+
+pub fn sentence_max_chars() -> usize {
+    *VOICEBOT_STREAMING_SENTENCE_MAX_CHARS
+        .get_or_init(|| env_u64("VOICEBOT_STREAMING_SENTENCE_MAX_CHARS", 50) as usize)
+}
+
+pub fn sentence_max_wait() -> Duration {
+    *VOICEBOT_STREAMING_SENTENCE_MAX_WAIT
+        .get_or_init(|| env_duration_ms("VOICEBOT_STREAMING_SENTENCE_MAX_WAIT_MS", 2_000))
+}
+
+pub fn sentence_channel_capacity() -> usize {
+    *VOICEBOT_STREAMING_SENTENCE_CHANNEL_CAPACITY
+        .get_or_init(|| env_u64("VOICEBOT_STREAMING_SENTENCE_CHANNEL_CAPACITY", 4) as usize)
+}
+
+pub fn llm_streaming_connect_timeout() -> Duration {
+    *LLM_STREAMING_CONNECT_TIMEOUT
+        .get_or_init(|| env_duration_ms("LLM_STREAMING_CONNECT_TIMEOUT_MS", 5_000))
+}
+
+pub fn llm_streaming_first_token_timeout() -> Duration {
+    *LLM_STREAMING_FIRST_TOKEN_TIMEOUT
+        .get_or_init(|| env_duration_ms("LLM_STREAMING_FIRST_TOKEN_TIMEOUT_MS", 5_000))
+}
+
+pub fn llm_streaming_total_timeout() -> Duration {
+    *LLM_STREAMING_TOTAL_TIMEOUT
+        .get_or_init(|| env_duration_ms("LLM_STREAMING_TOTAL_TIMEOUT_MS", 60_000))
+}
+
+pub fn tts_streaming_connect_timeout() -> Duration {
+    *TTS_STREAMING_CONNECT_TIMEOUT
+        .get_or_init(|| env_duration_ms("TTS_STREAMING_CONNECT_TIMEOUT_MS", 3_000))
+}
+
+pub fn tts_streaming_first_chunk_timeout() -> Duration {
+    *TTS_STREAMING_FIRST_CHUNK_TIMEOUT
+        .get_or_init(|| env_duration_ms("TTS_STREAMING_FIRST_CHUNK_TIMEOUT_MS", 3_000))
+}
+
+pub fn tts_streaming_total_timeout() -> Duration {
+    *TTS_STREAMING_TOTAL_TIMEOUT
+        .get_or_init(|| env_duration_ms("TTS_STREAMING_TOTAL_TIMEOUT_MS", 15_000))
+}
+
+pub fn tts_streaming_early_start_enabled() -> bool {
+    *TTS_STREAMING_EARLY_START_ENABLED
+        .get_or_init(|| env_bool("VOICEBOT_TTS_STREAMING_EARLY_START_ENABLED", false))
+}
+
+pub fn tts_streaming_early_start_bytes() -> usize {
+    *TTS_STREAMING_EARLY_START_BYTES
+        .get_or_init(|| env_u64("TTS_STREAMING_EARLY_START_BYTES", 24_000) as usize)
+}
+
+pub fn asr_streaming_server_url() -> String {
+    ASR_STREAMING_SERVER_URL
+        .get_or_init(|| {
+            env_non_empty("ASR_STREAMING_SERVER_URL")
+                .unwrap_or_else(default_asr_streaming_server_url)
+        })
+        .clone()
+}
+
+pub fn asr_streaming_connect_timeout() -> Duration {
+    *ASR_STREAMING_CONNECT_TIMEOUT
+        .get_or_init(|| env_duration_ms("ASR_STREAMING_CONNECT_TIMEOUT_MS", 3_000))
+}
+
+pub fn asr_streaming_first_partial_timeout() -> Duration {
+    *ASR_STREAMING_FIRST_PARTIAL_TIMEOUT
+        .get_or_init(|| env_duration_ms("ASR_STREAMING_FIRST_PARTIAL_TIMEOUT_MS", 3_000))
+}
+
+pub fn asr_streaming_final_timeout() -> Duration {
+    *ASR_STREAMING_FINAL_TIMEOUT
+        .get_or_init(|| env_duration_ms("ASR_STREAMING_FINAL_TIMEOUT_MS", 2_000))
+}
+
+fn default_asr_streaming_server_url() -> String {
+    let source = ai_config().asr_local_server_url.trim();
+    let (scheme, rest) = if let Some(rest) = source.strip_prefix("http://") {
+        ("ws://", rest)
+    } else if let Some(rest) = source.strip_prefix("https://") {
+        ("wss://", rest)
+    } else {
+        return "ws://localhost:9000/transcribe_stream".to_string();
+    };
+    let host_port = rest.split('/').next().unwrap_or(rest).trim();
+    if host_port.is_empty() {
+        "ws://localhost:9000/transcribe_stream".to_string()
+    } else {
+        format!("{scheme}{host_port}/transcribe_stream")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SessionRuntimeConfig {
     pub vad: VadConfig,
@@ -525,6 +654,35 @@ impl SyncConfig {
 }
 
 #[derive(Clone, Debug)]
+pub struct AnnouncementConfig {
+    pub frontend_base_url: Option<String>,
+    pub audio_dir: String,
+}
+
+impl AnnouncementConfig {
+    fn from_env() -> Self {
+        let audio_dir = env_non_empty("ANNOUNCEMENT_AUDIO_DIR")
+            .unwrap_or_else(|| "data/announcements".to_string());
+        if !std::path::Path::new(&audio_dir).is_absolute() {
+            log::info!(
+                "[config] ANNOUNCEMENT_AUDIO_DIR is a relative path: '{}' (resolved against CWD)",
+                audio_dir
+            );
+        }
+        Self {
+            frontend_base_url: env_non_empty("FRONTEND_BASE_URL"),
+            audio_dir,
+        }
+    }
+}
+
+static ANNOUNCEMENT_CONFIG: OnceLock<AnnouncementConfig> = OnceLock::new();
+
+pub fn announcement_config() -> &'static AnnouncementConfig {
+    ANNOUNCEMENT_CONFIG.get_or_init(AnnouncementConfig::from_env)
+}
+
+#[derive(Clone, Debug)]
 pub struct LineNotifyConfig {
     pub enabled: bool,
     pub channel_access_token: Option<String>,
@@ -856,11 +1014,50 @@ pub fn logging_config() -> &'static LoggingConfig {
 
 #[derive(Clone, Debug)]
 pub struct AiConfig {
+    pub openai_api_key: Option<String>,
+    pub openai_base_url: String,
+    pub openai_asr_enabled: bool,
+    pub openai_llm_enabled: bool,
+    pub openai_tts_enabled: bool,
+    pub openai_intent_enabled: bool,
+    pub openai_intent_timeout: Duration,
+    pub openai_intent_model: String,
     pub gemini_api_key: Option<String>,
     pub gemini_model: String,
     pub ollama_model: String,
     pub ollama_intent_model: String,
+    pub intent_local_server_url: String,
+    pub intent_local_server_enabled: bool,
+    pub intent_local_model: String,
+    pub intent_raspi_url: Option<String>,
+    pub intent_raspi_enabled: bool,
+    pub intent_raspi_model: String,
+    pub intent_local_timeout: Duration,
+    pub intent_raspi_timeout: Duration,
+    pub llm_local_server_url: String,
+    pub llm_local_server_enabled: bool,
+    pub llm_local_model: String,
+    pub llm_raspi_url: Option<String>,
+    pub llm_raspi_enabled: bool,
+    pub llm_raspi_model: String,
+    pub llm_cloud_timeout: Duration,
+    pub llm_local_timeout: Duration,
+    pub llm_raspi_timeout: Duration,
     pub use_aws_transcribe: bool,
+    pub asr_local_server_url: String,
+    pub asr_local_server_enabled: bool,
+    pub asr_raspi_url: Option<String>,
+    pub asr_raspi_enabled: bool,
+    pub asr_cloud_timeout: Duration,
+    pub asr_local_timeout: Duration,
+    pub asr_raspi_timeout: Duration,
+    pub tts_local_server_base_url: String,
+    pub tts_local_server_enabled: bool,
+    pub tts_raspi_base_url: Option<String>,
+    pub tts_raspi_enabled: bool,
+    pub tts_cloud_timeout: Duration,
+    pub tts_local_timeout: Duration,
+    pub tts_raspi_timeout: Duration,
     pub aws_transcribe_bucket: Option<String>,
     pub aws_transcribe_prefix: String,
     pub ser_url: Option<String>,
@@ -870,11 +1067,50 @@ impl AiConfig {
     /// Constructs an AI-related configuration from environment variables, using sensible defaults when variables are absent.
     ///
     /// The following environment variables are read:
+    /// - `OPENAI_API_KEY`: optional API key for OpenAI cloud provider (kept as `None` if unset).
+    /// - `OPENAI_BASE_URL`: OpenAI API base URL; defaults to `"https://api.openai.com/v1"`.
+    /// - `OPENAI_ASR_ENABLED`: enables OpenAI ASR cloud provider; defaults to `true`.
+    /// - `OPENAI_LLM_ENABLED`: enables OpenAI LLM cloud provider; defaults to `true`.
+    /// - `OPENAI_TTS_ENABLED`: enables OpenAI TTS cloud provider; defaults to `true`.
+    /// - `OPENAI_INTENT_ENABLED`: enables OpenAI intent cloud provider; defaults to `false`.
+    /// - `OPENAI_INTENT_TIMEOUT_MS`: OpenAI intent timeout in milliseconds; defaults to `3000`.
+    /// - `OPENAI_INTENT_MODEL`: OpenAI model for intent classification; defaults to `"gpt-4o-mini"`.
     /// - `GEMINI_API_KEY`: optional API key for Gemini (kept as `None` if unset).
     /// - `GEMINI_MODEL`: model name for Gemini; defaults to `"gemini-2.5-flash-lite"`.
     /// - `OLLAMA_MODEL`: model name for Ollama; defaults to `"gemma3:4b"`.
     /// - `OLLAMA_INTENT_MODEL`: intent model for Ollama; defaults to the value of `OLLAMA_MODEL`.
+    /// - `INTENT_LOCAL_SERVER_URL`: local intent server full endpoint URL; defaults to `"http://localhost:11434/api/chat"`.
+    /// - `INTENT_LOCAL_SERVER_ENABLED`: enables local intent fallback; defaults to `true`.
+    /// - `INTENT_LOCAL_MODEL`: local intent model; defaults to the value of `OLLAMA_INTENT_MODEL`.
+    /// - `INTENT_RASPI_URL`: optional Raspberry Pi intent server full endpoint URL (required only when `INTENT_RASPI_ENABLED=1`).
+    /// - `INTENT_RASPI_ENABLED`: enables Raspberry Pi intent fallback; defaults to `false`.
+    /// - `INTENT_RASPI_MODEL`: Raspberry Pi intent model; defaults to `"llama3.2:1b"`.
+    /// - `INTENT_LOCAL_TIMEOUT_MS`: local intent timeout in milliseconds; defaults to `3000`.
+    /// - `INTENT_RASPI_TIMEOUT_MS`: Raspberry Pi intent timeout in milliseconds; defaults to `5000`.
+    /// - `LLM_LOCAL_SERVER_URL`: local LLM server full endpoint URL; defaults to `"http://localhost:11434/api/chat"`.
+    /// - `LLM_LOCAL_SERVER_ENABLED`: enables local LLM server fallback; defaults to `true`.
+    /// - `LLM_LOCAL_MODEL`: local LLM model; defaults to the value of `OLLAMA_MODEL`.
+    /// - `LLM_RASPI_URL`: optional Raspberry Pi LLM server full endpoint URL (required only when `LLM_RASPI_ENABLED=1`).
+    /// - `LLM_RASPI_ENABLED`: enables Raspberry Pi LLM fallback; defaults to `false`.
+    /// - `LLM_RASPI_MODEL`: Raspberry Pi LLM model; defaults to `"llama3.2:1b"`.
+    /// - `LLM_CLOUD_TIMEOUT_MS`: cloud LLM timeout in milliseconds; defaults to `10000`.
+    /// - `LLM_LOCAL_TIMEOUT_MS`: local LLM timeout in milliseconds; defaults to `8000`.
+    /// - `LLM_RASPI_TIMEOUT_MS`: Raspberry Pi LLM timeout in milliseconds; defaults to `15000`.
     /// - `USE_AWS_TRANSCRIBE`: treated as a boolean; defaults to `false`.
+    /// - `ASR_LOCAL_SERVER_URL`: local ASR server URL; defaults to `"http://localhost:9000/transcribe"`.
+    /// - `ASR_LOCAL_SERVER_ENABLED`: enables local ASR server fallback; defaults to `true`.
+    /// - `ASR_RASPI_URL`: optional Raspberry Pi ASR server URL (required only when `ASR_RASPI_ENABLED=1`).
+    /// - `ASR_RASPI_ENABLED`: enables Raspberry Pi ASR fallback; defaults to `false`.
+    /// - `ASR_CLOUD_TIMEOUT_MS`: overall cloud ASR timeout in milliseconds; defaults to `5000`.
+    /// - `ASR_LOCAL_TIMEOUT_MS`: local ASR server timeout in milliseconds; defaults to `3000`.
+    /// - `ASR_RASPI_TIMEOUT_MS`: Raspberry Pi ASR timeout in milliseconds; defaults to `8000`.
+    /// - `TTS_LOCAL_SERVER_BASE_URL`: local TTS server base URL; defaults to `"http://localhost:50021"`.
+    /// - `TTS_LOCAL_SERVER_ENABLED`: enables local TTS server fallback; defaults to `true`.
+    /// - `TTS_RASPI_BASE_URL`: optional Raspberry Pi TTS server base URL (required only when `TTS_RASPI_ENABLED=1`).
+    /// - `TTS_RASPI_ENABLED`: enables Raspberry Pi TTS fallback; defaults to `false`.
+    /// - `TTS_CLOUD_TIMEOUT_MS`: cloud TTS stage timeout in milliseconds; defaults to `10000`.
+    /// - `TTS_LOCAL_TIMEOUT_MS`: local TTS stage timeout in milliseconds; defaults to `5000`.
+    /// - `TTS_RASPI_TIMEOUT_MS`: Raspberry Pi TTS stage timeout in milliseconds; defaults to `10000`.
     /// - `AWS_TRANSCRIBE_BUCKET`: optional S3 bucket name for AWS Transcribe.
     /// - `AWS_TRANSCRIBE_PREFIX`: prefix for transcribe objects; defaults to `"voicebot"`.
     /// - `SER_URL`: optional SER service URL.
@@ -886,11 +1122,50 @@ impl AiConfig {
     /// ```ignore
     /// use std::env;
     /// // Ensure relevant vars are not set to exercise defaults in this example.
+    /// env::remove_var("OPENAI_API_KEY");
+    /// env::remove_var("OPENAI_BASE_URL");
+    /// env::remove_var("OPENAI_ASR_ENABLED");
+    /// env::remove_var("OPENAI_LLM_ENABLED");
+    /// env::remove_var("OPENAI_TTS_ENABLED");
+    /// env::remove_var("OPENAI_INTENT_ENABLED");
+    /// env::remove_var("OPENAI_INTENT_TIMEOUT_MS");
+    /// env::remove_var("OPENAI_INTENT_MODEL");
     /// env::remove_var("GEMINI_API_KEY");
     /// env::remove_var("GEMINI_MODEL");
     /// env::remove_var("OLLAMA_MODEL");
     /// env::remove_var("OLLAMA_INTENT_MODEL");
+    /// env::remove_var("INTENT_LOCAL_SERVER_URL");
+    /// env::remove_var("INTENT_LOCAL_SERVER_ENABLED");
+    /// env::remove_var("INTENT_LOCAL_MODEL");
+    /// env::remove_var("INTENT_RASPI_URL");
+    /// env::remove_var("INTENT_RASPI_ENABLED");
+    /// env::remove_var("INTENT_RASPI_MODEL");
+    /// env::remove_var("INTENT_LOCAL_TIMEOUT_MS");
+    /// env::remove_var("INTENT_RASPI_TIMEOUT_MS");
+    /// env::remove_var("LLM_LOCAL_SERVER_URL");
+    /// env::remove_var("LLM_LOCAL_SERVER_ENABLED");
+    /// env::remove_var("LLM_LOCAL_MODEL");
+    /// env::remove_var("LLM_RASPI_URL");
+    /// env::remove_var("LLM_RASPI_ENABLED");
+    /// env::remove_var("LLM_RASPI_MODEL");
+    /// env::remove_var("LLM_CLOUD_TIMEOUT_MS");
+    /// env::remove_var("LLM_LOCAL_TIMEOUT_MS");
+    /// env::remove_var("LLM_RASPI_TIMEOUT_MS");
     /// env::remove_var("USE_AWS_TRANSCRIBE");
+    /// env::remove_var("ASR_LOCAL_SERVER_URL");
+    /// env::remove_var("ASR_LOCAL_SERVER_ENABLED");
+    /// env::remove_var("ASR_RASPI_URL");
+    /// env::remove_var("ASR_RASPI_ENABLED");
+    /// env::remove_var("ASR_CLOUD_TIMEOUT_MS");
+    /// env::remove_var("ASR_LOCAL_TIMEOUT_MS");
+    /// env::remove_var("ASR_RASPI_TIMEOUT_MS");
+    /// env::remove_var("TTS_LOCAL_SERVER_BASE_URL");
+    /// env::remove_var("TTS_LOCAL_SERVER_ENABLED");
+    /// env::remove_var("TTS_RASPI_BASE_URL");
+    /// env::remove_var("TTS_RASPI_ENABLED");
+    /// env::remove_var("TTS_CLOUD_TIMEOUT_MS");
+    /// env::remove_var("TTS_LOCAL_TIMEOUT_MS");
+    /// env::remove_var("TTS_RASPI_TIMEOUT_MS");
     /// env::remove_var("AWS_TRANSCRIBE_BUCKET");
     /// env::remove_var("AWS_TRANSCRIBE_PREFIX");
     /// env::remove_var("SER_URL");
@@ -904,13 +1179,67 @@ impl AiConfig {
             std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma3:4b".to_string());
         let ollama_intent_model =
             std::env::var("OLLAMA_INTENT_MODEL").unwrap_or_else(|_| ollama_model.clone());
+        let intent_local_model =
+            env_non_empty("INTENT_LOCAL_MODEL").unwrap_or_else(|| ollama_intent_model.clone());
+        let llm_local_model =
+            env_non_empty("LLM_LOCAL_MODEL").unwrap_or_else(|| ollama_model.clone());
         Self {
+            openai_api_key: env_non_empty("OPENAI_API_KEY"),
+            openai_base_url: env_non_empty("OPENAI_BASE_URL")
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+            openai_asr_enabled: env_bool("OPENAI_ASR_ENABLED", true),
+            openai_llm_enabled: env_bool("OPENAI_LLM_ENABLED", true),
+            openai_tts_enabled: env_bool("OPENAI_TTS_ENABLED", true),
+            openai_intent_enabled: env_bool("OPENAI_INTENT_ENABLED", false),
+            openai_intent_timeout: env_duration_ms("OPENAI_INTENT_TIMEOUT_MS", 3_000),
+            openai_intent_model: env_non_empty("OPENAI_INTENT_MODEL")
+                .unwrap_or_else(|| "gpt-4o-mini".to_string()),
             gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
             gemini_model: std::env::var("GEMINI_MODEL")
                 .unwrap_or_else(|_| "gemini-2.5-flash-lite".to_string()),
             ollama_model,
             ollama_intent_model,
+            intent_local_server_url: env_non_empty("INTENT_LOCAL_SERVER_URL")
+                .unwrap_or_else(|| "http://localhost:11434/api/chat".to_string()),
+            intent_local_server_enabled: env_bool("INTENT_LOCAL_SERVER_ENABLED", true),
+            intent_local_model,
+            intent_raspi_url: env_non_empty("INTENT_RASPI_URL"),
+            intent_raspi_enabled: env_bool("INTENT_RASPI_ENABLED", false),
+            intent_raspi_model: env_non_empty("INTENT_RASPI_MODEL")
+                .unwrap_or_else(|| "llama3.2:1b".to_string()),
+            intent_local_timeout: env_duration_ms("INTENT_LOCAL_TIMEOUT_MS", 3_000),
+            intent_raspi_timeout: env_duration_ms("INTENT_RASPI_TIMEOUT_MS", 5_000),
+            llm_local_server_url: env_non_empty("LLM_LOCAL_SERVER_URL")
+                .unwrap_or_else(|| "http://localhost:11434/api/chat".to_string()),
+            llm_local_server_enabled: env_bool("LLM_LOCAL_SERVER_ENABLED", true),
+            llm_local_model,
+            llm_raspi_url: env_non_empty("LLM_RASPI_URL"),
+            llm_raspi_enabled: env_bool("LLM_RASPI_ENABLED", false),
+            llm_raspi_model: env_non_empty("LLM_RASPI_MODEL")
+                .unwrap_or_else(|| "llama3.2:1b".to_string()),
+            llm_cloud_timeout: env_duration_ms("LLM_CLOUD_TIMEOUT_MS", 10_000),
+            llm_local_timeout: env_duration_ms("LLM_LOCAL_TIMEOUT_MS", 8_000),
+            llm_raspi_timeout: env_duration_ms("LLM_RASPI_TIMEOUT_MS", 15_000),
             use_aws_transcribe: env_bool("USE_AWS_TRANSCRIBE", false),
+            asr_local_server_url: std::env::var("ASR_LOCAL_SERVER_URL")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "http://localhost:9000/transcribe".to_string()),
+            asr_local_server_enabled: env_bool("ASR_LOCAL_SERVER_ENABLED", true),
+            asr_raspi_url: env_non_empty("ASR_RASPI_URL"),
+            asr_raspi_enabled: env_bool("ASR_RASPI_ENABLED", false),
+            asr_cloud_timeout: env_duration_ms("ASR_CLOUD_TIMEOUT_MS", 5_000),
+            asr_local_timeout: env_duration_ms("ASR_LOCAL_TIMEOUT_MS", 3_000),
+            asr_raspi_timeout: env_duration_ms("ASR_RASPI_TIMEOUT_MS", 8_000),
+            tts_local_server_base_url: env_non_empty("TTS_LOCAL_SERVER_BASE_URL")
+                .unwrap_or_else(|| "http://localhost:50021".to_string()),
+            tts_local_server_enabled: env_bool("TTS_LOCAL_SERVER_ENABLED", true),
+            tts_raspi_base_url: env_non_empty("TTS_RASPI_BASE_URL"),
+            tts_raspi_enabled: env_bool("TTS_RASPI_ENABLED", false),
+            tts_cloud_timeout: env_duration_ms("TTS_CLOUD_TIMEOUT_MS", 10_000),
+            tts_local_timeout: env_duration_ms("TTS_LOCAL_TIMEOUT_MS", 5_000),
+            tts_raspi_timeout: env_duration_ms("TTS_RASPI_TIMEOUT_MS", 10_000),
             aws_transcribe_bucket: std::env::var("AWS_TRANSCRIBE_BUCKET").ok(),
             aws_transcribe_prefix: std::env::var("AWS_TRANSCRIBE_PREFIX")
                 .unwrap_or_else(|_| "voicebot".to_string()),

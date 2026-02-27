@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 // session.rs
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -21,18 +22,19 @@ use crate::protocol::session::capture::AudioCapture;
 use crate::protocol::session::timers::SessionTimers;
 use crate::protocol::sip::{parse_name_addr, parse_uri};
 use crate::service::routing::normalize_phone_number_e164;
-use crate::shared::config::SessionRuntimeConfig;
-use crate::shared::ports::app::AppEventTx;
+use crate::shared::config::{self, SessionRuntimeConfig};
+use crate::shared::ports::app::{AppEventTx, AudioChunkTx};
 use crate::shared::ports::call_log_port::{
     CallLogPort, EndedCallLog, EndedIvrSessionEvent, EndedRecording,
 };
 use crate::shared::ports::ingest::IngestPort;
 use crate::shared::ports::routing_port::RoutingPort;
 use crate::shared::ports::storage::StoragePort;
+use crate::shared::utils::{extract_url_path, is_safe_announcement_url_path};
 use anyhow::Error;
 use uuid::Uuid;
 // log macros used in handler/service modules
-use services::playback_service::PlaybackState;
+use services::playback_service::{PendingUtterance, PlaybackState};
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(20);
 const PLAYBACK_FRAME_INTERVAL: Duration = Duration::from_millis(20);
@@ -89,6 +91,7 @@ pub struct SessionCoordinator {
     control_tx: mpsc::Sender<SessionControlIn>,
     media_tx: mpsc::Sender<SessionMediaIn>,
     app_tx: AppEventTx,
+    audio_chunk_tx: Option<AudioChunkTx>,
     runtime_cfg: Arc<SessionRuntimeConfig>,
     media_cfg: MediaConfig,
     call_log_port: Arc<dyn CallLogPort>,
@@ -102,6 +105,8 @@ pub struct SessionCoordinator {
     timers: SessionTimers,
     sending_audio: bool,
     playback: Option<PlaybackState>,
+    playback_generation_id: Option<PlaybackGenerationId>,
+    playback_queue: VecDeque<PendingUtterance>,
     // バッファ/タイマ
     speaking: bool,
     capture: AudioCapture,
@@ -156,6 +161,7 @@ impl SessionCoordinator {
         to_uri: String,
         session_out_tx: mpsc::Sender<(CallId, SessionOut)>,
         app_tx: AppEventTx,
+        audio_chunk_tx: Option<AudioChunkTx>,
         media_cfg: MediaConfig,
         rtp_tx: RtpTxHandle,
         ingest_url: Option<String>,
@@ -187,6 +193,7 @@ impl SessionCoordinator {
             control_tx: control_tx.clone(),
             media_tx: media_tx.clone(),
             app_tx,
+            audio_chunk_tx,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg,
             call_log_port,
@@ -202,6 +209,8 @@ impl SessionCoordinator {
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             playback: None,
+            playback_generation_id: None,
+            playback_queue: VecDeque::new(),
             speaking: false,
             capture: AudioCapture::new(runtime_cfg.vad.clone()),
             intro_sent: false,
@@ -508,9 +517,9 @@ impl SessionCoordinator {
         self.ivr_timeout_override = None;
     }
 
-    pub(crate) async fn resolve_announcement_playback_path(&self) -> Option<String> {
+    pub(crate) async fn resolve_announcement_playback_path(&mut self) -> Option<String> {
         if let Some(audio_file_url) = self.announcement_audio_file_url.clone() {
-            return Some(map_audio_file_url_to_local_path(audio_file_url));
+            return self.resolve_audio_file_url(audio_file_url).await;
         }
 
         let announcement_id = self.announcement_id?;
@@ -519,7 +528,7 @@ impl SessionCoordinator {
             .find_announcement_audio_file_url(announcement_id)
             .await
         {
-            Ok(Some(audio_file_url)) => Some(map_audio_file_url_to_local_path(audio_file_url)),
+            Ok(Some(audio_file_url)) => self.resolve_audio_file_url(audio_file_url).await,
             Ok(None) => {
                 log::warn!(
                     "[session {}] announcement not found id={}",
@@ -533,6 +542,42 @@ impl SessionCoordinator {
                     "[session {}] failed to read announcement id={} error={}",
                     self.call_id,
                     announcement_id,
+                    err
+                );
+                None
+            }
+        }
+    }
+
+    async fn resolve_audio_file_url(&mut self, audio_file_url: String) -> Option<String> {
+        let cfg = config::announcement_config();
+        let Some(local_path) =
+            map_audio_file_url_to_cache_path(cfg.audio_dir.as_str(), &audio_file_url)
+        else {
+            let url_path = extract_url_path(&audio_file_url);
+            log::warn!(
+                "[session {}] rejected unsafe audio url path: {}",
+                self.call_id,
+                url_path
+            );
+            return None;
+        };
+
+        match tokio::fs::metadata(&local_path).await {
+            Ok(_) => Some(local_path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                log::warn!(
+                    "[session {}] local audio cache not found: {} (has serversync run?)",
+                    self.call_id,
+                    local_path
+                );
+                None
+            }
+            Err(err) => {
+                log::warn!(
+                    "[session {}] failed to check local audio cache {}: {}",
+                    self.call_id,
+                    local_path,
                     err
                 );
                 None
@@ -676,38 +721,17 @@ impl SessionCoordinator {
     }
 }
 
-fn map_audio_file_url_to_local_path(audio_file_url: String) -> String {
-    let trimmed = audio_file_url.trim();
-    let url_path = if let Some(scheme_sep) = trimmed.find("://") {
-        let after_scheme = &trimmed[scheme_sep + 3..];
-        if let Some(path_pos) = after_scheme.find('/') {
-            &after_scheme[path_pos..]
-        } else {
-            "/"
-        }
-    } else {
-        trimmed
-    };
-
-    if let Some(rest) = url_path.strip_prefix("/audio/announcements/") {
-        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-        let path = repo_root
-            .join("virtual-voicebot-frontend")
-            .join("public")
-            .join("audio")
-            .join("announcements")
-            .join(rest);
-        return path.to_string_lossy().to_string();
+fn map_audio_file_url_to_cache_path(audio_dir: &str, audio_file_url: &str) -> Option<String> {
+    let url_path = extract_url_path(audio_file_url);
+    if !is_safe_announcement_url_path(&url_path) {
+        return None;
     }
-
-    if let Some(path) = url_path.strip_prefix("file://") {
-        return path.to_string();
-    }
-
-    url_path.to_string()
+    let filename = url_path
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())?;
+    let path = std::path::Path::new(audio_dir).join(filename);
+    Some(path.to_string_lossy().to_string())
 }
 
 fn normalize_action_code(action_code: &str) -> String {
@@ -784,6 +808,7 @@ fn extract_user_from_to(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::protocol::session::types::SessionControlIn;
+    use crate::service::routing::{ActionConfig, ActionExecutor};
     use crate::shared::ports::call_log_port::CallLogPortError;
     use crate::shared::ports::ingest::IngestPayload;
     use crate::shared::ports::routing_port::NoopRoutingPort;
@@ -890,6 +915,7 @@ mod tests {
             control_tx,
             media_tx,
             app_tx,
+            audio_chunk_tx: None,
             runtime_cfg: runtime_cfg.clone(),
             media_cfg: MediaConfig::pcmu("127.0.0.1", 10000),
             call_log_port: Arc::new(DummyCallLogPort),
@@ -907,6 +933,8 @@ mod tests {
             timers: SessionTimers::new(Duration::from_secs(0)),
             sending_audio: false,
             playback: None,
+            playback_generation_id: None,
+            playback_queue: VecDeque::new(),
             speaking: false,
             capture: AudioCapture::new(runtime_cfg.vad.clone()),
             intro_sent: false,
@@ -959,6 +987,28 @@ mod tests {
         session
     }
 
+    fn make_vb_action(recording_enabled: bool) -> ActionConfig {
+        let mut action = ActionConfig::default_vr();
+        action.action_code = "VB".to_string();
+        action.recording_enabled = recording_enabled;
+        action
+    }
+
+    fn prepare_unique_recording(
+        session: &mut SessionCoordinator,
+        call_id_suffix: &str,
+    ) -> std::path::PathBuf {
+        session.recording = crate::protocol::session::recording_manager::RecordingManager::new(
+            format!("test-vb-recording-{call_id_suffix}"),
+        );
+        session
+            .recording
+            .mixed_file_path()
+            .parent()
+            .expect("recording directory should exist")
+            .to_path_buf()
+    }
+
     #[tokio::test]
     async fn cancel_playback_clears_state() {
         let mut session = build_test_session(Arc::new(DummyStoragePort));
@@ -968,6 +1018,28 @@ mod tests {
         session.cancel_playback();
         assert!(session.playback.is_none());
         assert!(!session.sending_audio);
+    }
+
+    #[tokio::test]
+    async fn cancel_playback_does_not_trigger_transfer() {
+        let (mut session, mut control_rx) =
+            build_test_session_with_control(Arc::new(DummyStoragePort));
+        session.set_announce_mode(true);
+        session.set_recording_notice_pending(true);
+        session.start_playback(&["dummy.wav"]).await.unwrap();
+
+        session.cancel_playback();
+
+        assert!(session.playback.is_none());
+        assert!(!session.sending_audio);
+        assert!(!session.announce_mode);
+        assert!(!session.recording_notice_pending);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), control_rx.recv())
+                .await
+                .is_err(),
+            "cancel_playback should not enqueue transfer"
+        );
     }
 
     #[tokio::test]
@@ -1017,17 +1089,76 @@ mod tests {
     }
 
     #[test]
-    fn audio_announcement_url_is_mapped_to_frontend_public_file() {
-        let mapped = super::map_audio_file_url_to_local_path(
-            "http://localhost:3000/audio/announcements/abc.wav".to_string(),
-        );
-        assert!(mapped.ends_with("virtual-voicebot-frontend/public/audio/announcements/abc.wav"));
+    fn audio_announcement_url_is_mapped_to_local_cache_dir() {
+        let mapped = super::map_audio_file_url_to_cache_path(
+            "/tmp/announcements",
+            "http://localhost:3000/audio/announcements/abc.wav",
+        )
+        .expect("valid cache path");
+        assert_eq!(mapped, "/tmp/announcements/abc.wav");
     }
 
     #[test]
-    fn relative_audio_announcement_url_is_mapped_to_frontend_public_file() {
-        let mapped = super::map_audio_file_url_to_local_path("/audio/announcements/xyz.wav".into());
-        assert!(mapped.ends_with("virtual-voicebot-frontend/public/audio/announcements/xyz.wav"));
+    fn invalid_audio_announcement_url_is_rejected_for_local_cache() {
+        let mapped = super::map_audio_file_url_to_cache_path(
+            "/tmp/announcements",
+            "/audio/announcements/../../../etc/passwd",
+        );
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn extract_url_path_strips_scheme_and_host() {
+        let path = super::extract_url_path("http://192.168.1.5:3000/audio/announcements/a.wav");
+        assert_eq!(path, "/audio/announcements/a.wav");
+    }
+
+    #[test]
+    fn extract_url_path_keeps_relative_path() {
+        let path = super::extract_url_path("/audio/announcements/b.wav");
+        assert_eq!(path, "/audio/announcements/b.wav");
+    }
+
+    #[test]
+    fn extract_url_path_strips_query_and_fragment() {
+        let path =
+            super::extract_url_path("http://192.168.1.5:3000/audio/announcements/a.wav?v=2#x");
+        assert_eq!(path, "/audio/announcements/a.wav");
+    }
+
+    #[test]
+    fn safe_announcement_url_path_rejects_parent_dir_segments() {
+        assert!(!super::is_safe_announcement_url_path(
+            "/audio/announcements/../../../etc/passwd"
+        ));
+    }
+
+    #[test]
+    fn safe_announcement_url_path_rejects_percent_encoded_parent_dir_segments() {
+        assert!(!super::is_safe_announcement_url_path(
+            "/audio/announcements/%2e%2e/secret.wav"
+        ));
+    }
+
+    #[test]
+    fn safe_announcement_url_path_rejects_mixed_case_percent_encoded_parent_dir_segments() {
+        assert!(!super::is_safe_announcement_url_path(
+            "/audio/announcements/%2E%2e/secret.wav"
+        ));
+    }
+
+    #[test]
+    fn safe_announcement_url_path_accepts_normal_announcement_path() {
+        assert!(super::is_safe_announcement_url_path(
+            "/audio/announcements/abc-123.wav"
+        ));
+    }
+
+    #[test]
+    fn safe_announcement_url_path_rejects_subdirectories() {
+        assert!(!super::is_safe_announcement_url_path(
+            "/audio/announcements/morning/greeting.wav"
+        ));
     }
 
     #[test]
@@ -1091,6 +1222,52 @@ mod tests {
         assert_eq!(session.initial_action_code, Some("VR".to_string()));
         assert_eq!(session.final_action, Some("normal_call".to_string()));
         assert_eq!(session.call_disposition, "allowed");
+    }
+
+    #[tokio::test]
+    async fn vb_action_honors_recording_enabled_true() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let recording_dir = prepare_unique_recording(&mut session, "true");
+        let action = make_vb_action(true);
+
+        ActionExecutor::new()
+            .execute(&action, "test-call", &mut session)
+            .await
+            .expect("VB action should execute");
+
+        session
+            .recording
+            .start_main()
+            .expect("recording start should succeed when enabled");
+        assert!(
+            session.recording.is_started(),
+            "VB action with recording_enabled=true should keep recorder enabled"
+        );
+        session.recording.stop_and_merge();
+        let _ = std::fs::remove_dir_all(recording_dir);
+    }
+
+    #[tokio::test]
+    async fn vb_action_honors_recording_enabled_false() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let recording_dir = prepare_unique_recording(&mut session, "false");
+        let action = make_vb_action(false);
+
+        ActionExecutor::new()
+            .execute(&action, "test-call", &mut session)
+            .await
+            .expect("VB action should execute");
+
+        session
+            .recording
+            .start_main()
+            .expect("disabled recorder start should be a no-op");
+        assert!(
+            !session.recording.is_started(),
+            "VB action with recording_enabled=false should disable recorder"
+        );
+        session.recording.stop_and_merge();
+        let _ = std::fs::remove_dir_all(recording_dir);
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 /virtual-voicebot-backend/target
 /virtual-voicebot-backend/storage/recordings
 /virtual-voicebot-frontend/storage/recordings
+/virtual-voicebot-frontend/storage/db
 /virtual-voicebot-backend/advenc_calendar
 /virtual-voicebot-backend/spec
 
@@ -16,6 +17,11 @@ build/
 # Env / secrets
 .env
 .env.*
+/virtual-voicebot-backend/.env.systemd
+/virtual-voicebot-backend/.env.serversync.systemd
+!.env.example
+!virtual-voicebot-backend/.env.systemd.example
+!virtual-voicebot-backend/.env.serversync.systemd.example
 *.pem
 *.key
 

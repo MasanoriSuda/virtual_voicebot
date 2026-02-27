@@ -82,6 +82,22 @@ LlmError {
 - プロンプト組立: history/コンテキストは service/call_control が組み立てて渡す（service/ai/llm は純クライアント）
 - ストリーミング応答: MVP では非対応、NEXT でトークンストリームを検討
 
+### Raspberry Pi 向けモデル運用（Ollama）
+- 現行実装は Gemini 失敗時に Ollama へフォールバックする。
+- Ollama モデルは `OLLAMA_MODEL` で切り替える（コード変更不要）。
+- デフォルト値は `gemma3:4b`。
+
+| モデル | 用途 | 備考 |
+|---|---|---|
+| `llama3.2:1b` | Raspberry Pi 標準（推奨） | 速度・安定性重視 |
+| `llama3.2:3b` | 品質重視 | 1b より負荷が高い |
+| `gemma3:4b` | 現行デフォルト | ラズパイでは重い可能性あり |
+
+運用上の注意:
+- `GEMINI_API_KEY` 未設定時は `call_gemini` が `Err` になり、error ログ出力後に Ollama へフォールバックする。
+- Ollama サーバーは `http://localhost:11434` を利用する。
+- `OLLAMA_INTENT_MODEL` 未設定時は `OLLAMA_MODEL` と同じ値を使う。
+
 ## 4. TTS (service/ai/tts)
 
 ### 入力 DTO

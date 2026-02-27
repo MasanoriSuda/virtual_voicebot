@@ -8,8 +8,8 @@ pub enum AsrError {
     AudioTooShort,
     #[error("Service unavailable")]
     ServiceUnavailable,
-    #[error("Timeout")]
-    Timeout,
+    #[error("Timeout: {0}")]
+    Timeout(String),
 }
 
 #[derive(Debug, Error)]
@@ -28,6 +28,8 @@ pub enum LlmError {
     ContextTooLong,
     #[error("Rate limited")]
     RateLimited,
+    #[error("Timeout: {0}")]
+    Timeout(String),
 }
 
 #[derive(Debug, Error)]

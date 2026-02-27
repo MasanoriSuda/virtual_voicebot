@@ -9,11 +9,14 @@ pub mod tts;
 pub mod types;
 pub mod weather;
 
-pub use asr::AsrPort;
+pub use asr::{
+    asr_audio_channel, AsrAudioMsg, AsrAudioRx, AsrAudioTx, AsrPort, AsrStreamEvent,
+    AsrStreamHandle, AsrStreamPort,
+};
 pub use intent::IntentPort;
-pub use llm::LlmPort;
+pub use llm::{LlmPort, LlmStream, LlmStreamEvent, LlmStreamPort};
 pub use ser::SerPort;
-pub use tts::TtsPort;
+pub use tts::{TtsPort, TtsStream, TtsStreamPort};
 pub use types::{
     AsrChunk, ChatMessage, Emotion, Intent, Role, SerInputPcm, SerOutcome, SerResult, WeatherQuery,
     WeatherResponse,
