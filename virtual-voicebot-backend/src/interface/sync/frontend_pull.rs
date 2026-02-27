@@ -13,11 +13,11 @@ use tokio::time::{interval, MissedTickBehavior};
 use uuid::Uuid;
 
 use crate::interface::sync::converters::{
-    apply_frontend_snapshot, default_anonymous_action, default_default_action, CallActionsPayload,
-    CallerGroup, ConverterError, FrontendAnnouncement, IvrFlowDefinition, StoredAction,
+    apply_frontend_snapshot, default_anonymous_action, default_default_action, parse_frontend_updated_at,
+    CallActionsPayload, CallerGroup, ConverterError, FrontendAnnouncement, IvrFlowDefinition, StoredAction,
 };
 use crate::shared::config::{self, SyncConfig};
-use crate::shared::utils::extract_url_path;
+use crate::shared::utils::{extract_url_path, is_safe_announcement_url_path};
 
 const FRONTEND_PULL_MAX_CONNECTIONS: u32 = 5;
 const MAX_ANNOUNCEMENT_AUDIO_BYTES: u64 = 8 * 1024 * 1024;
@@ -406,19 +406,15 @@ fn should_download_announcement_audio(
     }
 }
 
-fn parse_frontend_updated_at(raw: &str) -> Option<DateTime<Utc>> {
-    chrono::DateTime::parse_from_rfc3339(raw)
-        .ok()
-        .map(|timestamp| timestamp.with_timezone(&Utc))
-}
-
 async fn download_audio_file(
     http_client: &reqwest::Client,
     frontend_base_url: &str,
     url_path: &str,
     local_path: &Path,
 ) -> anyhow::Result<()> {
-    debug_assert!(is_safe_announcement_url_path(url_path));
+    if !is_safe_announcement_url_path(url_path) {
+        return Err(anyhow::anyhow!("unsafe announcement url path: {}", url_path));
+    }
 
     let full_url = format!("{}{}", frontend_base_url.trim_end_matches('/'), url_path);
     let mut resp = http_client
@@ -488,20 +484,6 @@ async fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
-}
-
-fn is_safe_announcement_url_path(url_path: &str) -> bool {
-    let Some(rest) = url_path.strip_prefix("/audio/announcements/") else {
-        return false;
-    };
-    if rest.is_empty() {
-        return false;
-    }
-    !rest.contains('/')
-        && rest != "."
-        && rest != ".."
-        && !rest.contains('%')
-        && !rest.contains('\\')
 }
 
 fn announcement_cache_local_path(audio_dir: &Path, url_path: &str) -> PathBuf {

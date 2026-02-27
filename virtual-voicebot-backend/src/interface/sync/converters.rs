@@ -698,7 +698,7 @@ fn normalize_optional_text(raw: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn parse_frontend_updated_at(raw: &str) -> Option<DateTime<Utc>> {
+pub fn parse_frontend_updated_at(raw: &str) -> Option<DateTime<Utc>> {
     chrono::DateTime::parse_from_rfc3339(raw)
         .ok()
         .map(|timestamp| timestamp.with_timezone(&Utc))

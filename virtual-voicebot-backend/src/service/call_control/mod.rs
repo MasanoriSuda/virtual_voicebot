@@ -297,6 +297,7 @@ impl AppWorker {
                         break;
                     };
                     if !self.handle_app_event(ev).await {
+                        log::info!("[app {}] CallEnded: stopping app worker loop", self.call_id);
                         break;
                     }
                 }
@@ -364,7 +365,12 @@ impl AppWorker {
                     );
                     return true;
                 }
+                log::info!("[app {}] CallStarted: received", self.call_id);
                 self.active = true;
+                log::info!(
+                    "[app {}] CallStarted: active=true, running phone lookup",
+                    self.call_id
+                );
                 let caller_display = caller.as_deref().filter(|value| !value.trim().is_empty());
                 if let Some(value) = caller_display {
                     log::debug!(
@@ -421,6 +427,17 @@ impl AppWorker {
                     );
                     return true;
                 }
+                log::info!(
+                    "[app {}] CallEnded: received reason={:?} duration_sec={:?}",
+                    self.call_id,
+                    reason,
+                    duration_sec
+                );
+                self.active = false;
+                log::info!(
+                    "[app {}] CallEnded: active=false, closing stream and notifying",
+                    self.call_id
+                );
                 self.close_asr_stream_handle_best_effort();
                 self.notify_ended(call_id.as_str(), from, reason, duration_sec, timestamp);
                 false

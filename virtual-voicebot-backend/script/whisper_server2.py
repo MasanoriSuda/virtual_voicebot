@@ -1,7 +1,7 @@
 import asyncio
-import audioop
 import json
 import logging
+import struct
 import wave
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
@@ -131,6 +131,25 @@ def apply_output_script(text: str) -> str:
         return text
 
 
+def _ulaw_to_linear16_sample(code: int) -> int:
+    ulaw = (~code) & 0xFF
+    sign = ulaw & 0x80
+    exponent = (ulaw >> 4) & 0x07
+    mantissa = ulaw & 0x0F
+    magnitude = ((mantissa << 3) + 0x84) << exponent
+    pcm = magnitude - 0x84
+    return -pcm if sign else pcm
+
+
+ULAW_TO_PCM16_TABLE = tuple(
+    struct.pack("<h", _ulaw_to_linear16_sample(code)) for code in range(256)
+)
+
+
+def ulaw_to_linear16_bytes(mulaw_bytes: bytes) -> bytes:
+    return b"".join(ULAW_TO_PCM16_TABLE[b] for b in mulaw_bytes)
+
+
 async def run_asr_inference(tmp_path: str) -> str:
     # グローバルモデルへの同時アクセスを抑制し、推論ハングを timeout で遮断する。
     try:
@@ -145,7 +164,7 @@ async def run_asr_inference(tmp_path: str) -> str:
 
 
 def write_mulaw_to_wav(mulaw_bytes: bytes, path: str) -> None:
-    pcm16 = audioop.ulaw2lin(mulaw_bytes, 2)
+    pcm16 = ulaw_to_linear16_bytes(mulaw_bytes)
     with wave.open(path, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)

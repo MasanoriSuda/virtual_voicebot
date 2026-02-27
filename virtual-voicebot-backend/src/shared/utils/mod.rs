@@ -15,6 +15,20 @@ pub fn extract_url_path(audio_file_url: &str) -> String {
     without_query.to_string()
 }
 
+pub fn is_safe_announcement_url_path(url_path: &str) -> bool {
+    let Some(rest) = url_path.strip_prefix("/audio/announcements/") else {
+        return false;
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    !rest.contains('/')
+        && rest != "."
+        && rest != ".."
+        && !rest.contains('%')
+        && !rest.contains('\\')
+}
+
 pub fn mask_pii(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {

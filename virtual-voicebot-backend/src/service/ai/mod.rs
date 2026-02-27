@@ -224,9 +224,10 @@ pub async fn probe_local_services_status(
         ),
     );
 
+    let local_services = LocalServicesMap { asr, llm, tts };
     Ok(LocalServicesStatusResponse {
-        ok: true,
-        local_services: LocalServicesMap { asr, llm, tts },
+        ok: local_services_all_healthy(&local_services),
+        local_services,
     })
 }
 
@@ -259,6 +260,12 @@ async fn probe_service_entry(
         status,
         display_url: Some(display_url),
     }
+}
+
+fn local_services_all_healthy(local_services: &LocalServicesMap) -> bool {
+    local_services.asr.status == "ok"
+        && local_services.llm.status == "ok"
+        && local_services.tts.status == "ok"
 }
 
 async fn probe_once(client: &Client, url: &str) -> bool {
@@ -668,7 +675,13 @@ async fn call_whisper_stream(
                                         last_partial = text.clone();
                                     }
                                     let out = if text.is_empty() { last_partial.clone() } else { text };
-                                    let _ = final_tx.send(Ok(out));
+                                    if out.is_empty() {
+                                        let _ = final_tx.send(Err(AsrError::TranscriptionFailed(
+                                            "ASR stream ended without final text".to_string(),
+                                        )));
+                                    } else {
+                                        let _ = final_tx.send(Ok(out));
+                                    }
                                     let _ = ws_tx.close().await;
                                     return;
                                 }
@@ -2578,10 +2591,12 @@ mod tests {
 
     use super::{
         call_ollama_for_weather, call_openai_chat_for_stage, call_openai_intent, extract_base_url,
-        join_url_path, parse_ollama_stream_line, probe_once, sanitized_display_url,
+        join_url_path, local_services_all_healthy, parse_ollama_stream_line, probe_once,
+        sanitized_display_url,
         synth_openai_tts_for_stage, transcribe_with_openai_for_stage,
-        validate_openai_tts_wav_bytes, wrap_openai_tts_pcm_as_wav, ChatMessage, LlmError, Role,
-        ASR_FALLBACK_ORDER, LLM_FALLBACK_ORDER, TTS_FALLBACK_ORDER,
+        validate_openai_tts_wav_bytes, wrap_openai_tts_pcm_as_wav, ChatMessage, LlmError,
+        LocalServiceEntry, LocalServicesMap, Role, ASR_FALLBACK_ORDER, LLM_FALLBACK_ORDER,
+        TTS_FALLBACK_ORDER,
     };
 
     async fn read_http_request(
@@ -2669,6 +2684,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["local", "cloud", "raspi"]
         );
+    }
+
+    #[test]
+    fn local_services_all_healthy_returns_true_only_when_all_ok() {
+        let local_services = LocalServicesMap {
+            asr: LocalServiceEntry {
+                status: "ok",
+                display_url: None,
+            },
+            llm: LocalServiceEntry {
+                status: "ok",
+                display_url: None,
+            },
+            tts: LocalServiceEntry {
+                status: "ok",
+                display_url: None,
+            },
+        };
+        assert!(local_services_all_healthy(&local_services));
+    }
+
+    #[test]
+    fn local_services_all_healthy_returns_false_on_error_or_disabled() {
+        let local_services = LocalServicesMap {
+            asr: LocalServiceEntry {
+                status: "ok",
+                display_url: None,
+            },
+            llm: LocalServiceEntry {
+                status: "error",
+                display_url: None,
+            },
+            tts: LocalServiceEntry {
+                status: "disabled",
+                display_url: None,
+            },
+        };
+        assert!(!local_services_all_healthy(&local_services));
     }
 
     #[test]
