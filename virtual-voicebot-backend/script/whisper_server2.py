@@ -26,16 +26,7 @@ if ASR_OUTPUT_SCRIPT in ("hiragana", "katakana"):
     try:
         from pykakasi import kakasi
 
-        _k = kakasi()
-        if ASR_OUTPUT_SCRIPT == "hiragana":
-            _k.setMode("J", "H")
-            _k.setMode("K", "H")
-            _k.setMode("H", "H")
-        else:
-            _k.setMode("J", "K")
-            _k.setMode("K", "K")
-            _k.setMode("H", "K")
-        KANA_CONVERTER = _k.getConverter()
+        KANA_CONVERTER = kakasi()
     except Exception:
         logger.exception("failed to initialize KANA_CONVERTER; falling back to raw text output")
         KANA_CONVERTER = None
@@ -125,7 +116,14 @@ def apply_output_script(text: str) -> str:
     if KANA_CONVERTER is None:
         return text
     try:
-        return KANA_CONVERTER.do(text)
+        converted = KANA_CONVERTER.convert(text)
+        target_key = "kana" if ASR_OUTPUT_SCRIPT == "katakana" else "hira"
+        rendered = "".join(
+            item.get(target_key) or item.get("orig", "")
+            for item in converted
+            if isinstance(item, dict)
+        )
+        return rendered or text
     except Exception:
         logger.exception("failed to apply KANA_CONVERTER; returning original text")
         return text
@@ -297,22 +295,43 @@ async def transcribe_stream(websocket: WebSocket):
                 text = await run_asr_inference(tmp_path)
                 await websocket.send_json({"type": "final", "text": text})
             except HTTPException as e:
-                await websocket.send_json({"type": "error", "error": str(e.detail)})
+                try:
+                    await websocket.send_json({"type": "error", "error": str(e.detail)})
+                except Exception:
+                    logger.warning(
+                        "transcribe_stream failed to send HTTPException error response",
+                        exc_info=True,
+                    )
             except Exception:
                 logger.exception("transcribe_stream internal error")
-                await websocket.send_json(
-                    {"type": "error", "error": "internal server error"}
-                )
+                try:
+                    await websocket.send_json(
+                        {"type": "error", "error": "internal server error"}
+                    )
+                except Exception:
+                    logger.warning(
+                        "transcribe_stream failed to send internal error response",
+                        exc_info=True,
+                    )
             finally:
                 if tmp_path is not None:
                     try:
                         os.unlink(tmp_path)
                     except FileNotFoundError:
                         pass
-            await websocket.close()
+                try:
+                    await websocket.close()
+                except Exception:
+                    logger.warning("transcribe_stream failed to close websocket", exc_info=True)
             return
     except WebSocketDisconnect:
         return
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=9010)
+    host = os.environ.get("HOST", "0.0.0.0")
+    try:
+        port = int(os.environ.get("PORT", "9010"))
+    except ValueError:
+        logger.warning("invalid PORT value; falling back to 9010", exc_info=True)
+        port = 9010
+    uvicorn.run(app, host=host, port=port)

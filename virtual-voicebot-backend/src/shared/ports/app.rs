@@ -18,6 +18,7 @@ pub enum AppEvent {
     },
     AudioBuffered {
         call_id: CallId,
+        stream_id: String,
         pcm_mulaw: Vec<u8>,
         pcm_linear16: Vec<i16>,
     },
@@ -33,14 +34,18 @@ pub enum AppEvent {
 #[derive(Clone)]
 pub struct RtpAudioChunk {
     pub call_id: CallId,
+    pub stream_id: String,
     pub pcm_mulaw: Vec<u8>,
+    pub end_of_speech: bool,
 }
 
 impl fmt::Debug for RtpAudioChunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RtpAudioChunk")
             .field("call_id", &self.call_id)
+            .field("stream_id", &self.stream_id)
             .field("pcm_mulaw_len", &self.pcm_mulaw.len())
+            .field("end_of_speech", &self.end_of_speech)
             .finish()
     }
 }
@@ -65,11 +70,13 @@ impl fmt::Debug for AppEvent {
                 .finish(),
             Self::AudioBuffered {
                 call_id,
+                stream_id,
                 pcm_mulaw,
                 pcm_linear16,
             } => f
                 .debug_struct("AudioBuffered")
                 .field("call_id", call_id)
+                .field("stream_id", stream_id)
                 .field("pcm_mulaw_len", &pcm_mulaw.len())
                 .field("pcm_linear16_len", &pcm_linear16.len())
                 .finish(),
