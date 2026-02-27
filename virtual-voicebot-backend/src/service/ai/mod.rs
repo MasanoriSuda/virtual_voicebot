@@ -377,6 +377,8 @@ impl AsrStage {
     }
 }
 
+const ASR_FALLBACK_ORDER: [AsrStage; 3] = [AsrStage::Local, AsrStage::Cloud, AsrStage::Raspi];
+
 #[derive(Clone, Copy)]
 enum LlmStage {
     Cloud,
@@ -393,6 +395,8 @@ impl LlmStage {
         }
     }
 }
+
+const LLM_FALLBACK_ORDER: [LlmStage; 3] = [LlmStage::Local, LlmStage::Cloud, LlmStage::Raspi];
 
 #[derive(Clone, Copy)]
 enum TtsStage {
@@ -1221,7 +1225,7 @@ where
     Some(wav_bytes)
 }
 
-/// ASR 実行（現行実装を拡張）: cloud(OpenAI/AWS) -> local server -> raspi server のフォールバック。
+/// ASR 実行（現行実装を拡張）: local server -> cloud(OpenAI/AWS) -> raspi server のフォールバック。
 pub async fn transcribe_and_log(call_id: &str, wav_path: &str) -> Result<String> {
     let ai_cfg = config::ai_config();
 
@@ -1234,73 +1238,89 @@ pub async fn transcribe_and_log(call_id: &str, wav_path: &str) -> Result<String>
     let openai_api_key_owned = openai_api_key(ai_cfg).map(str::to_string);
     let openai_base_url = ai_cfg.openai_base_url.clone();
 
-    if asr_cloud_enabled(ai_cfg) {
-        if let Some(text) =
-            try_asr_stage(call_id, AsrStage::Cloud, ai_cfg.asr_cloud_timeout, || {
-                let openai_api_key_owned = openai_api_key_owned.clone();
-                let openai_base_url = openai_base_url.clone();
-                async move {
-                    if openai_asr_enabled {
-                        let api_key = openai_api_key_owned
-                            .as_deref()
-                            .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
-                        match transcribe_with_openai_for_stage(
-                            &openai_base_url,
-                            api_key,
-                            wav_path,
-                            ai_cfg.asr_cloud_timeout,
+    for stage in ASR_FALLBACK_ORDER {
+        match stage {
+            AsrStage::Local => {
+                if ai_cfg.asr_local_server_enabled {
+                    let local_url = ai_cfg.asr_local_server_url.clone();
+                    if let Some(text) =
+                        try_asr_stage(call_id, AsrStage::Local, ai_cfg.asr_local_timeout, || {
+                            transcribe_with_http_asr(&local_url, wav_path, ai_cfg.asr_local_timeout)
+                        })
+                        .await
+                    {
+                        return Ok(text);
+                    }
+                }
+            }
+            AsrStage::Cloud => {
+                if asr_cloud_enabled(ai_cfg) {
+                    if let Some(text) =
+                        try_asr_stage(call_id, AsrStage::Cloud, ai_cfg.asr_cloud_timeout, || {
+                            let openai_api_key_owned = openai_api_key_owned.clone();
+                            let openai_base_url = openai_base_url.clone();
+                            async move {
+                                if openai_asr_enabled {
+                                    let api_key = openai_api_key_owned
+                                        .as_deref()
+                                        .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
+                                    match transcribe_with_openai_for_stage(
+                                        &openai_base_url,
+                                        api_key,
+                                        wav_path,
+                                        ai_cfg.asr_cloud_timeout,
+                                    )
+                                    .await
+                                    {
+                                        Ok(text) => return Ok(text),
+                                        Err(err) => {
+                                            log::warn!(
+                                                "[asr {call_id}] ASR cloud provider failed: provider=openai reason={}",
+                                                err
+                                            );
+                                        }
+                                    }
+                                }
+
+                                if ai_cfg.use_aws_transcribe {
+                                    return transcribe_with_aws(wav_path).await;
+                                }
+
+                                anyhow::bail!("no cloud ASR providers enabled")
+                            }
+                        })
+                        .await
+                    {
+                        return Ok(text);
+                    }
+                }
+            }
+            AsrStage::Raspi => {
+                if ai_cfg.asr_raspi_enabled {
+                    if let Some(raspi_url) = ai_cfg.asr_raspi_url.clone() {
+                        if let Some(text) = try_asr_stage(
+                            call_id,
+                            AsrStage::Raspi,
+                            ai_cfg.asr_raspi_timeout,
+                            || {
+                                transcribe_with_http_asr(
+                                    &raspi_url,
+                                    wav_path,
+                                    ai_cfg.asr_raspi_timeout,
+                                )
+                            },
                         )
                         .await
                         {
-                            Ok(text) => return Ok(text),
-                            Err(err) => {
-                                log::warn!(
-                                    "[asr {call_id}] ASR cloud provider failed: provider=openai reason={}",
-                                    err
-                                );
-                            }
+                            return Ok(text);
                         }
+                    } else {
+                        log::warn!(
+                            "[asr {call_id}] ASR stage failed: asr_stage=raspi reason=ASR_RASPI_URL missing"
+                        );
                     }
-
-                    if ai_cfg.use_aws_transcribe {
-                        return transcribe_with_aws(wav_path).await;
-                    }
-
-                    anyhow::bail!("no cloud ASR providers enabled")
                 }
-            })
-            .await
-        {
-            return Ok(text);
-        }
-    }
-
-    if ai_cfg.asr_local_server_enabled {
-        let local_url = ai_cfg.asr_local_server_url.clone();
-        if let Some(text) =
-            try_asr_stage(call_id, AsrStage::Local, ai_cfg.asr_local_timeout, || {
-                transcribe_with_http_asr(&local_url, wav_path, ai_cfg.asr_local_timeout)
-            })
-            .await
-        {
-            return Ok(text);
-        }
-    }
-
-    if ai_cfg.asr_raspi_enabled {
-        if let Some(raspi_url) = ai_cfg.asr_raspi_url.clone() {
-            if let Some(text) =
-                try_asr_stage(call_id, AsrStage::Raspi, ai_cfg.asr_raspi_timeout, || {
-                    transcribe_with_http_asr(&raspi_url, wav_path, ai_cfg.asr_raspi_timeout)
-                })
-                .await
-            {
-                return Ok(text);
             }
-        } else {
-            log::warn!(
-                "[asr {call_id}] ASR stage failed: asr_stage=raspi reason=ASR_RASPI_URL missing"
-            );
         }
     }
 
@@ -1308,7 +1328,7 @@ pub async fn transcribe_and_log(call_id: &str, wav_path: &str) -> Result<String>
     anyhow::bail!("all ASR stages failed")
 }
 
-/// LLM + TTS 実行（現行実装を拡張: OpenAI/Gemini→Ollama fallback→TTS）。挙動は従来I/F維持。
+/// LLM + TTS 実行（現行実装を拡張: local Ollama→cloud(OpenAI/Gemini)→raspi fallback→TTS）。挙動は従来I/F維持。
 /// I/F はテキスト入力→WAVパス出力（将来はチャネル/PCM化予定、現状は一時ファイルのまま）。
 pub async fn handle_user_question_from_whisper(messages: Vec<ChatMessage>) -> Result<String> {
     let answer = match handle_user_question_from_whisper_llm_only("standalone", messages).await {
@@ -1350,95 +1370,107 @@ pub async fn handle_user_question_from_whisper_llm_only(
     let openai_llm_enabled = openai_llm_stage_enabled(ai_cfg);
     let openai_api_key_owned = openai_api_key(ai_cfg).map(str::to_string);
     let openai_base_url = ai_cfg.openai_base_url.clone();
-    if llm_cloud_enabled(ai_cfg) {
-        if let Some(text) =
-            try_llm_stage(call_id, LlmStage::Cloud, ai_cfg.llm_cloud_timeout, || {
-                let openai_api_key_owned = openai_api_key_owned.clone();
-                let openai_base_url = openai_base_url.clone();
-                let system_prompt = system_prompt.clone();
-                let cloud_messages = messages.clone();
-                async move {
-                    if openai_llm_enabled {
-                        let api_key = openai_api_key_owned
-                            .as_deref()
-                            .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
-                        match call_openai_chat_for_stage(
-                            &cloud_messages,
-                            &system_prompt,
-                            OPENAI_LLM_MODEL,
-                            &openai_base_url,
-                            api_key,
-                            ai_cfg.llm_cloud_timeout,
+    for stage in LLM_FALLBACK_ORDER {
+        match stage {
+            LlmStage::Local => {
+                if ai_cfg.llm_local_server_enabled {
+                    let local_url = ai_cfg.llm_local_server_url.clone();
+                    let local_model = ai_cfg.llm_local_model.clone();
+                    if let Some(text) =
+                        try_llm_stage(call_id, LlmStage::Local, ai_cfg.llm_local_timeout, || {
+                            call_ollama_for_stage(
+                                &messages,
+                                &system_prompt,
+                                &local_model,
+                                &local_url,
+                                ai_cfg.llm_local_timeout,
+                            )
+                        })
+                        .await
+                    {
+                        return Ok(text);
+                    }
+                }
+            }
+            LlmStage::Cloud => {
+                if llm_cloud_enabled(ai_cfg) {
+                    if let Some(text) =
+                        try_llm_stage(call_id, LlmStage::Cloud, ai_cfg.llm_cloud_timeout, || {
+                            let openai_api_key_owned = openai_api_key_owned.clone();
+                            let openai_base_url = openai_base_url.clone();
+                            let system_prompt = system_prompt.clone();
+                            let cloud_messages = messages.clone();
+                            async move {
+                                if openai_llm_enabled {
+                                    let api_key = openai_api_key_owned
+                                        .as_deref()
+                                        .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
+                                    match call_openai_chat_for_stage(
+                                        &cloud_messages,
+                                        &system_prompt,
+                                        OPENAI_LLM_MODEL,
+                                        &openai_base_url,
+                                        api_key,
+                                        ai_cfg.llm_cloud_timeout,
+                                    )
+                                    .await
+                                    {
+                                        Ok(text) => return Ok(text),
+                                        Err(err) => {
+                                            log::warn!(
+                                                "[llm {call_id}] LLM cloud provider failed: provider=openai reason={}",
+                                                err
+                                            );
+                                        }
+                                    }
+                                }
+
+                                if gemini_llm_enabled(ai_cfg) {
+                                    return call_gemini_with_http_timeout(
+                                        &cloud_messages,
+                                        ai_cfg.llm_cloud_timeout,
+                                    )
+                                    .await;
+                                }
+
+                                anyhow::bail!("no cloud LLM providers enabled")
+                            }
+                        })
+                        .await
+                    {
+                        return Ok(text);
+                    }
+                }
+            }
+            LlmStage::Raspi => {
+                if ai_cfg.llm_raspi_enabled {
+                    if let Some(raspi_url) = ai_cfg.llm_raspi_url.clone() {
+                        let raspi_model = ai_cfg.llm_raspi_model.clone();
+                        if let Some(text) = try_llm_stage(
+                            call_id,
+                            LlmStage::Raspi,
+                            ai_cfg.llm_raspi_timeout,
+                            || {
+                                call_ollama_for_stage(
+                                    &messages,
+                                    &system_prompt,
+                                    &raspi_model,
+                                    &raspi_url,
+                                    ai_cfg.llm_raspi_timeout,
+                                )
+                            },
                         )
                         .await
                         {
-                            Ok(text) => return Ok(text),
-                            Err(err) => {
-                                log::warn!(
-                                    "[llm {call_id}] LLM cloud provider failed: provider=openai reason={}",
-                                    err
-                                );
-                            }
+                            return Ok(text);
                         }
+                    } else {
+                        log::warn!(
+                            "[llm {call_id}] LLM stage failed: llm_stage=raspi reason=LLM_RASPI_URL missing"
+                        );
                     }
-
-                    if gemini_llm_enabled(ai_cfg) {
-                        return call_gemini_with_http_timeout(
-                            &cloud_messages,
-                            ai_cfg.llm_cloud_timeout,
-                        )
-                            .await;
-                    }
-
-                    anyhow::bail!("no cloud LLM providers enabled")
                 }
-            })
-            .await
-        {
-            return Ok(text);
-        }
-    }
-
-    if ai_cfg.llm_local_server_enabled {
-        let local_url = ai_cfg.llm_local_server_url.clone();
-        let local_model = ai_cfg.llm_local_model.clone();
-        if let Some(text) =
-            try_llm_stage(call_id, LlmStage::Local, ai_cfg.llm_local_timeout, || {
-                call_ollama_for_stage(
-                    &messages,
-                    &system_prompt,
-                    &local_model,
-                    &local_url,
-                    ai_cfg.llm_local_timeout,
-                )
-            })
-            .await
-        {
-            return Ok(text);
-        }
-    }
-
-    if ai_cfg.llm_raspi_enabled {
-        if let Some(raspi_url) = ai_cfg.llm_raspi_url.clone() {
-            let raspi_model = ai_cfg.llm_raspi_model.clone();
-            if let Some(text) =
-                try_llm_stage(call_id, LlmStage::Raspi, ai_cfg.llm_raspi_timeout, || {
-                    call_ollama_for_stage(
-                        &messages,
-                        &system_prompt,
-                        &raspi_model,
-                        &raspi_url,
-                        ai_cfg.llm_raspi_timeout,
-                    )
-                })
-                .await
-            {
-                return Ok(text);
             }
-        } else {
-            log::warn!(
-                "[llm {call_id}] LLM stage failed: llm_stage=raspi reason=LLM_RASPI_URL missing"
-            );
         }
     }
 
@@ -2474,6 +2506,7 @@ mod tests {
         openai_endpoint_url, parse_ollama_stream_line, probe_once, sanitized_display_url,
         synth_openai_tts_for_stage, transcribe_with_openai_for_stage, tts_endpoint_url,
         validate_openai_tts_wav_bytes, wrap_openai_tts_pcm_as_wav, ChatMessage, LlmError, Role,
+        ASR_FALLBACK_ORDER, LLM_FALLBACK_ORDER,
     };
 
     async fn read_http_request(
@@ -2528,6 +2561,28 @@ mod tests {
             writer.finalize().expect("finalize wav");
         }
         cursor.into_inner()
+    }
+
+    #[test]
+    fn asr_fallback_order_is_local_cloud_raspi() {
+        assert_eq!(
+            ASR_FALLBACK_ORDER
+                .iter()
+                .map(|stage| stage.as_str())
+                .collect::<Vec<_>>(),
+            vec!["local", "cloud", "raspi"]
+        );
+    }
+
+    #[test]
+    fn llm_fallback_order_is_local_cloud_raspi() {
+        assert_eq!(
+            LLM_FALLBACK_ORDER
+                .iter()
+                .map(|stage| stage.as_str())
+                .collect::<Vec<_>>(),
+            vec!["local", "cloud", "raspi"]
+        );
     }
 
     #[test]
