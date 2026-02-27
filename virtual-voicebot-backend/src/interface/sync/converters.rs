@@ -704,6 +704,30 @@ pub fn parse_frontend_updated_at(raw: &str) -> Option<DateTime<Utc>> {
         .map(|timestamp| timestamp.with_timezone(&Utc))
 }
 
+#[cfg(test)]
+mod parse_frontend_updated_at_tests {
+    use super::parse_frontend_updated_at;
+    use chrono::{DateTime, Utc};
+
+    #[test]
+    fn parse_frontend_updated_at_returns_some_for_valid_rfc3339() {
+        let raw = "2026-02-24T12:34:56.000Z";
+        let parsed = parse_frontend_updated_at(raw);
+        let expected = DateTime::parse_from_rfc3339(raw)
+            .ok()
+            .map(|timestamp| timestamp.with_timezone(&Utc));
+
+        assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn parse_frontend_updated_at_returns_none_for_invalid_timestamp() {
+        let parsed = parse_frontend_updated_at("2026/02/24 12:34:56");
+
+        assert!(parsed.is_none());
+    }
+}
+
 fn normalize_action_code(raw: &str) -> String {
     raw.trim().to_ascii_uppercase()
 }

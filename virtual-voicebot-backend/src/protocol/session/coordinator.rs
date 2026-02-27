@@ -30,7 +30,9 @@ use crate::shared::ports::call_log_port::{
 use crate::shared::ports::ingest::IngestPort;
 use crate::shared::ports::routing_port::RoutingPort;
 use crate::shared::ports::storage::StoragePort;
-use crate::shared::utils::{extract_url_path, is_safe_announcement_url_path};
+#[cfg(test)]
+use crate::shared::utils::is_safe_announcement_url_path;
+use crate::shared::utils::{extract_url_path, map_audio_file_url_to_cache_path};
 use anyhow::Error;
 use uuid::Uuid;
 // log macros used in handler/service modules
@@ -721,19 +723,6 @@ impl SessionCoordinator {
     }
 }
 
-fn map_audio_file_url_to_cache_path(audio_dir: &str, audio_file_url: &str) -> Option<String> {
-    let url_path = extract_url_path(audio_file_url);
-    if !is_safe_announcement_url_path(&url_path) {
-        return None;
-    }
-    let filename = url_path
-        .rsplit('/')
-        .next()
-        .filter(|segment| !segment.is_empty())?;
-    let path = std::path::Path::new(audio_dir).join(filename);
-    Some(path.to_string_lossy().to_string())
-}
-
 fn normalize_action_code(action_code: &str) -> String {
     action_code.trim().to_ascii_uppercase()
 }
@@ -1090,7 +1079,7 @@ mod tests {
 
     #[test]
     fn audio_announcement_url_is_mapped_to_local_cache_dir() {
-        let mapped = super::map_audio_file_url_to_cache_path(
+        let mapped = crate::shared::utils::map_audio_file_url_to_cache_path(
             "/tmp/announcements",
             "http://localhost:3000/audio/announcements/abc.wav",
         )
@@ -1100,7 +1089,7 @@ mod tests {
 
     #[test]
     fn invalid_audio_announcement_url_is_rejected_for_local_cache() {
-        let mapped = super::map_audio_file_url_to_cache_path(
+        let mapped = crate::shared::utils::map_audio_file_url_to_cache_path(
             "/tmp/announcements",
             "/audio/announcements/../../../etc/passwd",
         );

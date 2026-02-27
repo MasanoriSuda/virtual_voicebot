@@ -717,7 +717,7 @@ impl SessionCoordinator {
         match ev {
             SessionMediaIn::MediaRtpIn {
                 call_id,
-                stream_id: _,
+                stream_id,
                 payload,
                 ..
             } => {
@@ -747,6 +747,7 @@ impl SessionCoordinator {
                     let was_in_speech = self.capture.is_in_speech();
                     let capture_result = self.capture.ingest(&payload);
                     let is_in_speech = self.capture.is_in_speech();
+                    let is_turn_terminal = capture_result.is_some();
 
                     if (was_in_speech || is_in_speech)
                         && crate::shared::config::voicebot_asr_streaming_enabled()
@@ -754,7 +755,9 @@ impl SessionCoordinator {
                         if let Some(tx) = &self.audio_chunk_tx {
                             if let Err(err) = tx.try_send_latest(RtpAudioChunk {
                                 call_id: self.call_id.clone(),
+                                stream_id: stream_id.clone(),
                                 pcm_mulaw: payload.clone(),
+                                end_of_speech: is_turn_terminal,
                             }) {
                                 warn!(
                                     "[session {}] dropped audio chunk event: {:?}",
@@ -774,6 +777,7 @@ impl SessionCoordinator {
                             buffer.iter().map(|&b| mulaw_to_linear16(b)).collect();
                         if let Err(err) = self.app_tx.try_send_latest(AppEvent::AudioBuffered {
                             call_id: self.call_id.clone(),
+                            stream_id: stream_id.clone(),
                             pcm_mulaw: buffer,
                             pcm_linear16,
                         }) {

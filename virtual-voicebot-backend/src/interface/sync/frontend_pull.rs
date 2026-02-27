@@ -18,7 +18,9 @@ use crate::interface::sync::converters::{
     FrontendAnnouncement, IvrFlowDefinition, StoredAction,
 };
 use crate::shared::config::{self, SyncConfig};
-use crate::shared::utils::{extract_url_path, is_safe_announcement_url_path};
+use crate::shared::utils::{
+    extract_url_path, is_safe_announcement_url_path, map_audio_file_url_to_cache_path,
+};
 
 const FRONTEND_PULL_MAX_CONNECTIONS: u32 = 5;
 const MAX_ANNOUNCEMENT_AUDIO_BYTES: u64 = 8 * 1024 * 1024;
@@ -141,9 +143,26 @@ impl FrontendPullWorker {
             "[serversync] GET /api/ivr-flows/export: success flows={}",
             flows.len()
         );
+        let pre_save_existing_announcement_audio_state =
+            match self.load_existing_announcement_audio_state().await {
+                Ok(existing) => Some(existing),
+                Err(error) => {
+                    log::warn!(
+                        "[serversync] failed to prefetch existing announcement audio state: {}",
+                        error
+                    );
+                    None
+                }
+            };
         self.save_snapshot(&groups, &actions, &announcements, &flows)
             .await?;
-        if let Err(error) = self.sync_announcement_audio_cache(&announcements).await {
+        if let Err(error) = self
+            .sync_announcement_audio_cache(
+                &announcements,
+                pre_save_existing_announcement_audio_state,
+            )
+            .await
+        {
             log::warn!(
                 "[serversync] announcement audio cache sync failed: {}",
                 error
@@ -277,6 +296,7 @@ impl FrontendPullWorker {
     async fn sync_announcement_audio_cache(
         &self,
         announcements: &[FrontendAnnouncement],
+        pre_save_existing: Option<HashMap<Uuid, ExistingAnnouncementAudioState>>,
     ) -> Result<(), FrontendPullError> {
         let cfg = config::announcement_config();
         if cfg.frontend_base_url.is_none() {
@@ -286,12 +306,15 @@ impl FrontendPullWorker {
             return Ok(());
         }
 
-        let existing = self.load_existing_announcement_audio_state().await?;
+        let existing = match pre_save_existing {
+            Some(existing) => existing,
+            None => self.load_existing_announcement_audio_state().await?,
+        };
         let frontend_ids: HashSet<Uuid> = announcements
             .iter()
             .map(|announcement| announcement.id)
             .collect();
-        let audio_dir = Path::new(cfg.audio_dir.as_str());
+        let audio_dir = cfg.audio_dir.as_str();
 
         for (id, state) in &existing {
             if frontend_ids.contains(id) {
@@ -309,7 +332,11 @@ impl FrontendPullWorker {
                 );
                 continue;
             }
-            let local_path = announcement_cache_local_path(audio_dir, url_path.as_str());
+            let Some(local_path) =
+                map_audio_file_url_to_cache_path(audio_dir, audio_file_url).map(PathBuf::from)
+            else {
+                continue;
+            };
             if let Err(err) = remove_file_if_exists(local_path.as_path()).await {
                 log::warn!(
                     "[serversync] failed to delete cached audio for removed announcement id={} path={} err={}",
@@ -334,7 +361,11 @@ impl FrontendPullWorker {
                 continue;
             }
 
-            let local_path = announcement_cache_local_path(audio_dir, url_path.as_str());
+            let Some(local_path) =
+                map_audio_file_url_to_cache_path(audio_dir, audio_file_url).map(PathBuf::from)
+            else {
+                continue;
+            };
             if !should_download_announcement_audio(
                 local_path.as_path(),
                 announcement.updated_at.as_deref(),
@@ -488,15 +519,6 @@ async fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
-}
-
-fn announcement_cache_local_path(audio_dir: &Path, url_path: &str) -> PathBuf {
-    let filename = url_path
-        .rsplit('/')
-        .next()
-        .filter(|segment| !segment.is_empty())
-        .unwrap_or("invalid.wav");
-    audio_dir.join(filename)
 }
 
 #[cfg(test)]

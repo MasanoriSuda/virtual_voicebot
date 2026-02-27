@@ -1,3 +1,5 @@
+use std::path::Path;
+
 pub fn extract_url_path(audio_file_url: &str) -> String {
     let trimmed = audio_file_url.trim();
     let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
@@ -27,6 +29,19 @@ pub fn is_safe_announcement_url_path(url_path: &str) -> bool {
         && rest != ".."
         && !rest.contains('%')
         && !rest.contains('\\')
+}
+
+pub fn map_audio_file_url_to_cache_path(audio_dir: &str, audio_file_url: &str) -> Option<String> {
+    let url_path = extract_url_path(audio_file_url);
+    if !is_safe_announcement_url_path(&url_path) {
+        return None;
+    }
+    let filename = url_path
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())?;
+    let path = Path::new(audio_dir).join(filename);
+    Some(path.to_string_lossy().to_string())
 }
 
 pub fn mask_pii(value: &str) -> String {

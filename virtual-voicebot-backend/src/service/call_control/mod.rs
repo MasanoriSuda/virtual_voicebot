@@ -7,10 +7,12 @@ mod router;
 mod sentence_accumulator;
 mod wav_stream_chunker;
 
+use std::collections::HashMap;
 use std::future::pending;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use tokio_stream::StreamExt;
@@ -171,6 +173,7 @@ struct AppWorker {
     next_stream_generation_id: u64,
     asr_stream_handle: Option<AsrStreamHandle>,
     asr_stream_connect_failed_for_turn: bool,
+    pending_stream_eos: HashMap<String, usize>,
 }
 
 #[derive(Debug, Default)]
@@ -269,6 +272,7 @@ impl AppWorker {
             next_stream_generation_id: 1,
             asr_stream_handle: None,
             asr_stream_connect_failed_for_turn: false,
+            pending_stream_eos: HashMap::new(),
         }
     }
 
@@ -311,12 +315,19 @@ impl AppWorker {
                         Some(chunk) => {
                             if chunk.call_id != self.call_id {
                                 log::warn!(
-                                    "[app {}] AudioChunk received for mismatched call_id={}",
+                                    "[app {}] AudioChunk received for mismatched call_id={} stream_id={}",
                                     self.call_id,
-                                    chunk.call_id
+                                    chunk.call_id,
+                                    chunk.stream_id
                                 );
                             } else if self.active {
-                                self.handle_audio_chunk(&chunk.call_id, chunk.pcm_mulaw).await;
+                                self.handle_audio_chunk(
+                                    &chunk.call_id,
+                                    &chunk.stream_id,
+                                    chunk.pcm_mulaw,
+                                    chunk.end_of_speech,
+                                )
+                                .await;
                             }
                         }
                         None => {
@@ -336,6 +347,7 @@ impl AppWorker {
             // Do not block the app loop on stream shutdown; best-effort EOS is enough here.
             let _ = handle.audio_tx.try_send_end();
         }
+        self.pending_stream_eos.clear();
     }
 
     async fn handle_app_event(&mut self, ev: AppEvent) -> bool {
@@ -386,6 +398,7 @@ impl AppWorker {
             }
             AppEvent::AudioBuffered {
                 call_id,
+                stream_id,
                 pcm_mulaw,
                 pcm_linear16,
             } => {
@@ -404,6 +417,8 @@ impl AppWorker {
                     );
                     return true;
                 }
+                self.await_stream_eos_for_buffered_turn(&call_id, stream_id.as_str())
+                    .await;
                 if let Err(e) = self
                     .handle_audio_buffer(&call_id, pcm_mulaw, pcm_linear16)
                     .await
@@ -472,7 +487,90 @@ impl AppWorker {
     /// // worker.handle_audio_buffer(&call_id, pcm_mulaw, pcm_linear16).await.unwrap();
     /// # }
     /// ```
-    async fn handle_audio_chunk(&mut self, call_id: &CallId, pcm_mulaw: Vec<u8>) {
+    fn consume_pending_stream_eos(&mut self, stream_id: &str) -> bool {
+        let Some(count) = self.pending_stream_eos.get_mut(stream_id) else {
+            return false;
+        };
+        if *count == 0 {
+            self.pending_stream_eos.remove(stream_id);
+            return false;
+        }
+        *count -= 1;
+        if *count == 0 {
+            self.pending_stream_eos.remove(stream_id);
+        }
+        true
+    }
+
+    async fn await_stream_eos_for_buffered_turn(&mut self, call_id: &CallId, stream_id: &str) {
+        if self.consume_pending_stream_eos(stream_id) {
+            return;
+        }
+        if self.audio_chunk_rx.is_none()
+            || self.asr_stream_port.is_none()
+            || self.asr_stream_connect_failed_for_turn
+        {
+            return;
+        }
+        loop {
+            let recv_result = match &self.audio_chunk_rx {
+                Some(rx) => timeout(config::asr_streaming_final_timeout(), rx.recv()).await,
+                None => return,
+            };
+            let chunk = match recv_result {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => {
+                    self.audio_chunk_rx = None;
+                    self.close_asr_stream_handle_best_effort();
+                    return;
+                }
+                Err(_) => {
+                    log::warn!(
+                        "[asr stream {}] timed out waiting terminal audio chunk stream_id={}",
+                        call_id,
+                        stream_id
+                    );
+                    return;
+                }
+            };
+
+            if chunk.call_id != self.call_id {
+                log::warn!(
+                    "[app {}] AudioChunk received for mismatched call_id={} stream_id={}",
+                    self.call_id,
+                    chunk.call_id,
+                    chunk.stream_id
+                );
+                continue;
+            }
+            let chunk_call_id = chunk.call_id.clone();
+            let chunk_stream_id = chunk.stream_id.clone();
+            let chunk_end_of_speech = chunk.end_of_speech;
+
+            if self.active {
+                self.handle_audio_chunk(
+                    &chunk_call_id,
+                    &chunk_stream_id,
+                    chunk.pcm_mulaw,
+                    chunk_end_of_speech,
+                )
+                .await;
+            }
+
+            if chunk_call_id == *call_id && chunk_stream_id == stream_id && chunk_end_of_speech {
+                let _ = self.consume_pending_stream_eos(stream_id);
+                return;
+            }
+        }
+    }
+
+    async fn handle_audio_chunk(
+        &mut self,
+        call_id: &CallId,
+        stream_id: &str,
+        pcm_mulaw: Vec<u8>,
+        end_of_speech: bool,
+    ) {
         let Some(port) = &self.asr_stream_port else {
             return;
         };
@@ -499,6 +597,13 @@ impl AppWorker {
 
         if let Some(handle) = &self.asr_stream_handle {
             let _ = handle.audio_tx.try_send_chunk_latest(pcm_mulaw);
+        }
+        if end_of_speech {
+            let entry = self
+                .pending_stream_eos
+                .entry(stream_id.to_string())
+                .or_insert(0);
+            *entry += 1;
         }
     }
 
@@ -1201,9 +1306,9 @@ impl AppWorker {
         let total_timeout = config::tts_streaming_total_timeout();
         let tmp_path = self.tts_stream_tmp_path(call_id, generation_id);
 
-        let wav_bytes = timeout(total_timeout, async {
+        let write_result = timeout(total_timeout, async {
             tokio::pin!(stream);
-            let mut buf = Vec::<u8>::new();
+            let mut wrote_any = false;
 
             let first = tokio::select! {
                 item = stream.next() => item,
@@ -1215,33 +1320,58 @@ impl AppWorker {
                 }
             };
 
+            let mut file = tokio::fs::File::create(&tmp_path)
+                .await
+                .map_err(|e| TtsError::SynthesisFailed(format!("tmp wav write failed: {e}")))?;
+
             match first {
-                Some(Ok(bytes)) => buf.extend_from_slice(&bytes),
+                Some(Ok(bytes)) => {
+                    if !bytes.is_empty() {
+                        wrote_any = true;
+                    }
+                    file.write_all(&bytes).await.map_err(|e| {
+                        TtsError::SynthesisFailed(format!("tmp wav write failed: {e}"))
+                    })?;
+                }
                 Some(Err(e)) => return Err(e),
                 None => return Err(TtsError::SynthesisFailed("empty TTS stream".to_string())),
             }
 
             while let Some(chunk) = stream.next().await {
                 match chunk {
-                    Ok(bytes) => buf.extend_from_slice(&bytes),
+                    Ok(bytes) => {
+                        if !bytes.is_empty() {
+                            wrote_any = true;
+                        }
+                        file.write_all(&bytes).await.map_err(|e| {
+                            TtsError::SynthesisFailed(format!("tmp wav write failed: {e}"))
+                        })?;
+                    }
                     Err(e) => return Err(e),
                 }
             }
 
-            if buf.is_empty() {
+            file.flush()
+                .await
+                .map_err(|e| TtsError::SynthesisFailed(format!("tmp wav write failed: {e}")))?;
+
+            if !wrote_any {
                 return Err(TtsError::SynthesisFailed("empty TTS stream".to_string()));
             }
 
-            Ok(buf)
+            Ok(())
         })
         .await
         .map_err(|_| {
             TtsError::SynthesisFailed(format!("total timeout ({} ms)", total_timeout.as_millis()))
-        })??;
-
-        tokio::fs::write(&tmp_path, &wav_bytes)
-            .await
-            .map_err(|e| TtsError::SynthesisFailed(format!("tmp wav write failed: {e}")))?;
+        });
+        match write_result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) | Err(err) => {
+                tokio::fs::remove_file(&tmp_path).await.ok();
+                return Err(err);
+            }
+        }
         Ok(tmp_path)
     }
 
@@ -1501,7 +1631,7 @@ mod tests {
     use std::sync::{Arc, Mutex, OnceLock};
 
     use futures_util::stream;
-    use tokio::sync::{mpsc as tokio_mpsc, Mutex as AsyncMutex};
+    use tokio::sync::{mpsc as tokio_mpsc, oneshot, Mutex as AsyncMutex};
     use tokio::time::Duration;
 
     use crate::interface::notification::NoopNotification;
@@ -1509,12 +1639,15 @@ mod tests {
         AsrError, IntentError, LlmError, SerError, TtsError, WeatherError,
     };
     use crate::shared::ports::ai::{
-        AiFuture, AsrChunk, AsrPort, ChatMessage, Intent, IntentPort, LlmPort, SerInputPcm,
-        SerOutcome, SerPort, TtsPort, TtsStream, TtsStreamPort, WeatherPort, WeatherQuery,
-        WeatherResponse,
+        asr_audio_channel, AiFuture, AsrAudioMsg, AsrChunk, AsrPort, AsrStreamHandle, ChatMessage,
+        Intent, IntentPort, LlmPort, SerInputPcm, SerOutcome, SerPort, TtsPort, TtsStream,
+        TtsStreamPort, WeatherPort, WeatherQuery, WeatherResponse,
     };
-    use crate::shared::ports::notification::NotificationService;
-    use crate::shared::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupPort};
+    use crate::shared::ports::notification::{
+        CallEndedNotifier, MissedCallNotifier, NotificationFuture, NotificationService,
+        RingingNotifier,
+    };
+    use crate::shared::ports::phone_lookup::{NoopPhoneLookup, PhoneLookupFuture, PhoneLookupPort};
 
     #[derive(Clone)]
     struct FakeAiPort {
@@ -1670,6 +1803,205 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct AppWorkerAiSpy {
+        state: Arc<Mutex<AppWorkerAiSpyState>>,
+    }
+
+    #[derive(Debug, Default)]
+    struct AppWorkerAiSpyState {
+        transcribe_chunks_calls: usize,
+    }
+
+    impl AppWorkerAiSpy {
+        fn new() -> (Self, Arc<Mutex<AppWorkerAiSpyState>>) {
+            let state = Arc::new(Mutex::new(AppWorkerAiSpyState::default()));
+            (
+                Self {
+                    state: Arc::clone(&state),
+                },
+                state,
+            )
+        }
+    }
+
+    impl AsrPort for AppWorkerAiSpy {
+        fn transcribe_chunks(
+            &self,
+            _call_id: String,
+            _chunks: Vec<AsrChunk>,
+        ) -> AiFuture<Result<String, AsrError>> {
+            let state = Arc::clone(&self.state);
+            Box::pin(async move {
+                let mut state = state.lock().expect("app worker ai spy mutex poisoned");
+                state.transcribe_chunks_calls += 1;
+                Ok(String::new())
+            })
+        }
+    }
+
+    impl IntentPort for AppWorkerAiSpy {
+        fn classify_intent(
+            &self,
+            _call_id: String,
+            _text: String,
+        ) -> AiFuture<Result<Intent, IntentError>> {
+            Box::pin(async { Err(IntentError::UnknownIntent) })
+        }
+    }
+
+    impl LlmPort for AppWorkerAiSpy {
+        fn generate_answer(
+            &self,
+            _call_id: String,
+            _messages: Vec<ChatMessage>,
+        ) -> AiFuture<Result<String, LlmError>> {
+            Box::pin(async { Err(LlmError::GenerationFailed("unused".to_string())) })
+        }
+    }
+
+    impl WeatherPort for AppWorkerAiSpy {
+        fn handle_weather(
+            &self,
+            _call_id: String,
+            _query: WeatherQuery,
+        ) -> AiFuture<Result<WeatherResponse, WeatherError>> {
+            Box::pin(async { Err(WeatherError::ServiceUnavailable) })
+        }
+    }
+
+    impl TtsPort for AppWorkerAiSpy {
+        fn synth_to_wav(
+            &self,
+            _call_id: String,
+            _text: String,
+            _path: Option<String>,
+        ) -> AiFuture<Result<PathBuf, TtsError>> {
+            Box::pin(async { Err(TtsError::SynthesisFailed("unused".to_string())) })
+        }
+    }
+
+    impl SerPort for AppWorkerAiSpy {
+        fn analyze(&self, _input: SerInputPcm) -> AiFuture<Result<SerOutcome, SerError>> {
+            Box::pin(async {
+                Ok(SerOutcome {
+                    session_id: "test".to_string(),
+                    stream_id: "test".to_string(),
+                    emotion: crate::shared::ports::ai::Emotion::Neutral,
+                    confidence: 0.0,
+                    arousal: None,
+                    valence: None,
+                })
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct PhoneLookupSpy {
+        state: Arc<Mutex<PhoneLookupSpyState>>,
+    }
+
+    #[derive(Debug, Default)]
+    struct PhoneLookupSpyState {
+        looked_up_numbers: Vec<String>,
+    }
+
+    impl PhoneLookupSpy {
+        fn new() -> (Self, Arc<Mutex<PhoneLookupSpyState>>) {
+            let state = Arc::new(Mutex::new(PhoneLookupSpyState::default()));
+            (
+                Self {
+                    state: Arc::clone(&state),
+                },
+                state,
+            )
+        }
+    }
+
+    impl PhoneLookupPort for PhoneLookupSpy {
+        fn lookup_phone(&self, phone_number: String) -> PhoneLookupFuture {
+            let mut state = self
+                .state
+                .lock()
+                .expect("phone lookup spy state mutex poisoned");
+            state.looked_up_numbers.push(phone_number);
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[derive(Clone)]
+    struct NotificationSpy {
+        state: Arc<Mutex<NotificationSpyState>>,
+    }
+
+    #[derive(Debug, Default)]
+    struct NotificationSpyState {
+        ringing_calls: Vec<(CallId, String)>,
+        missed_calls: Vec<String>,
+        ended_calls: Vec<(String, String, u64)>,
+    }
+
+    impl NotificationSpy {
+        fn new() -> (Self, Arc<Mutex<NotificationSpyState>>) {
+            let state = Arc::new(Mutex::new(NotificationSpyState::default()));
+            (
+                Self {
+                    state: Arc::clone(&state),
+                },
+                state,
+            )
+        }
+    }
+
+    impl RingingNotifier for NotificationSpy {
+        fn notify_ringing(
+            &self,
+            call_id: CallId,
+            from: String,
+            _timestamp: chrono::DateTime<chrono::FixedOffset>,
+        ) -> NotificationFuture {
+            let mut state = self
+                .state
+                .lock()
+                .expect("notification spy state mutex poisoned");
+            state.ringing_calls.push((call_id, from));
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    impl MissedCallNotifier for NotificationSpy {
+        fn notify_missed(
+            &self,
+            from: String,
+            _timestamp: chrono::DateTime<chrono::FixedOffset>,
+        ) -> NotificationFuture {
+            let mut state = self
+                .state
+                .lock()
+                .expect("notification spy state mutex poisoned");
+            state.missed_calls.push(from);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    impl CallEndedNotifier for NotificationSpy {
+        fn notify_ended(
+            &self,
+            call_id: &str,
+            from: String,
+            duration_sec: u64,
+        ) -> NotificationFuture {
+            let mut state = self
+                .state
+                .lock()
+                .expect("notification spy state mutex poisoned");
+            state
+                .ended_calls
+                .push((call_id.to_string(), from, duration_sec));
+            Box::pin(async { Ok(()) })
+        }
+    }
+
     struct ScopedTestEnv {
         previous: Vec<(&'static str, Option<String>)>,
     }
@@ -1815,6 +2147,279 @@ mod tests {
         let _ts = parts.next()?;
         let seg = parts.next()?;
         seg.parse::<usize>().ok()
+    }
+
+    fn fixed_timestamp() -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::DateTime::parse_from_rfc3339("2026-02-27T00:00:00+00:00")
+            .expect("valid fixed timestamp")
+    }
+
+    fn build_app_worker_state_test_worker(
+        ai_port: Arc<dyn AiServices>,
+        phone_lookup: Arc<dyn PhoneLookupPort>,
+        notification_port: Arc<dyn NotificationService>,
+        app_cfg: AppRuntimeConfig,
+    ) -> (AppWorker, CallId, AppEventTx) {
+        let call_id = CallId::new("call-app-state-test").expect("valid call id");
+        let (session_out_tx, _session_out_rx) = tokio_mpsc::channel(16);
+        let (app_tx, app_rx) = app_event_channel(APP_EVENT_CHANNEL_CAPACITY);
+        let worker = AppWorker::new(
+            call_id.clone(),
+            session_out_tx,
+            app_rx,
+            ai_port,
+            None,
+            None,
+            None,
+            None,
+            phone_lookup,
+            notification_port,
+            app_cfg,
+        );
+        (worker, call_id, app_tx)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_app_event_transitions_and_side_effects_on_matching_call_id() {
+        let (ai_spy, ai_state) = AppWorkerAiSpy::new();
+        let (phone_lookup_spy, phone_lookup_state) = PhoneLookupSpy::new();
+        let (notification_spy, notification_state) = NotificationSpy::new();
+        let (mut worker, call_id, _app_tx) = build_app_worker_state_test_worker(
+            Arc::new(ai_spy),
+            Arc::new(phone_lookup_spy),
+            Arc::new(notification_spy),
+            AppRuntimeConfig {
+                phone_lookup_enabled: true,
+            },
+        );
+
+        assert!(!worker.active);
+
+        let keep_running = worker
+            .handle_app_event(AppEvent::CallRinging {
+                call_id: call_id.clone(),
+                from: "090-1234-5678".to_string(),
+                timestamp: fixed_timestamp(),
+            })
+            .await;
+        assert!(keep_running);
+        {
+            let state = notification_state
+                .lock()
+                .expect("notification spy state mutex poisoned");
+            assert_eq!(state.ringing_calls.len(), 1);
+            assert_eq!(state.ringing_calls[0].0, call_id);
+        }
+
+        let keep_running = worker
+            .handle_app_event(AppEvent::CallStarted {
+                call_id: call_id.clone(),
+                caller: Some("090-1234-5678".to_string()),
+            })
+            .await;
+        assert!(keep_running);
+        assert!(worker.active);
+        {
+            let state = phone_lookup_state
+                .lock()
+                .expect("phone lookup spy state mutex poisoned");
+            assert_eq!(state.looked_up_numbers, vec!["090-1234-5678".to_string()]);
+        }
+
+        let keep_running = worker
+            .handle_app_event(AppEvent::AudioBuffered {
+                call_id: call_id.clone(),
+                stream_id: "main".to_string(),
+                pcm_mulaw: vec![0_u8; 160],
+                pcm_linear16: vec![0_i16; 160],
+            })
+            .await;
+        assert!(keep_running);
+        {
+            let state = ai_state.lock().expect("app worker ai spy mutex poisoned");
+            assert_eq!(state.transcribe_chunks_calls, 1);
+        }
+
+        let (audio_tx, audio_rx) = asr_audio_channel(8);
+        let (_final_tx, final_rx) = oneshot::channel::<Result<String, AsrError>>();
+        worker.asr_stream_handle = Some(AsrStreamHandle { audio_tx, final_rx });
+
+        let keep_running = worker
+            .handle_app_event(AppEvent::CallEnded {
+                call_id: call_id.clone(),
+                from: "090-1234-5678".to_string(),
+                reason: EndReason::Bye,
+                duration_sec: Some(42),
+                timestamp: fixed_timestamp(),
+            })
+            .await;
+        assert!(!keep_running);
+        assert!(!worker.active);
+        assert!(worker.asr_stream_handle.is_none());
+        let asr_end = timeout(Duration::from_millis(100), audio_rx.recv())
+            .await
+            .expect("asr end message timeout");
+        assert_eq!(asr_end, Some(AsrAudioMsg::End));
+
+        {
+            let state = notification_state
+                .lock()
+                .expect("notification spy state mutex poisoned");
+            assert_eq!(
+                state.ended_calls,
+                vec![(call_id.to_string(), "090-1234-5678".to_string(), 42_u64,)]
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_app_event_drops_audio_when_inactive() {
+        let (ai_spy, ai_state) = AppWorkerAiSpy::new();
+        let (phone_lookup_spy, _phone_lookup_state) = PhoneLookupSpy::new();
+        let (notification_spy, _notification_state) = NotificationSpy::new();
+        let (mut worker, call_id, _app_tx) = build_app_worker_state_test_worker(
+            Arc::new(ai_spy),
+            Arc::new(phone_lookup_spy),
+            Arc::new(notification_spy),
+            AppRuntimeConfig {
+                phone_lookup_enabled: false,
+            },
+        );
+
+        let keep_running = worker
+            .handle_app_event(AppEvent::AudioBuffered {
+                call_id,
+                stream_id: "main".to_string(),
+                pcm_mulaw: vec![0_u8; 160],
+                pcm_linear16: vec![0_i16; 160],
+            })
+            .await;
+        assert!(keep_running);
+        assert!(!worker.active);
+        let state = ai_state.lock().expect("app worker ai spy mutex poisoned");
+        assert_eq!(state.transcribe_chunks_calls, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_app_event_mismatched_call_id_paths_keep_worker_running() {
+        let (ai_spy, ai_state) = AppWorkerAiSpy::new();
+        let (phone_lookup_spy, phone_lookup_state) = PhoneLookupSpy::new();
+        let (notification_spy, notification_state) = NotificationSpy::new();
+        let (mut worker, _call_id, _app_tx) = build_app_worker_state_test_worker(
+            Arc::new(ai_spy),
+            Arc::new(phone_lookup_spy),
+            Arc::new(notification_spy),
+            AppRuntimeConfig {
+                phone_lookup_enabled: true,
+            },
+        );
+        let mismatched_call_id = CallId::new("call-app-state-other").expect("valid call id");
+
+        let keep_running = worker
+            .handle_app_event(AppEvent::CallRinging {
+                call_id: mismatched_call_id.clone(),
+                from: "090-0000-0000".to_string(),
+                timestamp: fixed_timestamp(),
+            })
+            .await;
+        assert!(keep_running);
+        {
+            let state = notification_state
+                .lock()
+                .expect("notification spy state mutex poisoned");
+            assert!(state.ringing_calls.is_empty());
+        }
+
+        let keep_running = worker
+            .handle_app_event(AppEvent::CallStarted {
+                call_id: mismatched_call_id.clone(),
+                caller: Some("090-0000-0000".to_string()),
+            })
+            .await;
+        assert!(keep_running);
+        assert!(!worker.active);
+        {
+            let state = phone_lookup_state
+                .lock()
+                .expect("phone lookup spy state mutex poisoned");
+            assert!(state.looked_up_numbers.is_empty());
+        }
+
+        worker.active = true;
+        let (audio_tx, _audio_rx) = asr_audio_channel(8);
+        let (_final_tx, final_rx) = oneshot::channel::<Result<String, AsrError>>();
+        worker.asr_stream_handle = Some(AsrStreamHandle { audio_tx, final_rx });
+
+        let keep_running = worker
+            .handle_app_event(AppEvent::AudioBuffered {
+                call_id: mismatched_call_id.clone(),
+                stream_id: "main".to_string(),
+                pcm_mulaw: vec![0_u8; 160],
+                pcm_linear16: vec![0_i16; 160],
+            })
+            .await;
+        assert!(keep_running);
+        {
+            let state = ai_state.lock().expect("app worker ai spy mutex poisoned");
+            assert_eq!(state.transcribe_chunks_calls, 0);
+        }
+
+        let keep_running = worker
+            .handle_app_event(AppEvent::CallEnded {
+                call_id: mismatched_call_id,
+                from: "090-0000-0000".to_string(),
+                reason: EndReason::Bye,
+                duration_sec: Some(10),
+                timestamp: fixed_timestamp(),
+            })
+            .await;
+        assert!(keep_running);
+        assert!(worker.active);
+        assert!(worker.asr_stream_handle.is_some());
+        {
+            let state = notification_state
+                .lock()
+                .expect("notification spy state mutex poisoned");
+            assert!(state.ended_calls.is_empty());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_stops_when_handle_app_event_returns_false() {
+        let (ai_spy, _ai_state) = AppWorkerAiSpy::new();
+        let (phone_lookup_spy, _phone_lookup_state) = PhoneLookupSpy::new();
+        let (notification_spy, notification_state) = NotificationSpy::new();
+        let (worker, call_id, app_tx) = build_app_worker_state_test_worker(
+            Arc::new(ai_spy),
+            Arc::new(phone_lookup_spy),
+            Arc::new(notification_spy),
+            AppRuntimeConfig {
+                phone_lookup_enabled: false,
+            },
+        );
+
+        let task = tokio::spawn(worker.run());
+        app_tx
+            .send(AppEvent::CallEnded {
+                call_id: call_id.clone(),
+                from: "090-2222-3333".to_string(),
+                reason: EndReason::Bye,
+                duration_sec: Some(7),
+                timestamp: fixed_timestamp(),
+            })
+            .await
+            .expect("send app event");
+        timeout(Duration::from_millis(200), task)
+            .await
+            .expect("run loop should stop on call ended")
+            .expect("run task should not panic");
+        let state = notification_state
+            .lock()
+            .expect("notification spy state mutex poisoned");
+        assert_eq!(
+            state.ended_calls,
+            vec![(call_id.to_string(), "090-2222-3333".to_string(), 7_u64)]
+        );
     }
 
     #[test]
