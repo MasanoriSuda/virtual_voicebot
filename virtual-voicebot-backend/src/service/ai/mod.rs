@@ -415,6 +415,8 @@ impl TtsStage {
     }
 }
 
+const TTS_FALLBACK_ORDER: [TtsStage; 3] = [TtsStage::Local, TtsStage::Cloud, TtsStage::Raspi];
+
 #[derive(Clone, Copy)]
 enum IntentStage {
     Cloud,
@@ -1995,75 +1997,95 @@ impl TtsStreamPort for DefaultAiPort {
             let openai_api_key_owned = openai_api_key(ai_cfg).map(str::to_string);
             let openai_base_url = ai_cfg.openai_base_url.clone();
 
-            if openai_tts_enabled {
-                if let Some(stream) =
-                    try_tts_stream_stage(&call_id, TtsStage::Cloud, startup_timeout, || {
-                        let openai_api_key_owned = openai_api_key_owned.clone();
-                        let openai_base_url = openai_base_url.clone();
-                        let text = text.clone();
-                        async move {
-                            let api_key = openai_api_key_owned
-                                .as_deref()
-                                .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
-                            synth_openai_tts_stream_for_stage(
-                                &openai_base_url,
-                                api_key,
-                                &text,
+            for stage in TTS_FALLBACK_ORDER {
+                match stage {
+                    TtsStage::Local => {
+                        if ai_cfg.tts_local_server_enabled {
+                            let local_base_url = ai_cfg.tts_local_server_base_url.clone();
+                            if let Some(stream) = try_tts_stream_stage(
+                                &call_id,
+                                TtsStage::Local,
                                 startup_timeout,
+                                || {
+                                    let text = text.clone();
+                                    async move {
+                                        synth_zundamon_stream_for_stage(
+                                            &local_base_url,
+                                            &text,
+                                            startup_timeout,
+                                            startup_timeout,
+                                        )
+                                        .await
+                                    }
+                                },
                             )
                             .await
+                            {
+                                return Ok(stream);
+                            }
                         }
-                    })
-                    .await
-                {
-                    return Ok(stream);
-                }
-            }
-
-            if ai_cfg.tts_local_server_enabled {
-                let local_base_url = ai_cfg.tts_local_server_base_url.clone();
-                if let Some(stream) =
-                    try_tts_stream_stage(&call_id, TtsStage::Local, startup_timeout, || {
-                        let text = text.clone();
-                        async move {
-                            synth_zundamon_stream_for_stage(
-                                &local_base_url,
-                                &text,
+                    }
+                    TtsStage::Cloud => {
+                        if openai_tts_enabled {
+                            if let Some(stream) = try_tts_stream_stage(
+                                &call_id,
+                                TtsStage::Cloud,
                                 startup_timeout,
-                                startup_timeout,
+                                || {
+                                    let openai_api_key_owned = openai_api_key_owned.clone();
+                                    let openai_base_url = openai_base_url.clone();
+                                    let text = text.clone();
+                                    async move {
+                                        let api_key = openai_api_key_owned
+                                            .as_deref()
+                                            .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
+                                        synth_openai_tts_stream_for_stage(
+                                            &openai_base_url,
+                                            api_key,
+                                            &text,
+                                            startup_timeout,
+                                        )
+                                        .await
+                                    }
+                                },
                             )
                             .await
+                            {
+                                return Ok(stream);
+                            }
                         }
-                    })
-                    .await
-                {
-                    return Ok(stream);
-                }
-            }
-
-            if ai_cfg.tts_raspi_enabled {
-                if let Some(raspi_base_url) = ai_cfg.tts_raspi_base_url.clone() {
-                    if let Some(stream) =
-                        try_tts_stream_stage(&call_id, TtsStage::Raspi, startup_timeout, || {
-                            let text = text.clone();
-                            async move {
-                                synth_zundamon_stream_for_stage(
-                                    &raspi_base_url,
-                                    &text,
+                    }
+                    TtsStage::Raspi => {
+                        if ai_cfg.tts_raspi_enabled {
+                            if let Some(raspi_base_url) = ai_cfg.tts_raspi_base_url.clone() {
+                                if let Some(stream) = try_tts_stream_stage(
+                                    &call_id,
+                                    TtsStage::Raspi,
                                     startup_timeout,
-                                    startup_timeout,
+                                    || {
+                                        let text = text.clone();
+                                        async move {
+                                            synth_zundamon_stream_for_stage(
+                                                &raspi_base_url,
+                                                &text,
+                                                startup_timeout,
+                                                startup_timeout,
+                                            )
+                                            .await
+                                        }
+                                    },
                                 )
                                 .await
+                                {
+                                    return Ok(stream);
+                                }
+                            } else {
+                                log::warn!(
+                                    "[tts {call_id}] TTS stream stage failed: tts_stage=raspi reason=TTS_RASPI_BASE_URL missing"
+                                );
                             }
-                        })
-                        .await
-                    {
-                        return Ok(stream);
+                        }
                     }
-                } else {
-                    log::warn!(
-                        "[tts {call_id}] TTS stream stage failed: tts_stage=raspi reason=TTS_RASPI_BASE_URL missing"
-                    );
                 }
             }
 
@@ -2084,7 +2106,7 @@ impl SerPort for DefaultAiPort {
     }
 }
 
-/// TTS 呼び出し（OpenAI cloud / VoiceVox local / raspi）。I/F はテキストと出力 WAV パス（従来どおり）。
+/// TTS 呼び出し（VoiceVox local / OpenAI cloud / raspi）。I/F はテキストと出力 WAV パス（従来どおり）。
 pub async fn synth_zundamon_wav(call_id: &str, text: &str, out_path: &str) -> Result<()> {
     let ai_cfg = config::ai_config();
 
@@ -2097,67 +2119,84 @@ pub async fn synth_zundamon_wav(call_id: &str, text: &str, out_path: &str) -> Re
     let openai_api_key_owned = openai_api_key(ai_cfg).map(str::to_string);
     let openai_base_url = ai_cfg.openai_base_url.clone();
 
-    if openai_tts_enabled {
-        if let Some(wav_bytes) =
-            try_tts_stage(call_id, TtsStage::Cloud, ai_cfg.tts_cloud_timeout, || {
-                let openai_api_key_owned = openai_api_key_owned.clone();
-                let openai_base_url = openai_base_url.clone();
-                async move {
-                    let api_key = openai_api_key_owned
-                        .as_deref()
-                        .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
-                    synth_openai_tts_for_stage(
-                        &openai_base_url,
-                        api_key,
-                        text,
-                        ai_cfg.tts_cloud_timeout,
-                    )
-                    .await
+    for stage in TTS_FALLBACK_ORDER {
+        match stage {
+            TtsStage::Local => {
+                if ai_cfg.tts_local_server_enabled {
+                    let local_base_url = ai_cfg.tts_local_server_base_url.clone();
+                    if let Some(wav_bytes) =
+                        try_tts_stage(call_id, TtsStage::Local, ai_cfg.tts_local_timeout, || {
+                            synth_zundamon_for_stage(
+                                &local_base_url,
+                                call_id,
+                                text,
+                                ai_cfg.tts_local_timeout,
+                            )
+                        })
+                        .await
+                    {
+                        tokio::fs::write(out_path, &wav_bytes).await?;
+                        info!("[tts {call_id}] TTS written to {}", out_path);
+                        return Ok(());
+                    }
                 }
-            })
-            .await
-        {
-            tokio::fs::write(out_path, &wav_bytes).await?;
-            info!("[tts {call_id}] TTS written to {}", out_path);
-            return Ok(());
-        }
-    }
-
-    if ai_cfg.tts_local_server_enabled {
-        let local_base_url = ai_cfg.tts_local_server_base_url.clone();
-        if let Some(wav_bytes) =
-            try_tts_stage(call_id, TtsStage::Local, ai_cfg.tts_local_timeout, || {
-                synth_zundamon_for_stage(&local_base_url, call_id, text, ai_cfg.tts_local_timeout)
-            })
-            .await
-        {
-            tokio::fs::write(out_path, &wav_bytes).await?;
-            info!("[tts {call_id}] TTS written to {}", out_path);
-            return Ok(());
-        }
-    }
-
-    if ai_cfg.tts_raspi_enabled {
-        if let Some(raspi_base_url) = ai_cfg.tts_raspi_base_url.clone() {
-            if let Some(wav_bytes) =
-                try_tts_stage(call_id, TtsStage::Raspi, ai_cfg.tts_raspi_timeout, || {
-                    synth_zundamon_for_stage(
-                        &raspi_base_url,
-                        call_id,
-                        text,
-                        ai_cfg.tts_raspi_timeout,
-                    )
-                })
-                .await
-            {
-                tokio::fs::write(out_path, &wav_bytes).await?;
-                info!("[tts {call_id}] TTS written to {}", out_path);
-                return Ok(());
             }
-        } else {
-            log::warn!(
-                "[tts {call_id}] TTS stage failed: tts_stage=raspi reason=TTS_RASPI_BASE_URL missing"
-            );
+            TtsStage::Cloud => {
+                if openai_tts_enabled {
+                    if let Some(wav_bytes) =
+                        try_tts_stage(call_id, TtsStage::Cloud, ai_cfg.tts_cloud_timeout, || {
+                            let openai_api_key_owned = openai_api_key_owned.clone();
+                            let openai_base_url = openai_base_url.clone();
+                            async move {
+                                let api_key = openai_api_key_owned
+                                    .as_deref()
+                                    .ok_or_else(|| anyhow!("OPENAI_API_KEY missing"))?;
+                                synth_openai_tts_for_stage(
+                                    &openai_base_url,
+                                    api_key,
+                                    text,
+                                    ai_cfg.tts_cloud_timeout,
+                                )
+                                .await
+                            }
+                        })
+                        .await
+                    {
+                        tokio::fs::write(out_path, &wav_bytes).await?;
+                        info!("[tts {call_id}] TTS written to {}", out_path);
+                        return Ok(());
+                    }
+                }
+            }
+            TtsStage::Raspi => {
+                if ai_cfg.tts_raspi_enabled {
+                    if let Some(raspi_base_url) = ai_cfg.tts_raspi_base_url.clone() {
+                        if let Some(wav_bytes) = try_tts_stage(
+                            call_id,
+                            TtsStage::Raspi,
+                            ai_cfg.tts_raspi_timeout,
+                            || {
+                                synth_zundamon_for_stage(
+                                    &raspi_base_url,
+                                    call_id,
+                                    text,
+                                    ai_cfg.tts_raspi_timeout,
+                                )
+                            },
+                        )
+                        .await
+                        {
+                            tokio::fs::write(out_path, &wav_bytes).await?;
+                            info!("[tts {call_id}] TTS written to {}", out_path);
+                            return Ok(());
+                        }
+                    } else {
+                        log::warn!(
+                            "[tts {call_id}] TTS stage failed: tts_stage=raspi reason=TTS_RASPI_BASE_URL missing"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -2506,7 +2545,7 @@ mod tests {
         openai_endpoint_url, parse_ollama_stream_line, probe_once, sanitized_display_url,
         synth_openai_tts_for_stage, transcribe_with_openai_for_stage, tts_endpoint_url,
         validate_openai_tts_wav_bytes, wrap_openai_tts_pcm_as_wav, ChatMessage, LlmError, Role,
-        ASR_FALLBACK_ORDER, LLM_FALLBACK_ORDER,
+        ASR_FALLBACK_ORDER, LLM_FALLBACK_ORDER, TTS_FALLBACK_ORDER,
     };
 
     async fn read_http_request(
@@ -2578,6 +2617,17 @@ mod tests {
     fn llm_fallback_order_is_local_cloud_raspi() {
         assert_eq!(
             LLM_FALLBACK_ORDER
+                .iter()
+                .map(|stage| stage.as_str())
+                .collect::<Vec<_>>(),
+            vec!["local", "cloud", "raspi"]
+        );
+    }
+
+    #[test]
+    fn tts_fallback_order_is_local_cloud_raspi() {
+        assert_eq!(
+            TTS_FALLBACK_ORDER
                 .iter()
                 .map(|stage| stage.as_str())
                 .collect::<Vec<_>>(),
