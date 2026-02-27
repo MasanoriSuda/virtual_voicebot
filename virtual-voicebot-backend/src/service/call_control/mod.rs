@@ -503,10 +503,13 @@ impl AppWorker {
     }
 
     async fn await_stream_eos_for_buffered_turn(&mut self, call_id: &CallId, stream_id: &str) {
-        if self.audio_chunk_rx.is_none() || self.asr_stream_port.is_none() {
+        if self.consume_pending_stream_eos(stream_id) {
             return;
         }
-        if self.consume_pending_stream_eos(stream_id) {
+        if self.audio_chunk_rx.is_none()
+            || self.asr_stream_port.is_none()
+            || self.asr_stream_connect_failed_for_turn
+        {
             return;
         }
         loop {

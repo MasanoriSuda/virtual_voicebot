@@ -328,10 +328,15 @@ async def transcribe_stream(websocket: WebSocket):
         return
 
 if __name__ == "__main__":
-    host = os.environ.get("HOST", "0.0.0.0")
+    # External exposure is opt-in: set HOST explicitly (e.g. 0.0.0.0) when needed.
+    host = os.environ.get("HOST", "127.0.0.1")
     try:
         port = int(os.environ.get("PORT", "9010"))
     except ValueError:
         logger.warning("invalid PORT value; falling back to 9010", exc_info=True)
         port = 9010
+    else:
+        if not (1 <= port <= 65535):
+            logger.warning("PORT out of range (1-65535): %s; falling back to 9010", port)
+            port = 9010
     uvicorn.run(app, host=host, port=port)
