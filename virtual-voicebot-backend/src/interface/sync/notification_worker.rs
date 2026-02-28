@@ -101,7 +101,36 @@ impl NotificationWorker {
                     continue;
                 }
             };
-            self.send_notification(&payload).await?;
+
+            let call_id = match payload
+                .get("call_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                Some(value) => value.to_string(),
+                None => {
+                    let missing_call_id_error = NotificationWorkerError::InvalidPayloadLine(
+                        format!("line {line_no} missing call_id"),
+                    );
+                    log::warn!(
+                        "[serversync] skipping invalid notification payload: {}",
+                        missing_call_id_error
+                    );
+                    Self::update_processing_checkpoint(processing, &lines[index + 1..])?;
+                    continue;
+                }
+            };
+
+            if let Err(error) = self.send_notification(&payload).await {
+                log::warn!(
+                    "[serversync] notification send failed (line_no={}, call_id={}): {}",
+                    line_no,
+                    call_id,
+                    error
+                );
+                return Err(error);
+            }
             Self::update_processing_checkpoint(processing, &lines[index + 1..])?;
         }
 
@@ -310,6 +339,7 @@ mod tests {
 
         worker
             .send_notification(&json!({
+                "call_id": "test-send-notification",
                 "callerNumber": "09012345678",
                 "trigger": "direct",
                 "receivedAt": "2026-02-28T00:00:00Z"
@@ -334,6 +364,7 @@ mod tests {
         write_json_line(
             queue_file.as_path(),
             &json!({
+                "call_id": "direct-success",
                 "callerNumber": "09011111111",
                 "trigger": "direct",
                 "receivedAt": "2026-02-28T00:00:00Z"
@@ -371,6 +402,7 @@ mod tests {
         write_json_line(
             processing_file.as_path(),
             &json!({
+                "call_id": "existing-processing",
                 "callerNumber": "from-processing",
                 "trigger": "direct",
                 "receivedAt": "2026-02-28T00:00:00Z"
@@ -379,6 +411,7 @@ mod tests {
         write_json_line(
             queue_file.as_path(),
             &json!({
+                "call_id": "pending-queue",
                 "callerNumber": "from-pending",
                 "trigger": "direct",
                 "receivedAt": "2026-02-28T00:00:01Z"
@@ -423,6 +456,7 @@ mod tests {
         write_json_line(
             queue_file.as_path(),
             &json!({
+                "call_id": "retry-me",
                 "callerNumber": "retry-me",
                 "trigger": "direct",
                 "receivedAt": "2026-02-28T00:00:00Z"
@@ -457,11 +491,13 @@ mod tests {
         let processing_file = processing_file_path(queue_file.as_path());
 
         let first = json!({
+            "call_id": "first-ok",
             "callerNumber": "first-ok",
             "trigger": "direct",
             "receivedAt": "2026-02-28T00:00:00Z"
         });
         let second = json!({
+            "call_id": "second-retry",
             "callerNumber": "second-retry",
             "trigger": "direct",
             "receivedAt": "2026-02-28T00:00:01Z"
@@ -513,11 +549,13 @@ mod tests {
         let processing_file = processing_file_path(queue_file.as_path());
 
         let first = json!({
+            "call_id": "first-once",
             "callerNumber": "first-once",
             "trigger": "direct",
             "receivedAt": "2026-02-28T00:00:00Z"
         });
         let second = json!({
+            "call_id": "second-retry",
             "callerNumber": "second-retry",
             "trigger": "direct",
             "receivedAt": "2026-02-28T00:00:01Z"
@@ -584,6 +622,7 @@ mod tests {
         write_json_line(
             processing_file.as_path(),
             &json!({
+                "call_id": "retry-success",
                 "callerNumber": "retry-success",
                 "trigger": "direct",
                 "receivedAt": "2026-02-28T00:00:00Z"
@@ -618,6 +657,7 @@ mod tests {
         let queue_file = temp.path().join("pending.jsonl");
         let processing_file = processing_file_path(queue_file.as_path());
         let valid = json!({
+            "call_id": "valid-after-invalid",
             "callerNumber": "valid-after-invalid",
             "trigger": "direct",
             "receivedAt": "2026-02-28T00:00:00Z"
@@ -644,6 +684,53 @@ mod tests {
         assert!(
             !processing_file.exists(),
             "processing file should be removed after skipping invalid and sending remaining"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn flush_processing_file_skips_line_missing_call_id() {
+        let temp = tempfile::tempdir().expect("tempdir should be creatable");
+        let queue_file = temp.path().join("pending.jsonl");
+        let processing_file = processing_file_path(queue_file.as_path());
+        let missing_call_id = json!({
+            "callerNumber": "missing-call-id",
+            "trigger": "direct",
+            "receivedAt": "2026-02-28T00:00:00Z"
+        });
+        let valid = json!({
+            "call_id": "valid-after-missing-call-id",
+            "callerNumber": "valid-after-missing-call-id",
+            "trigger": "direct",
+            "receivedAt": "2026-02-28T00:00:01Z"
+        });
+        let content = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&missing_call_id)
+                .expect("missing-call-id payload should serialize"),
+            serde_json::to_string(&valid).expect("valid payload should serialize")
+        );
+        std::fs::write(&processing_file, content).expect("processing file should be writable");
+        let (base_url, captured, server) = spawn_mock_server(vec![200]).await;
+        let worker = test_worker(queue_file, base_url);
+
+        worker
+            .flush_processing_file(processing_file.as_path())
+            .await
+            .expect("line missing call_id should be skipped and valid line should be sent");
+
+        let requests = captured.lock().expect("captured lock should be available");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0]
+            .body
+            .contains("\"call_id\":\"valid-after-missing-call-id\""));
+        assert!(requests[0]
+            .body
+            .contains("\"callerNumber\":\"valid-after-missing-call-id\""));
+        drop(requests);
+        assert!(
+            !processing_file.exists(),
+            "processing file should be removed after skipping missing-call-id line and sending remaining"
         );
         server.abort();
     }
