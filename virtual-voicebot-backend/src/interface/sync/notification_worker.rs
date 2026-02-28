@@ -84,6 +84,10 @@ impl NotificationWorker {
             .map(str::trim)
             .filter(|line| !line.is_empty())
             .collect::<Vec<_>>();
+        if lines.is_empty() {
+            Self::update_processing_checkpoint(processing, &[]).await?;
+            return Ok(());
+        }
 
         for (index, line) in lines.iter().enumerate() {
             let line_no = index + 1;
@@ -750,5 +754,24 @@ mod tests {
             "processing file should be removed after skipping missing-call-id line and sending remaining"
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn flush_processing_file_removes_empty_processing_file() {
+        let temp = tempfile::tempdir().expect("tempdir should be creatable");
+        let queue_file = temp.path().join("pending.jsonl");
+        let processing_file = processing_file_path(queue_file.as_path());
+        std::fs::write(&processing_file, "\n   \n").expect("processing file should be writable");
+        let worker = test_worker(queue_file, "http://127.0.0.1:9".to_string());
+
+        worker
+            .flush_processing_file(processing_file.as_path())
+            .await
+            .expect("empty processing should be cleaned up");
+
+        assert!(
+            !processing_file.exists(),
+            "empty processing file should be removed"
+        );
     }
 }
