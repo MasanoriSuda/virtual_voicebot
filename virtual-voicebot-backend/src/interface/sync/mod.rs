@@ -1,5 +1,6 @@
 mod converters;
 mod frontend_pull;
+mod notification_worker;
 mod recording_uploader;
 mod worker;
 
@@ -8,4 +9,5 @@ pub use converters::{
     ConverterError, IncomingRule, IvrActionDestination, IvrFlowDefinition, IvrRoute, StoredAction,
 };
 pub use frontend_pull::{FrontendPullError, FrontendPullWorker};
+pub use notification_worker::{NotificationWorker, NotificationWorkerError};
 pub use worker::{OutboxWorker, SyncWorkerError};

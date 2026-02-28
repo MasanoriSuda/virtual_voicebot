@@ -149,6 +149,7 @@ impl SessionCoordinator {
                         }
                     }
                 }
+                self.refresh_is_ivr_call();
                 if advance_state {
                     if !self.no_response_mode {
                         if let Err(err) = self
@@ -185,6 +186,7 @@ impl SessionCoordinator {
                                 timestamp: sip_handler::now_jst(),
                             })
                             .await;
+                        self.notify_direct_incoming_if_needed().await;
                         let ring_duration = self.runtime_cfg.ring_duration;
                         if ring_duration.is_zero() {
                             if let Err(err) = self
@@ -829,6 +831,7 @@ impl SessionCoordinator {
                 }
                 self.cancel_playback();
                 self.stop_ivr_timeout();
+                self.record_dtmf_history(digit);
                 if self.ivr_keypad_node_id.is_some() {
                     self.handle_db_ivr_dtmf(digit).await;
                     return;
@@ -872,6 +875,7 @@ impl SessionCoordinator {
                         info!("[session {}] initiating transfer to B-leg", self.call_id);
                         self.ivr_state = IvrState::Transferring;
                         self.mark_transfer_trying();
+                        self.notify_ivr_transfer_if_needed().await;
                         if let Err(e) = self.start_playback(&[super::TRANSFER_WAV_PATH]).await {
                             warn!(
                                 "[session {}] failed to play transfer wav: {:?}",
@@ -968,6 +972,7 @@ impl SessionCoordinator {
 
     async fn start_legacy_ivr_menu(&mut self) {
         self.ivr_state = IvrState::IvrMenuWaiting;
+        self.mark_ivr_started_if_needed();
         self.ivr_keypad_node_id = None;
         self.ivr_menu_audio_file_url = Some(super::IVR_INTRO_WAV_PATH.to_string());
         self.ivr_retry_count = 0;
@@ -1027,6 +1032,7 @@ impl SessionCoordinator {
         };
 
         self.ivr_state = IvrState::IvrMenuWaiting;
+        self.mark_ivr_started_if_needed();
         self.ivr_flow_id = Some(ivr_flow_id);
         self.ivr_keypad_node_id = Some(menu.keypad_node_id);
         self.ivr_retry_count = 0;
@@ -1305,6 +1311,7 @@ impl SessionCoordinator {
                     Some("transfer_initiated"),
                 );
                 self.set_transfer_after_answer_pending(false);
+                self.notify_ivr_transfer_if_needed().await;
                 self.start_b2bua_transfer("ivr_vr");
             }
             "VB" => {
@@ -1767,6 +1774,13 @@ mod tests {
             ingest_persisted: false,
             session_expires: None,
             session_refresher: None,
+            notification_queue_file: std::path::PathBuf::from(
+                "storage/notifications/pending.jsonl",
+            ),
+            is_ivr_call: false,
+            ivr_started_at: None,
+            dtmf_history: Vec::new(),
+            notification_sent: false,
         };
         (session, session_out_rx)
     }
@@ -1778,6 +1792,29 @@ mod tests {
             action_code: "VB".to_string(),
             audio_file_url: None,
             metadata_json: Some(r#"{"includeAnnouncement":false}"#.to_string()),
+        }
+    }
+
+    fn transfer_destination() -> IvrDestinationRow {
+        IvrDestinationRow {
+            transition_id: Uuid::from_u128(0x30),
+            node_id: Uuid::from_u128(0x40),
+            action_code: "VR".to_string(),
+            audio_file_url: None,
+            metadata_json: None,
+        }
+    }
+
+    fn unique_notification_queue_file() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("vvb-handler-notify-test-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("temp notification dir should be creatable");
+        dir.join("pending.jsonl")
+    }
+
+    fn cleanup_notification_queue_file(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
         }
     }
 
@@ -1879,6 +1916,68 @@ mod tests {
         let guard = state.lock().expect("routing state lock");
         assert_eq!(guard.old_invalid_calls, 0);
         assert_eq!(guard.by_flow_invalid, vec![flow_id]);
+    }
+
+    #[tokio::test]
+    async fn db_ivr_vr_destination_emits_ivr_transfer_notification() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
+        let queue_file = unique_notification_queue_file();
+        session.notification_queue_file = queue_file.clone();
+        session.from_uri = "sip:09012345678@example.com".to_string();
+        session.ivr_started_at = Some(Instant::now() - Duration::from_secs(2));
+        session.dtmf_history = vec!['1', '3'];
+        session.notification_sent = false;
+
+        session
+            .execute_db_ivr_destination(transfer_destination())
+            .await;
+
+        let raw = std::fs::read_to_string(&queue_file)
+            .expect("ivr transfer notification should be written");
+        let line = raw
+            .lines()
+            .find(|value| !value.trim().is_empty())
+            .expect("queue file should contain one line");
+        let payload: serde_json::Value =
+            serde_json::from_str(line).expect("notification line should be valid json");
+        assert_eq!(payload["trigger"], "ivr_transfer");
+        assert_eq!(payload["callerNumber"], "09012345678");
+        assert_eq!(
+            payload["ivrData"]["dtmfHistory"],
+            serde_json::json!(["1", "3"])
+        );
+        let dwell_time_sec = payload["ivrData"]["dwellTimeSec"]
+            .as_u64()
+            .expect("dwellTimeSec should be u64");
+        assert!(
+            dwell_time_sec >= 2,
+            "dwellTimeSec should reflect elapsed ivr time"
+        );
+
+        cleanup_notification_queue_file(queue_file.as_path());
+    }
+
+    #[tokio::test]
+    async fn db_ivr_vr_destination_skips_notification_when_already_sent() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, _session_out_rx) = build_test_session(routing_port);
+        let queue_file = unique_notification_queue_file();
+        session.notification_queue_file = queue_file.clone();
+        session.notification_sent = true;
+        session.ivr_started_at = Some(Instant::now() - Duration::from_secs(2));
+        session.dtmf_history = vec!['1', '3'];
+
+        session
+            .execute_db_ivr_destination(transfer_destination())
+            .await;
+
+        assert!(
+            !queue_file.exists(),
+            "notification should not be appended when notification_sent is true"
+        );
+
+        cleanup_notification_queue_file(queue_file.as_path());
     }
 
     #[tokio::test]

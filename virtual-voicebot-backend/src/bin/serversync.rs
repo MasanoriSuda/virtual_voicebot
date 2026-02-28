@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use virtual_voicebot_backend::interface::db::PostgresAdapter;
-use virtual_voicebot_backend::interface::sync::{FrontendPullWorker, OutboxWorker};
+use virtual_voicebot_backend::interface::sync::{
+    FrontendPullWorker, NotificationWorker, OutboxWorker,
+};
 use virtual_voicebot_backend::shared::{config::SyncConfig, logging};
 
 #[tokio::main]
@@ -15,6 +17,7 @@ async fn main() -> anyhow::Result<()> {
     let postgres_adapter = Arc::new(PostgresAdapter::new(database_url.clone()).await?);
     let outbox_worker = OutboxWorker::new(postgres_adapter, sync_config.clone())?;
     let frontend_pull_worker = FrontendPullWorker::new(database_url, sync_config.clone()).await?;
+    let notification_worker = NotificationWorker::new(sync_config.clone())?;
 
     log::info!(
         "[serversync] started (outbox_poll_interval={}s, frontend_pull_poll_interval={}s, batch_size={})",
@@ -35,11 +38,18 @@ async fn main() -> anyhow::Result<()> {
             worker.run().await;
         })
     };
+    let notification_task = {
+        let worker = notification_worker.clone();
+        tokio::spawn(async move {
+            worker.run().await;
+        })
+    };
 
     tokio::signal::ctrl_c().await?;
     log::info!("[serversync] shutdown signal received");
     outbox_task.abort();
     frontend_pull_task.abort();
+    notification_task.abort();
 
     Ok(())
 }

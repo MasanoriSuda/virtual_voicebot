@@ -653,6 +653,19 @@ impl SyncConfig {
     }
 }
 
+static NOTIFICATION_QUEUE_FILE: OnceLock<String> = OnceLock::new();
+
+fn notification_queue_file_from_env() -> String {
+    env_non_empty("NOTIFICATION_QUEUE_FILE")
+        .unwrap_or_else(|| "storage/notifications/pending.jsonl".to_string())
+}
+
+pub fn notification_queue_file() -> String {
+    NOTIFICATION_QUEUE_FILE
+        .get_or_init(notification_queue_file_from_env)
+        .clone()
+}
+
 #[derive(Clone, Debug)]
 pub struct AnnouncementConfig {
     pub frontend_base_url: Option<String>,
@@ -918,6 +931,41 @@ fn resolve_socket_addr(host: &str, port: u16) -> Option<SocketAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    struct ScopedTestEnv {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl ScopedTestEnv {
+        fn set(key: &'static str, value: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for ScopedTestEnv {
+        fn drop(&mut self) {
+            if let Some(value) = self.previous.take() {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn outbound_resolve_number_prefers_dial_plan() {
@@ -945,6 +993,23 @@ mod tests {
         assert!(is_phone_number("09012345678"));
         assert!(!is_phone_number("9012345678"));
         assert!(!is_phone_number("abc"));
+    }
+
+    #[test]
+    fn notification_queue_file_uses_default_when_env_is_missing() {
+        let _lock = env_lock().lock().expect("env lock should be available");
+        let _env = ScopedTestEnv::unset("NOTIFICATION_QUEUE_FILE");
+        assert_eq!(
+            notification_queue_file_from_env(),
+            "storage/notifications/pending.jsonl"
+        );
+    }
+
+    #[test]
+    fn notification_queue_file_uses_env_value_when_present() {
+        let _lock = env_lock().lock().expect("env lock should be available");
+        let _env = ScopedTestEnv::set("NOTIFICATION_QUEUE_FILE", "/tmp/test.jsonl");
+        assert_eq!(notification_queue_file_from_env(), "/tmp/test.jsonl");
     }
 }
 #[derive(Clone, Debug)]
