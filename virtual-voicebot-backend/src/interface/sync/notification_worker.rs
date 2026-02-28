@@ -57,15 +57,15 @@ impl NotificationWorker {
     pub async fn process_once(&self) -> Result<(), NotificationWorkerError> {
         let processing = processing_file_path(self.queue_file.as_path());
 
-        if processing.exists() {
+        if tokio::fs::try_exists(processing.as_path()).await? {
             self.flush_processing_file(processing.as_path()).await?;
         }
 
-        if !self.queue_file.exists() {
+        if !tokio::fs::try_exists(self.queue_file.as_path()).await? {
             return Ok(());
         }
 
-        match std::fs::rename(self.queue_file.as_path(), processing.as_path()) {
+        match tokio::fs::rename(self.queue_file.as_path(), processing.as_path()).await {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(err) => return Err(NotificationWorkerError::Io(err)),
@@ -78,7 +78,7 @@ impl NotificationWorker {
         &self,
         processing: &Path,
     ) -> Result<(), NotificationWorkerError> {
-        let content = std::fs::read_to_string(processing)?;
+        let content = tokio::fs::read_to_string(processing).await?;
         let lines = content
             .lines()
             .map(str::trim)
@@ -97,7 +97,7 @@ impl NotificationWorker {
                         "[serversync] skipping invalid notification payload: {}",
                         parse_error
                     );
-                    Self::update_processing_checkpoint(processing, &lines[index + 1..])?;
+                    Self::update_processing_checkpoint(processing, &lines[index + 1..]).await?;
                     continue;
                 }
             };
@@ -117,12 +117,12 @@ impl NotificationWorker {
                         "[serversync] skipping invalid notification payload: {}",
                         missing_call_id_error
                     );
-                    Self::update_processing_checkpoint(processing, &lines[index + 1..])?;
+                    Self::update_processing_checkpoint(processing, &lines[index + 1..]).await?;
                     continue;
                 }
             };
 
-            if let Err(error) = self.send_notification(&payload).await {
+            if let Err(error) = self.send_notification(&payload, call_id.as_str()).await {
                 log::warn!(
                     "[serversync] notification send failed (line_no={}, call_id={}): {}",
                     line_no,
@@ -131,30 +131,35 @@ impl NotificationWorker {
                 );
                 return Err(error);
             }
-            Self::update_processing_checkpoint(processing, &lines[index + 1..])?;
+            Self::update_processing_checkpoint(processing, &lines[index + 1..]).await?;
         }
 
         Ok(())
     }
 
-    fn update_processing_checkpoint(
+    async fn update_processing_checkpoint(
         processing: &Path,
         remaining: &[&str],
     ) -> Result<(), NotificationWorkerError> {
         if remaining.is_empty() {
-            std::fs::remove_file(processing)?;
+            tokio::fs::remove_file(processing).await?;
         } else {
             let mut remaining_content = remaining.join("\n");
             remaining_content.push('\n');
-            std::fs::write(processing, remaining_content)?;
+            tokio::fs::write(processing, remaining_content).await?;
         }
         Ok(())
     }
 
-    async fn send_notification(&self, payload: &Value) -> Result<(), NotificationWorkerError> {
+    async fn send_notification(
+        &self,
+        payload: &Value,
+        call_id: &str,
+    ) -> Result<(), NotificationWorkerError> {
         let url = format!("{}/api/ingest/incoming-call", self.frontend_base_url);
         self.client
             .post(url)
+            .header("Idempotency-Key", call_id)
             .json(payload)
             .send()
             .await?
@@ -185,6 +190,7 @@ mod tests {
     #[derive(Clone, Debug)]
     struct CapturedRequest {
         path: String,
+        headers: String,
         body: String,
     }
 
@@ -243,8 +249,13 @@ mod tests {
             .and_then(|line| line.split_whitespace().nth(1))
             .unwrap_or("")
             .to_string();
+        let headers = head.to_ascii_lowercase();
 
-        Ok(CapturedRequest { path, body })
+        Ok(CapturedRequest {
+            path,
+            headers,
+            body,
+        })
     }
 
     async fn spawn_mock_server(
@@ -338,18 +349,24 @@ mod tests {
         let worker = test_worker(queue_file, base_url);
 
         worker
-            .send_notification(&json!({
-                "call_id": "test-send-notification",
-                "callerNumber": "09012345678",
-                "trigger": "direct",
-                "receivedAt": "2026-02-28T00:00:00Z"
-            }))
+            .send_notification(
+                &json!({
+                    "call_id": "test-send-notification",
+                    "callerNumber": "09012345678",
+                    "trigger": "direct",
+                    "receivedAt": "2026-02-28T00:00:00Z"
+                }),
+                "test-send-notification",
+            )
             .await
             .expect("notification send should succeed");
 
         let requests = captured.lock().expect("captured lock should be available");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].path, "/api/ingest/incoming-call");
+        assert!(requests[0]
+            .headers
+            .contains("idempotency-key: test-send-notification"));
         assert!(requests[0]
             .body
             .contains("\"callerNumber\":\"09012345678\""));
