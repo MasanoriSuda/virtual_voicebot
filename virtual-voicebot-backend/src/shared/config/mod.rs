@@ -653,6 +653,17 @@ impl SyncConfig {
     }
 }
 
+static NOTIFICATION_QUEUE_FILE: OnceLock<String> = OnceLock::new();
+
+pub fn notification_queue_file() -> String {
+    NOTIFICATION_QUEUE_FILE
+        .get_or_init(|| {
+            env_non_empty("NOTIFICATION_QUEUE_FILE")
+                .unwrap_or_else(|| "storage/notifications/pending.jsonl".to_string())
+        })
+        .clone()
+}
+
 #[derive(Clone, Debug)]
 pub struct AnnouncementConfig {
     pub frontend_base_url: Option<String>,

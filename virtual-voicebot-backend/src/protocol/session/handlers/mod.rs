@@ -149,6 +149,7 @@ impl SessionCoordinator {
                         }
                     }
                 }
+                self.refresh_is_ivr_call();
                 if advance_state {
                     if !self.no_response_mode {
                         if let Err(err) = self
@@ -185,6 +186,7 @@ impl SessionCoordinator {
                                 timestamp: sip_handler::now_jst(),
                             })
                             .await;
+                        self.notify_direct_incoming_if_needed();
                         let ring_duration = self.runtime_cfg.ring_duration;
                         if ring_duration.is_zero() {
                             if let Err(err) = self
@@ -829,6 +831,7 @@ impl SessionCoordinator {
                 }
                 self.cancel_playback();
                 self.stop_ivr_timeout();
+                self.record_dtmf_history(digit);
                 if self.ivr_keypad_node_id.is_some() {
                     self.handle_db_ivr_dtmf(digit).await;
                     return;
@@ -872,6 +875,7 @@ impl SessionCoordinator {
                         info!("[session {}] initiating transfer to B-leg", self.call_id);
                         self.ivr_state = IvrState::Transferring;
                         self.mark_transfer_trying();
+                        self.notify_ivr_transfer_if_needed();
                         if let Err(e) = self.start_playback(&[super::TRANSFER_WAV_PATH]).await {
                             warn!(
                                 "[session {}] failed to play transfer wav: {:?}",
@@ -968,6 +972,7 @@ impl SessionCoordinator {
 
     async fn start_legacy_ivr_menu(&mut self) {
         self.ivr_state = IvrState::IvrMenuWaiting;
+        self.mark_ivr_started_if_needed();
         self.ivr_keypad_node_id = None;
         self.ivr_menu_audio_file_url = Some(super::IVR_INTRO_WAV_PATH.to_string());
         self.ivr_retry_count = 0;
@@ -1027,6 +1032,7 @@ impl SessionCoordinator {
         };
 
         self.ivr_state = IvrState::IvrMenuWaiting;
+        self.mark_ivr_started_if_needed();
         self.ivr_flow_id = Some(ivr_flow_id);
         self.ivr_keypad_node_id = Some(menu.keypad_node_id);
         self.ivr_retry_count = 0;
@@ -1767,6 +1773,13 @@ mod tests {
             ingest_persisted: false,
             session_expires: None,
             session_refresher: None,
+            notification_queue_file: std::path::PathBuf::from(
+                "storage/notifications/pending.jsonl",
+            ),
+            is_ivr_call: false,
+            ivr_started_at: None,
+            dtmf_history: Vec::new(),
+            notification_sent: false,
         };
         (session, session_out_rx)
     }
