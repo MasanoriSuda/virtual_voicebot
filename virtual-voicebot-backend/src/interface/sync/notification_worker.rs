@@ -79,17 +79,46 @@ impl NotificationWorker {
         processing: &Path,
     ) -> Result<(), NotificationWorkerError> {
         let content = std::fs::read_to_string(processing)?;
-        for line in content
+        let lines = content
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
-        {
-            let payload: Value = serde_json::from_str(line).map_err(|err| {
-                NotificationWorkerError::InvalidPayloadLine(format!("{line} ({err})"))
-            })?;
+            .collect::<Vec<_>>();
+
+        for (index, line) in lines.iter().enumerate() {
+            let line_no = index + 1;
+            let payload: Value = match serde_json::from_str(line) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    let parse_error = NotificationWorkerError::InvalidPayloadLine(format!(
+                        "line {line_no} ({err})"
+                    ));
+                    log::warn!(
+                        "[serversync] skipping invalid notification payload: {}",
+                        parse_error
+                    );
+                    Self::update_processing_checkpoint(processing, &lines[index + 1..])?;
+                    continue;
+                }
+            };
             self.send_notification(&payload).await?;
+            Self::update_processing_checkpoint(processing, &lines[index + 1..])?;
         }
-        std::fs::remove_file(processing)?;
+
+        Ok(())
+    }
+
+    fn update_processing_checkpoint(
+        processing: &Path,
+        remaining: &[&str],
+    ) -> Result<(), NotificationWorkerError> {
+        if remaining.is_empty() {
+            std::fs::remove_file(processing)?;
+        } else {
+            let mut remaining_content = remaining.join("\n");
+            remaining_content.push('\n');
+            std::fs::write(processing, remaining_content)?;
+        }
         Ok(())
     }
 
@@ -422,6 +451,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn process_once_keeps_only_unsent_lines_after_partial_http_error() {
+        let temp = tempfile::tempdir().expect("tempdir should be creatable");
+        let queue_file = temp.path().join("pending.jsonl");
+        let processing_file = processing_file_path(queue_file.as_path());
+
+        let first = json!({
+            "callerNumber": "first-ok",
+            "trigger": "direct",
+            "receivedAt": "2026-02-28T00:00:00Z"
+        });
+        let second = json!({
+            "callerNumber": "second-retry",
+            "trigger": "direct",
+            "receivedAt": "2026-02-28T00:00:01Z"
+        });
+        let content = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&first).expect("first payload should serialize"),
+            serde_json::to_string(&second).expect("second payload should serialize")
+        );
+        std::fs::write(queue_file.as_path(), content).expect("queue file should be writable");
+
+        let (base_url, captured, server) = spawn_mock_server(vec![200, 500]).await;
+        let worker = test_worker(queue_file.clone(), base_url);
+
+        let result = worker.process_once().await;
+        assert!(
+            matches!(result, Err(NotificationWorkerError::Http(_))),
+            "http error should be surfaced"
+        );
+
+        assert!(
+            processing_file.exists(),
+            "processing should remain for retry when second send fails"
+        );
+        let raw = std::fs::read_to_string(&processing_file).expect("processing file should remain");
+        assert!(
+            !raw.contains("\"callerNumber\":\"first-ok\""),
+            "already-sent lines should be removed from processing"
+        );
+        assert!(
+            raw.contains("\"callerNumber\":\"second-retry\""),
+            "only unsent line should remain in processing"
+        );
+
+        let requests = captured.lock().expect("captured lock should be available");
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].body.contains("\"callerNumber\":\"first-ok\""));
+        assert!(requests[1]
+            .body
+            .contains("\"callerNumber\":\"second-retry\""));
+        drop(requests);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn process_once_does_not_resend_already_sent_lines_after_partial_http_error() {
+        let temp = tempfile::tempdir().expect("tempdir should be creatable");
+        let queue_file = temp.path().join("pending.jsonl");
+        let processing_file = processing_file_path(queue_file.as_path());
+
+        let first = json!({
+            "callerNumber": "first-once",
+            "trigger": "direct",
+            "receivedAt": "2026-02-28T00:00:00Z"
+        });
+        let second = json!({
+            "callerNumber": "second-retry",
+            "trigger": "direct",
+            "receivedAt": "2026-02-28T00:00:01Z"
+        });
+        let content = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&first).expect("first payload should serialize"),
+            serde_json::to_string(&second).expect("second payload should serialize")
+        );
+        std::fs::write(processing_file.as_path(), content)
+            .expect("processing file should be writable");
+
+        let (base_url, captured, server) = spawn_mock_server(vec![200, 500, 200]).await;
+        let worker = test_worker(queue_file.clone(), base_url);
+
+        let first_result = worker.process_once().await;
+        assert!(
+            matches!(first_result, Err(NotificationWorkerError::Http(_))),
+            "first cycle should fail at second notification"
+        );
+        assert!(
+            processing_file.exists(),
+            "processing should remain after first cycle failure"
+        );
+
+        worker
+            .process_once()
+            .await
+            .expect("second cycle should retry only unsent line");
+
+        assert!(
+            !processing_file.exists(),
+            "processing should be removed after retry success"
+        );
+        assert!(!queue_file.exists(), "pending file should remain absent");
+
+        let requests = captured.lock().expect("captured lock should be available");
+        assert_eq!(requests.len(), 3);
+        let first_count = requests
+            .iter()
+            .filter(|request| request.body.contains("\"callerNumber\":\"first-once\""))
+            .count();
+        let second_count = requests
+            .iter()
+            .filter(|request| request.body.contains("\"callerNumber\":\"second-retry\""))
+            .count();
+        assert_eq!(
+            first_count, 1,
+            "already-sent first line must not be retried on next cycle"
+        );
+        assert_eq!(
+            second_count, 2,
+            "second line should be attempted once, then retried once"
+        );
+        drop(requests);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn process_once_retries_existing_processing_file_on_next_cycle() {
         let temp = tempfile::tempdir().expect("tempdir should be creatable");
         let queue_file = temp.path().join("pending.jsonl");
@@ -458,27 +613,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flush_processing_file_returns_invalid_payload_and_keeps_file() {
+    async fn flush_processing_file_skips_invalid_payload_line_without_exposing_payload() {
         let temp = tempfile::tempdir().expect("tempdir should be creatable");
         let queue_file = temp.path().join("pending.jsonl");
         let processing_file = processing_file_path(queue_file.as_path());
-        std::fs::write(&processing_file, "invalid-json-line\n")
-            .expect("processing file should be writable");
-        let worker = test_worker(queue_file, "http://127.0.0.1:9".to_string());
-
-        let result = worker
-            .flush_processing_file(processing_file.as_path())
-            .await;
-        match result {
-            Err(NotificationWorkerError::InvalidPayloadLine(message)) => {
-                assert!(message.contains("invalid-json-line"));
-            }
-            other => panic!("expected InvalidPayloadLine, got {:?}", other),
-        }
-
-        assert!(
-            processing_file.exists(),
-            "invalid payload should not delete processing file"
+        let valid = json!({
+            "callerNumber": "valid-after-invalid",
+            "trigger": "direct",
+            "receivedAt": "2026-02-28T00:00:00Z"
+        });
+        let content = format!(
+            "invalid-json-line\n{}\n",
+            serde_json::to_string(&valid).expect("valid payload should serialize")
         );
+        std::fs::write(&processing_file, content).expect("processing file should be writable");
+        let (base_url, captured, server) = spawn_mock_server(vec![200]).await;
+        let worker = test_worker(queue_file, base_url);
+
+        worker
+            .flush_processing_file(processing_file.as_path())
+            .await
+            .expect("invalid line should be skipped and valid line should be sent");
+
+        let requests = captured.lock().expect("captured lock should be available");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0]
+            .body
+            .contains("\"callerNumber\":\"valid-after-invalid\""));
+        drop(requests);
+        assert!(
+            !processing_file.exists(),
+            "processing file should be removed after skipping invalid and sending remaining"
+        );
+        server.abort();
     }
 }

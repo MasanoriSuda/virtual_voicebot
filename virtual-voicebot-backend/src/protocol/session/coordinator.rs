@@ -1,10 +1,9 @@
 #![allow(dead_code)]
 // session.rs
 use std::collections::VecDeque;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::{interval, Duration, Instant, MissedTickBehavior};
@@ -486,19 +485,21 @@ impl SessionCoordinator {
         self.dtmf_history.push(digit);
     }
 
-    pub(crate) fn notify_direct_incoming_if_needed(&mut self) {
+    pub(crate) async fn notify_direct_incoming_if_needed(&mut self) {
         if self.notification_sent || self.is_ivr_call {
             return;
         }
 
         self.write_incoming_call_notification(json!({
+            "call_id": self.call_id.as_str(),
             "callerNumber": self.current_caller_number(),
             "trigger": "direct",
             "receivedAt": Utc::now().to_rfc3339(),
-        }));
+        }))
+        .await;
     }
 
-    pub(crate) fn notify_ivr_transfer_if_needed(&mut self) {
+    pub(crate) async fn notify_ivr_transfer_if_needed(&mut self) {
         if self.notification_sent {
             return;
         }
@@ -514,6 +515,7 @@ impl SessionCoordinator {
             .collect();
 
         self.write_incoming_call_notification(json!({
+            "call_id": self.call_id.as_str(),
             "callerNumber": self.current_caller_number(),
             "trigger": "ivr_transfer",
             "receivedAt": Utc::now().to_rfc3339(),
@@ -521,7 +523,8 @@ impl SessionCoordinator {
                 "dwellTimeSec": dwell_time_sec,
                 "dtmfHistory": dtmf_history,
             },
-        }));
+        }))
+        .await;
     }
 
     fn detect_is_ivr_call(&self) -> bool {
@@ -538,7 +541,7 @@ impl SessionCoordinator {
         true
     }
 
-    fn write_incoming_call_notification(&mut self, payload: serde_json::Value) {
+    async fn write_incoming_call_notification(&mut self, payload: serde_json::Value) {
         let line = match serde_json::to_string(&payload) {
             Ok(serialized) => serialized,
             Err(err) => {
@@ -551,7 +554,9 @@ impl SessionCoordinator {
             }
         };
 
-        if let Err(err) = append_json_line(self.notification_queue_file.as_path(), line.as_str()) {
+        if let Err(err) =
+            append_json_line(self.notification_queue_file.as_path(), line.as_str()).await
+        {
             log::warn!(
                 "[session {}] failed to append incoming call notification queue={} error={}",
                 self.call_id,
@@ -897,14 +902,19 @@ fn normalize_caller_for_notification(value: &str) -> String {
     }
 }
 
-fn append_json_line(path: &Path, line: &str) -> std::io::Result<()> {
+async fn append_json_line(path: &Path, line: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        tokio::fs::create_dir_all(parent).await?;
     }
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    file.write_all(line.as_bytes())?;
-    file.write_all(b"\n")?;
-    file.flush()?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    let mut payload = line.as_bytes().to_vec();
+    payload.push(b'\n');
+    file.write_all(payload.as_slice()).await?;
+    file.flush().await?;
     Ok(())
 }
 
@@ -1484,8 +1494,8 @@ mod tests {
         session.notification_queue_file = queue_file.clone();
         session.from_uri = "sip:+81-3-1234-5678@example.com".to_string();
 
-        session.notify_direct_incoming_if_needed();
-        session.notify_direct_incoming_if_needed();
+        session.notify_direct_incoming_if_needed().await;
+        session.notify_direct_incoming_if_needed().await;
 
         let raw =
             std::fs::read_to_string(&queue_file).expect("direct notification should be written");
@@ -1494,6 +1504,7 @@ mod tests {
 
         let payload: serde_json::Value =
             serde_json::from_str(lines[0]).expect("notification line should be valid json");
+        assert_eq!(payload["call_id"], session.call_id.as_str());
         assert_eq!(payload["trigger"], "direct");
         assert_eq!(payload["callerNumber"], "+81312345678");
         assert!(payload["receivedAt"].as_str().is_some());
@@ -1508,7 +1519,7 @@ mod tests {
         session.notification_queue_file = queue_file.clone();
         session.is_ivr_call = true;
 
-        session.notify_direct_incoming_if_needed();
+        session.notify_direct_incoming_if_needed().await;
 
         assert!(
             !queue_file.exists(),
@@ -1527,7 +1538,7 @@ mod tests {
         session.ivr_started_at = Some(Instant::now() - Duration::from_secs(2));
         session.dtmf_history = vec!['9', '9', '3'];
 
-        session.notify_ivr_transfer_if_needed();
+        session.notify_ivr_transfer_if_needed().await;
 
         let raw = std::fs::read_to_string(&queue_file)
             .expect("ivr transfer notification should be written");
@@ -1537,6 +1548,7 @@ mod tests {
             .expect("queue file should contain one line");
         let payload: serde_json::Value =
             serde_json::from_str(line).expect("notification line should be valid json");
+        assert_eq!(payload["call_id"], session.call_id.as_str());
         assert_eq!(payload["trigger"], "ivr_transfer");
         assert_eq!(payload["callerNumber"], "09012345678");
         assert_eq!(

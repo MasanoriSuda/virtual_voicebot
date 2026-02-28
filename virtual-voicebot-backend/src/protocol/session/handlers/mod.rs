@@ -186,7 +186,7 @@ impl SessionCoordinator {
                                 timestamp: sip_handler::now_jst(),
                             })
                             .await;
-                        self.notify_direct_incoming_if_needed();
+                        self.notify_direct_incoming_if_needed().await;
                         let ring_duration = self.runtime_cfg.ring_duration;
                         if ring_duration.is_zero() {
                             if let Err(err) = self
@@ -875,7 +875,7 @@ impl SessionCoordinator {
                         info!("[session {}] initiating transfer to B-leg", self.call_id);
                         self.ivr_state = IvrState::Transferring;
                         self.mark_transfer_trying();
-                        self.notify_ivr_transfer_if_needed();
+                        self.notify_ivr_transfer_if_needed().await;
                         if let Err(e) = self.start_playback(&[super::TRANSFER_WAV_PATH]).await {
                             warn!(
                                 "[session {}] failed to play transfer wav: {:?}",
@@ -1311,7 +1311,7 @@ impl SessionCoordinator {
                     Some("transfer_initiated"),
                 );
                 self.set_transfer_after_answer_pending(false);
-                self.notify_ivr_transfer_if_needed();
+                self.notify_ivr_transfer_if_needed().await;
                 self.start_b2bua_transfer("ivr_vr");
             }
             "VB" => {
