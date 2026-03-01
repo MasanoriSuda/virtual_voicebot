@@ -7,6 +7,11 @@ import type {
   FinalAction,
   TransferStatus,
 } from "./types"
+import {
+  type DisplayStatus,
+  resolveDisplayDuration,
+  resolveDisplayStatus,
+} from "./call-display"
 
 export type CallDirection = "inbound" | "outbound" | "missed"
 
@@ -26,6 +31,8 @@ export type CallRecord = {
   finalAction: FinalAction | null
   transferStatus: TransferStatus
   durationSec: number
+  displayStatus: DisplayStatus
+  displayDurationSec: number
   summary: string
   recordingUrl: string | null
   direction: CallDirection
@@ -321,6 +328,8 @@ export const mockCallRecords: CallRecord[] = mockCalls.map((call) => {
     finalAction: call.finalAction,
     transferStatus: call.transferStatus,
     durationSec: call.durationSec ?? 0,
+    displayStatus: resolveDisplayStatus(call),
+    displayDurationSec: resolveDisplayDuration(call),
     summary: view?.summary ?? "",
     recordingUrl: view?.recordingUrl ?? null,
     direction: view?.direction ?? "inbound",

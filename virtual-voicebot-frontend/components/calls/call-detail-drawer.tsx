@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { AudioPlayer } from "@/components/calls/audio-player"
+import { displayStatusClass } from "@/lib/call-display"
 import type { CallRecord } from "@/lib/mock-data"
 import type { CallDetail, Utterance } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -61,10 +62,7 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
   }, [open, call?.id])
 
   const startedAt = useMemo(() => (call ? formatDateTime(call.startedAt) : ""), [call])
-  const duration = useMemo(
-    () => (call ? formatDuration(call.durationSec) : ""),
-    [call]
-  )
+  const duration = useMemo(() => (call ? formatDuration(call.displayDurationSec) : ""), [call])
   const utterances = callDetail?.utterances ?? []
   const recordingUrl = callDetail?.recordingUrl ?? call?.recordingUrl ?? null
   const summary = useMemo(() => {
@@ -84,8 +82,8 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
     [utterances],
   )
 
-  const statusLabel = call ? statusToLabel(call.status) : ""
-  const statusClass = call ? statusToClass(call.status) : ""
+  const statusLabel = call ? call.displayStatus : ""
+  const statusClass = call ? displayStatusClass(call.displayStatus) : ""
 
   const handleCopy = (value: string) => {
     if (typeof navigator === "undefined") return
@@ -224,30 +222,4 @@ function formatDateTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date)
-}
-
-function statusToLabel(status: CallRecord["status"]) {
-  switch (status) {
-    case "ended":
-      return "完了"
-    case "missed":
-      return "不在"
-    case "in_call":
-      return "通話中"
-    default:
-      return "-"
-  }
-}
-
-function statusToClass(status: CallRecord["status"]) {
-  switch (status) {
-    case "ended":
-      return "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300"
-    case "missed":
-      return "bg-rose-500/15 text-rose-600 dark:text-rose-300"
-    case "in_call":
-      return "bg-sky-500/15 text-sky-600 dark:text-sky-300"
-    default:
-      return "bg-muted text-muted-foreground"
-  }
 }

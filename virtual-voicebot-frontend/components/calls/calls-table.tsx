@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { displayStatusClass } from "@/lib/call-display"
 import type { CallRecord } from "@/lib/mock-data"
 import { cn } from "@/lib/utils"
 
@@ -86,11 +87,11 @@ export function CallsTable({ calls, sortDirection, onSortToggle, onRowClick }: C
                 <TableCell className="text-sm">{finalActionLabel(call.finalAction)}</TableCell>
                 <TableCell className="text-sm">{transferStatusLabel(call.transferStatus)}</TableCell>
                 <TableCell className="font-mono text-xs">
-                  {formatDuration(call.durationSec)}
+                  {formatDuration(call.displayDurationSec)}
                 </TableCell>
                 <TableCell>
-                  <Badge className={cn("px-2 py-0.5 text-xs", statusClass(call.status))}>
-                    {statusLabel(call.status)}
+                  <Badge className={cn("px-2 py-0.5 text-xs", displayStatusClass(call.displayStatus))}>
+                    {call.displayStatus}
                   </Badge>
                 </TableCell>
                 <TableCell className="text-sm">
@@ -156,19 +157,6 @@ function DirectionBadge({ direction }: { direction: CallRecord["direction"] }) {
   )
 }
 
-function statusLabel(status: CallRecord["status"]) {
-  switch (status) {
-    case "ended":
-      return "完了"
-    case "missed":
-      return "不在"
-    case "in_call":
-      return "通話中"
-    default:
-      return "-"
-  }
-}
-
 function dispositionLabel(disposition: CallRecord["callDisposition"]) {
   switch (disposition) {
     case "allowed":
@@ -220,19 +208,6 @@ function transferStatusLabel(status: CallRecord["transferStatus"]) {
       return "転送失敗"
     default:
       return "-"
-  }
-}
-
-function statusClass(status: CallRecord["status"]) {
-  switch (status) {
-    case "ended":
-      return "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300"
-    case "missed":
-      return "bg-rose-500/15 text-rose-600 dark:text-rose-300"
-    case "in_call":
-      return "bg-sky-500/15 text-sky-600 dark:text-sky-300"
-    default:
-      return "bg-muted text-muted-foreground"
   }
 }
 
