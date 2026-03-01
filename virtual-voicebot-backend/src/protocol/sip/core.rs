@@ -624,12 +624,13 @@ impl SipCore {
         core
     }
 
-    fn is_outbound_invite_intent(&self, to_header: &str) -> bool {
+    fn is_outbound_invite_intent(&self, to_header: &str, from_header: &str) -> bool {
         let Some(registrar_user) = self.registrar_user.as_deref() else {
             return false;
         };
         let to_user = extract_user_from_to(to_header).unwrap_or_default();
-        to_user != registrar_user
+        let from_user = extract_user_from_to(from_header).unwrap_or_default();
+        to_user != registrar_user && from_user == registrar_user
     }
 
     /// SIP ソケットで受けた datagram を処理し、必要ならレスポンス送信と session へのイベントを返す。
@@ -897,7 +898,8 @@ impl SipCore {
             return vec![];
         }
 
-        let is_outbound_invite = self.is_outbound_invite_intent(headers.to.as_str());
+        let is_outbound_invite =
+            self.is_outbound_invite_intent(headers.to.as_str(), headers.from.as_str());
         if is_outbound_invite {
             if let Some(active) = &self.outbound_call_id {
                 if active != &headers.call_id {
@@ -2035,7 +2037,7 @@ mod tests {
 
         let req1 = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
             .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
-            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("From", "<sip:registered-user@example.com>;tag=alice")
             .header("To", "<sip:09011112222@example.com>")
             .header("Call-ID", "call-1")
             .header("CSeq", "1 INVITE")
@@ -2050,7 +2052,7 @@ mod tests {
 
         let req2 = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
             .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
-            .header("From", "<sip:carol@example.com>;tag=carol")
+            .header("From", "<sip:registered-user@example.com>;tag=carol")
             .header("To", "<sip:09033334444@example.com>")
             .header("Call-ID", "call-2")
             .header("CSeq", "1 INVITE")
@@ -2087,7 +2089,7 @@ mod tests {
 
         let outbound = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
             .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
-            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("From", "<sip:registered-user@example.com>;tag=alice")
             .header("To", "<sip:09011112222@example.com>")
             .header("Call-ID", "call-1")
             .header("CSeq", "1 INVITE")
@@ -2120,6 +2122,62 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "inbound invite should not trigger immediate busy response"
+        );
+    }
+
+    #[test]
+    fn external_invite_with_non_matching_to_is_not_rejected_as_busy() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut core = SipCore::new(
+            SipConfig {
+                advertised_ip: "127.0.0.1".to_string(),
+                sip_port: 5060,
+                advertised_rtp_port: 4000,
+            },
+            tx,
+        );
+        core.registrar_user = Some("09012345678".to_string());
+
+        let outbound = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:09012345678@example.com>;tag=alice")
+            .header("To", "<sip:09011112222@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let outbound_events = core.handle_input(&SipInput {
+            peer: dummy_peer(),
+            data: outbound.to_bytes(),
+        });
+        assert_eq!(outbound_events.len(), 1);
+        assert_eq!(
+            core.outbound_call_id.as_ref().map(|id| id.as_str()),
+            Some("call-1")
+        );
+
+        let inbound = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header(
+                "From",
+                "<sip:+819012345678@carrier.example.com>;tag=carrier",
+            )
+            .header("To", "<sip:+819012345678@carrier.example.com>")
+            .header("Call-ID", "call-2")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let inbound_events = core.handle_input(&SipInput {
+            peer: dummy_peer(),
+            data: inbound.to_bytes(),
+        });
+        assert_eq!(inbound_events.len(), 1);
+        assert_eq!(
+            core.outbound_call_id.as_ref().map(|id| id.as_str()),
+            Some("call-1")
+        );
+
+        assert!(
+            rx.try_recv().is_err(),
+            "carrier inbound invite should not be rejected by outbound busy lock"
         );
     }
 
@@ -2227,7 +2285,7 @@ mod tests {
 
         let invite = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
             .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
-            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("From", "<sip:registered-user@example.com>;tag=alice")
             .header("To", "<sip:09011112222@example.com>")
             .header("Call-ID", "call-1")
             .header("CSeq", "1 INVITE")
