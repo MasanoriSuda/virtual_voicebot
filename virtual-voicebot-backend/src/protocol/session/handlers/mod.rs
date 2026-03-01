@@ -1983,6 +1983,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invite_returns_503_when_outbound_cfg_missing_target() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx) = build_test_session(routing_port);
+        set_runtime_cfg_for_invite_judgment(&mut session, Some("09012345678"), "", &[]);
+        session.from_uri = "sip:09012345678@local".to_string();
+        session.to_uri = "sip:09028894539@domain".to_string();
+
+        let advance = session
+            .handle_control_event(SessState::Idle, build_invite_event("tc-273-05"))
+            .await;
+
+        assert!(
+            !advance,
+            "503 branch currently sets advance_state=false in handler"
+        );
+        assert!(session.invite_rejected);
+        assert!(!session.outbound_mode);
+
+        let mut saw_503 = false;
+        let mut saw_180 = false;
+        while let Ok((_call_id, out)) = session_out_rx.try_recv() {
+            match out {
+                SessionOut::SipSendError { code: 503, .. } => saw_503 = true,
+                SessionOut::SipSend180 => saw_180 = true,
+                _ => {}
+            }
+        }
+        assert!(saw_503, "outbound config failure should emit 503");
+        assert!(!saw_180, "503 branch must not emit inbound 180 Ringing");
+    }
+
+    #[tokio::test]
     async fn invite_to_registered_user_is_always_inbound() {
         let routing_port = Arc::new(NoopRoutingPort::new());
         let (mut session, mut session_out_rx) = build_test_session(routing_port);

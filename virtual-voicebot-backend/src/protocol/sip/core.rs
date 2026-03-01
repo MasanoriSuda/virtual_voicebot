@@ -12,7 +12,7 @@ use crate::protocol::sip::transaction::{
 };
 use crate::protocol::sip::transport::{SipTransportRequest, SipTransportTx};
 use crate::protocol::sip::types::{SipConfig, SipEvent};
-use crate::protocol::sip::{parse_name_addr, parse_uri};
+use crate::protocol::sip::utils::extract_user_from_to;
 use crate::protocol::transport::{SipInput, TransportPeer};
 use crate::shared::config;
 use crate::shared::entities::CallId;
@@ -181,34 +181,6 @@ fn invite_has_to_tag(req: &SipRequest) -> bool {
             .map(|key| key.trim().eq_ignore_ascii_case("tag"))
             .unwrap_or(false)
     })
-}
-
-fn extract_user_from_to(value: &str) -> Option<String> {
-    if let Ok(name_addr) = parse_name_addr(value) {
-        if name_addr.uri.scheme.eq_ignore_ascii_case("tel") && !name_addr.uri.host.trim().is_empty()
-        {
-            return Some(name_addr.uri.host);
-        }
-        if let Some(user) = name_addr.uri.user {
-            return Some(user);
-        }
-    }
-    let trimmed = value.trim();
-    let addr = if let Some(start) = trimmed.find('<') {
-        if let Some(end) = trimmed[start + 1..].find('>') {
-            &trimmed[start + 1..start + 1 + end]
-        } else {
-            trimmed
-        }
-    } else {
-        trimmed
-    };
-    let addr = addr.split(';').next().unwrap_or(addr).trim();
-    let uri = parse_uri(addr).ok()?;
-    if uri.scheme.eq_ignore_ascii_case("tel") && !uri.host.trim().is_empty() {
-        return Some(uri.host);
-    }
-    uri.user
 }
 
 fn header_has_token(value: Option<&str>, token: &str) -> bool {

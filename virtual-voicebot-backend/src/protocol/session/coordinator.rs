@@ -22,7 +22,7 @@ use crate::protocol::rtp::tx::RtpTxHandle;
 use crate::protocol::session::b2bua;
 use crate::protocol::session::capture::AudioCapture;
 use crate::protocol::session::timers::SessionTimers;
-use crate::protocol::sip::{parse_name_addr, parse_uri};
+use crate::protocol::sip::utils::extract_user_from_to;
 use crate::service::routing::normalize_phone_number_e164;
 use crate::shared::config::{self, SessionRuntimeConfig};
 use crate::shared::ports::app::{AppEventTx, AudioChunkTx};
@@ -916,35 +916,6 @@ async fn append_json_line(path: &Path, line: &str) -> std::io::Result<()> {
     file.write_all(payload.as_slice()).await?;
     file.flush().await?;
     Ok(())
-}
-
-fn extract_user_from_to(value: &str) -> Option<String> {
-    if let Ok(name_addr) = parse_name_addr(value) {
-        if name_addr.uri.scheme.eq_ignore_ascii_case("tel") && !name_addr.uri.host.trim().is_empty()
-        {
-            return Some(name_addr.uri.host);
-        }
-        if let Some(user) = name_addr.uri.user {
-            return Some(user);
-        }
-    }
-
-    let trimmed = value.trim();
-    let addr = if let Some(start) = trimmed.find('<') {
-        if let Some(end) = trimmed[start + 1..].find('>') {
-            &trimmed[start + 1..start + 1 + end]
-        } else {
-            trimmed
-        }
-    } else {
-        trimmed
-    };
-    let addr = addr.split(';').next().unwrap_or(addr).trim();
-    let uri = parse_uri(addr).ok()?;
-    if uri.scheme.eq_ignore_ascii_case("tel") && !uri.host.trim().is_empty() {
-        return Some(uri.host);
-    }
-    uri.user
 }
 
 #[cfg(test)]
