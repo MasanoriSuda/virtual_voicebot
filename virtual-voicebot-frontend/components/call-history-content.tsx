@@ -10,6 +10,7 @@ import { FilterBar, isWithinRange, directionLabel } from "@/components/calls/fil
 import { CallsTable } from "@/components/calls/calls-table"
 import { CallDetailDrawer } from "@/components/calls/call-detail-drawer"
 import { Button } from "@/components/ui/button"
+import { resolveDisplayDuration, resolveDisplayStatus } from "@/lib/call-display"
 import {
   Select,
   SelectContent,
@@ -93,8 +94,8 @@ export function CallHistoryContent({ initialCalls }: CallHistoryContentProps) {
       dispositionLabel(call.callDisposition),
       finalActionLabel(call.finalAction),
       transferStatusLabel(call.transferStatus),
-      formatDuration(call.durationSec),
-      statusLabel(call.status),
+      formatDuration(call.displayDurationSec),
+      call.displayStatus,
     ])
 
     const csvContent = [headers, ...rows].map((row) => row.join(",")).join("\n")
@@ -203,6 +204,8 @@ function toRecord(call: Call): CallRecord {
     finalAction: call.finalAction,
     transferStatus: call.transferStatus,
     durationSec: call.durationSec ?? 0,
+    displayStatus: resolveDisplayStatus(call),
+    displayDurationSec: resolveDisplayDuration(call),
     summary: "",
     recordingUrl: null,
     direction,
@@ -309,17 +312,4 @@ function formatDateTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date)
-}
-
-function statusLabel(status: CallRecord["status"]) {
-  switch (status) {
-    case "ended":
-      return "完了"
-    case "missed":
-      return "不在"
-    case "in_call":
-      return "通話中"
-    default:
-      return "-"
-  }
 }
