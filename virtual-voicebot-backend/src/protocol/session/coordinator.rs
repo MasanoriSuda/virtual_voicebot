@@ -967,8 +967,18 @@ mod tests {
     impl CallLogPort for DummyCallLogPort {
         fn persist_call_ended(
             &self,
-            _call_log: EndedCallLog,
+            call_log: EndedCallLog,
         ) -> crate::shared::ports::call_log_port::CallLogFuture<()> {
+            assert!(
+                matches!(call_log.direction.as_str(), "inbound" | "outbound"),
+                "direction must be inbound/outbound"
+            );
+            if call_log.direction == "inbound" {
+                assert!(
+                    call_log.callee_number.is_none(),
+                    "inbound call log must not carry callee_number"
+                );
+            }
             Box::pin(async { Ok(()) })
         }
     }
@@ -977,6 +987,8 @@ mod tests {
     struct FailingThenSucceedingState {
         attempts: usize,
         ivr_event_counts: Vec<usize>,
+        directions: Vec<String>,
+        callee_numbers: Vec<Option<String>>,
     }
 
     struct FailingThenSucceedingCallLogPort {
@@ -999,6 +1011,8 @@ mod tests {
                 let mut guard = state.lock().expect("state lock should be available");
                 guard.attempts += 1;
                 guard.ivr_event_counts.push(call_log.ivr_events.len());
+                guard.directions.push(call_log.direction.clone());
+                guard.callee_numbers.push(call_log.callee_number.clone());
                 if guard.attempts == 1 {
                     return Err(CallLogPortError::WriteFailed(
                         "simulated transient failure".into(),
@@ -1476,6 +1490,11 @@ mod tests {
         let guard = state.lock().expect("state lock should be available");
         assert_eq!(guard.attempts, 2);
         assert_eq!(guard.ivr_event_counts, vec![1, 1]);
+        assert_eq!(
+            guard.directions,
+            vec!["inbound".to_string(), "inbound".to_string()]
+        );
+        assert_eq!(guard.callee_numbers, vec![None, None]);
     }
 
     #[tokio::test]

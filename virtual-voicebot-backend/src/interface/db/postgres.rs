@@ -38,6 +38,15 @@ use crate::shared::ports::sync_outbox_port::{
 
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_CONNECTIONS: u32 = 5;
+const INSERT_CALL_LOG_SQL: &str = "INSERT INTO call_logs (
+                    id, started_at, external_call_id, sip_call_id, caller_number, caller_category,
+                    direction, callee_number, action_code, ivr_flow_id, answered_at, ended_at, duration_sec, end_reason, status,
+                    call_disposition, final_action, transfer_status,
+                    transfer_started_at, transfer_answered_at, transfer_ended_at
+                 ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                    $14, $15, $16, $17, $18, $19, $20, $21
+                 )";
 
 pub struct PostgresAdapter {
     pool: PgPool,
@@ -727,6 +736,31 @@ impl PostgresAdapter {
     }
 }
 
+fn build_call_log_sync_payload(call_log: &EndedCallLog) -> Value {
+    json!({
+        "id": call_log.id.to_string(),
+        "externalCallId": call_log.external_call_id.clone(),
+        "sipCallId": call_log.sip_call_id.clone(),
+        "callerNumber": call_log.caller_number.clone(),
+        "direction": call_log.direction.clone(),
+        "calleeNumber": call_log.callee_number.clone(),
+        "callerCategory": call_log.caller_category.clone(),
+        "actionCode": call_log.action_code.clone(),
+        "startedAt": call_log.started_at.to_rfc3339(),
+        "answeredAt": call_log.answered_at.as_ref().map(DateTime::to_rfc3339),
+        "endedAt": call_log.ended_at.to_rfc3339(),
+        "durationSec": call_log.duration_sec,
+        "endReason": call_log.end_reason.clone(),
+        "status": call_log.status.clone(),
+        "callDisposition": call_log.call_disposition.clone(),
+        "finalAction": call_log.final_action.clone(),
+        "transferStatus": call_log.transfer_status.clone(),
+        "transferStartedAt": call_log.transfer_started_at.as_ref().map(DateTime::to_rfc3339),
+        "transferAnsweredAt": call_log.transfer_answered_at.as_ref().map(DateTime::to_rfc3339),
+        "transferEndedAt": call_log.transfer_ended_at.as_ref().map(DateTime::to_rfc3339),
+    })
+}
+
 impl PhoneLookupPort for PostgresAdapter {
     fn lookup_phone(&self, phone_number: String) -> PhoneLookupFuture {
         let pool = self.pool.clone();
@@ -747,41 +781,31 @@ impl CallLogPort for PostgresAdapter {
                 .await
                 .map_err(map_call_log_write_err)?;
 
-            sqlx::query(
-                "INSERT INTO call_logs (
-                    id, started_at, external_call_id, sip_call_id, caller_number, caller_category,
-                    direction, callee_number, action_code, ivr_flow_id, answered_at, ended_at, duration_sec, end_reason, status,
-                    call_disposition, final_action, transfer_status,
-                    transfer_started_at, transfer_answered_at, transfer_ended_at
-                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                    $14, $15, $16, $17, $18, $19, $20, $21
-                 )",
-            )
-            .bind(call_log.id)
-            .bind(call_log.started_at)
-            .bind(call_log.external_call_id.clone())
-            .bind(Some(call_log.sip_call_id.clone()))
-            .bind(call_log.caller_number.clone())
-            .bind(call_log.caller_category.clone())
-            .bind(call_log.direction.clone())
-            .bind(call_log.callee_number.clone())
-            .bind(call_log.action_code.clone())
-            .bind(call_log.ivr_flow_id)
-            .bind(call_log.answered_at)
-            .bind(call_log.ended_at)
-            .bind(call_log.duration_sec)
-            .bind(call_log.end_reason.clone())
-            .bind(call_log.status.clone())
-            .bind(call_log.call_disposition.clone())
-            .bind(call_log.final_action.clone())
-            .bind(call_log.transfer_status.clone())
-            .bind(call_log.transfer_started_at)
-            .bind(call_log.transfer_answered_at)
-            .bind(call_log.transfer_ended_at)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_call_log_write_err)?;
+            sqlx::query(INSERT_CALL_LOG_SQL)
+                .bind(call_log.id)
+                .bind(call_log.started_at)
+                .bind(call_log.external_call_id.clone())
+                .bind(Some(call_log.sip_call_id.clone()))
+                .bind(call_log.caller_number.clone())
+                .bind(call_log.caller_category.clone())
+                .bind(call_log.direction.clone())
+                .bind(call_log.callee_number.clone())
+                .bind(call_log.action_code.clone())
+                .bind(call_log.ivr_flow_id)
+                .bind(call_log.answered_at)
+                .bind(call_log.ended_at)
+                .bind(call_log.duration_sec)
+                .bind(call_log.end_reason.clone())
+                .bind(call_log.status.clone())
+                .bind(call_log.call_disposition.clone())
+                .bind(call_log.final_action.clone())
+                .bind(call_log.transfer_status.clone())
+                .bind(call_log.transfer_started_at)
+                .bind(call_log.transfer_answered_at)
+                .bind(call_log.transfer_ended_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_call_log_write_err)?;
 
             sqlx::query(
                 "INSERT INTO sync_outbox (entity_type, entity_id, payload)
@@ -789,28 +813,7 @@ impl CallLogPort for PostgresAdapter {
             )
             .bind("call_log")
             .bind(call_log.id)
-            .bind(json!({
-                "id": call_log.id.to_string(),
-                "externalCallId": call_log.external_call_id.clone(),
-                "sipCallId": call_log.sip_call_id.clone(),
-                "callerNumber": call_log.caller_number.clone(),
-                "direction": call_log.direction.clone(),
-                "calleeNumber": call_log.callee_number.clone(),
-                "callerCategory": call_log.caller_category.clone(),
-                "actionCode": call_log.action_code.clone(),
-                "startedAt": call_log.started_at.to_rfc3339(),
-                "answeredAt": call_log.answered_at.as_ref().map(DateTime::to_rfc3339),
-                "endedAt": call_log.ended_at.to_rfc3339(),
-                "durationSec": call_log.duration_sec,
-                "endReason": call_log.end_reason.clone(),
-                "status": call_log.status.clone(),
-                "callDisposition": call_log.call_disposition.clone(),
-                "finalAction": call_log.final_action.clone(),
-                "transferStatus": call_log.transfer_status.clone(),
-                "transferStartedAt": call_log.transfer_started_at.as_ref().map(DateTime::to_rfc3339),
-                "transferAnsweredAt": call_log.transfer_answered_at.as_ref().map(DateTime::to_rfc3339),
-                "transferEndedAt": call_log.transfer_ended_at.as_ref().map(DateTime::to_rfc3339),
-            }))
+            .bind(build_call_log_sync_payload(&call_log))
             .execute(&mut *tx)
             .await
             .map_err(map_call_log_write_err)?;
@@ -1217,4 +1220,65 @@ fn map_sync_outbox_write_err(
     err: sqlx::Error,
 ) -> crate::shared::ports::sync_outbox_port::SyncOutboxError {
     crate::shared::ports::sync_outbox_port::SyncOutboxError::WriteFailed(err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    fn sample_ended_call_log() -> EndedCallLog {
+        let now = Utc::now();
+        EndedCallLog {
+            id: Uuid::now_v7(),
+            started_at: now,
+            ended_at: now,
+            duration_sec: Some(10),
+            external_call_id: "external-1".to_string(),
+            sip_call_id: "sip-1".to_string(),
+            caller_number: Some("+819011112222".to_string()),
+            direction: "outbound".to_string(),
+            callee_number: Some("09012345678".to_string()),
+            caller_category: "registered".to_string(),
+            action_code: "VR".to_string(),
+            ivr_flow_id: None,
+            answered_at: None,
+            end_reason: "normal".to_string(),
+            status: "ended".to_string(),
+            call_disposition: "allowed".to_string(),
+            final_action: Some("normal_call".to_string()),
+            transfer_status: "answered".to_string(),
+            transfer_started_at: None,
+            transfer_answered_at: None,
+            transfer_ended_at: None,
+            ivr_events: Vec::new(),
+            recording: None,
+        }
+    }
+
+    #[test]
+    fn persist_call_ended_insert_sql_has_direction_and_callee_number_columns() {
+        assert!(INSERT_CALL_LOG_SQL.contains("direction, callee_number"));
+    }
+
+    #[test]
+    fn call_log_sync_payload_includes_direction_and_callee_number() {
+        let call_log = sample_ended_call_log();
+        let payload = build_call_log_sync_payload(&call_log);
+
+        assert_eq!(payload["direction"], "outbound");
+        assert_eq!(payload["calleeNumber"], "09012345678");
+    }
+
+    #[test]
+    fn call_log_sync_payload_sets_null_callee_number_for_inbound() {
+        let mut call_log = sample_ended_call_log();
+        call_log.direction = "inbound".to_string();
+        call_log.callee_number = None;
+        let payload = build_call_log_sync_payload(&call_log);
+
+        assert_eq!(payload["direction"], "inbound");
+        assert!(payload["calleeNumber"].is_null());
+    }
 }

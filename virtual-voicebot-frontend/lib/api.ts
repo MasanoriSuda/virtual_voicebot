@@ -55,11 +55,12 @@ function asISOString(value: string | null | undefined, fallback = new Date().toI
 }
 
 function mapStoredCallToCall(callLog: StoredCallLog): Call {
+  const isOutbound = callLog.direction === "outbound" || callLog.actionCode === "AR"
   return {
     id: callLog.id,
     externalCallId: callLog.externalCallId,
     callerNumber: callLog.callerNumber,
-    direction: callLog.direction === "outbound" ? "outbound" : "inbound",
+    direction: isOutbound ? "outbound" : "inbound",
     calleeNumber: callLog.calleeNumber ?? null,
     callerCategory: (callLog.callerCategory as Call["callerCategory"]) ?? "unknown",
     actionCode: (callLog.actionCode as Call["actionCode"]) ?? "IV",
