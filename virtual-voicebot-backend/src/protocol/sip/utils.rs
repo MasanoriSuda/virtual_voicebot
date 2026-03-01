@@ -5,7 +5,7 @@ use crate::protocol::sip::{parse_name_addr, parse_uri};
 /// Attempts to parse a name-addr or raw URI and returns the URI user component when present;
 /// for `tel:` URIs it returns the telephone host (digits) if non-empty. Returns `None` when no
 /// suitable user/telephone could be parsed.
-pub fn extract_user_from_to(value: &str) -> Option<String> {
+pub(crate) fn extract_user_from_to(value: &str) -> Option<String> {
     if let Ok(name_addr) = parse_name_addr(value) {
         if name_addr.uri.scheme.eq_ignore_ascii_case("tel") && !name_addr.uri.host.trim().is_empty()
         {

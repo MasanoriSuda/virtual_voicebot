@@ -126,6 +126,7 @@ impl SessionCoordinator {
                                 "[session {}] outbound rejected (missing config)",
                                 self.call_id
                             );
+                            self.send_ingest("ended").await;
                             let _ = self.session_out_tx.try_send((
                                 self.call_id.clone(),
                                 SessionOut::SipSendError {
@@ -134,7 +135,7 @@ impl SessionCoordinator {
                                 },
                             ));
                             self.invite_rejected = true;
-                            advance_state = false;
+                            return false;
                         } else if let Some(number) = target {
                             self.outbound_mode = true;
                             self.ivr_state = IvrState::Transferring;

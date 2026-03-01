@@ -14,7 +14,7 @@ pub mod transaction;
 pub mod transport;
 pub mod tx;
 pub mod types;
-pub mod utils;
+pub(crate) mod utils;
 
 #[allow(unused_imports)]
 pub use message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};
@@ -29,4 +29,3 @@ pub use protocols::*;
 
 pub use core::{parse_offer_sdp, SipCore};
 pub use types::{SipCommand, SipConfig, SipEvent};
-pub use utils::extract_user_from_to;

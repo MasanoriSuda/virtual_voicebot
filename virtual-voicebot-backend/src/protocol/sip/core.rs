@@ -600,8 +600,12 @@ impl SipCore {
         let Some(registrar_user) = self.registrar_user.as_deref() else {
             return false;
         };
-        let to_user = extract_user_from_to(to_header).unwrap_or_default();
-        let from_user = extract_user_from_to(from_header).unwrap_or_default();
+        let Some(to_user) = extract_user_from_to(to_header) else {
+            return false;
+        };
+        let Some(from_user) = extract_user_from_to(from_header) else {
+            return false;
+        };
         to_user != registrar_user && from_user == registrar_user
     }
 
