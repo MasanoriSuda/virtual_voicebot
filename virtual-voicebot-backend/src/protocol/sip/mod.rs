@@ -14,6 +14,7 @@ pub mod transaction;
 pub mod transport;
 pub mod tx;
 pub mod types;
+pub(crate) mod utils;
 
 #[allow(unused_imports)]
 pub use message::{SipHeader, SipMessage, SipMethod, SipRequest, SipResponse};

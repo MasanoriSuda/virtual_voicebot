@@ -533,7 +533,6 @@ pub fn registrar_config() -> Option<&'static RegistrarConfig> {
 
 #[derive(Clone, Debug)]
 pub struct OutboundConfig {
-    pub enabled: bool,
     pub domain: String,
     pub default_number: Option<String>,
     pub dial_plan: HashMap<String, String>,
@@ -541,17 +540,12 @@ pub struct OutboundConfig {
 
 impl OutboundConfig {
     fn from_env_with(registrar: Option<&RegistrarConfig>) -> Self {
-        let enabled = env_bool("OUTBOUND_ENABLED", false);
         let default_number = env_non_empty("OUTBOUND_DEFAULT_NUMBER");
         let dial_plan = load_dial_plan();
         let domain = env_non_empty("OUTBOUND_DOMAIN")
             .or_else(|| registrar.map(|cfg| cfg.domain.clone()))
             .unwrap_or_default();
-        if enabled && domain.is_empty() {
-            log::warn!("[config] OUTBOUND_ENABLED is true but no outbound domain configured");
-        }
         Self {
-            enabled,
             domain,
             default_number,
             dial_plan,
@@ -972,7 +966,6 @@ mod tests {
         let mut dial_plan = HashMap::new();
         dial_plan.insert("100".to_string(), "09012345678".to_string());
         let cfg = OutboundConfig {
-            enabled: true,
             domain: "example.com".to_string(),
             default_number: Some("09000000000".to_string()),
             dial_plan,

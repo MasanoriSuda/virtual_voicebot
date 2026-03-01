@@ -110,34 +110,37 @@ impl SessionCoordinator {
                     return false;
                 }
 
-                if self.runtime_cfg.outbound.enabled {
-                    let outbound_cfg = &self.runtime_cfg.outbound;
-                    let registrar = self.runtime_cfg.registrar.as_ref();
-                    let user =
-                        sip_handler::extract_user_from_to(self.to_uri.as_str()).unwrap_or_default();
-                    let skip_outbound = registrar.map(|cfg| cfg.user == user).unwrap_or(false);
-                    if !skip_outbound {
-                        let target = outbound_cfg.resolve_number(user.as_str());
-                        if outbound_cfg.domain.is_empty() || registrar.is_none() || target.is_none()
-                        {
-                            warn!(
-                                "[session {}] outbound disabled (missing config)",
-                                self.call_id
-                            );
-                            let _ = self.session_out_tx.try_send((
-                                self.call_id.clone(),
-                                SessionOut::SipSendError {
-                                    code: 503,
-                                    reason: "Service Unavailable".to_string(),
-                                },
-                            ));
-                            self.invite_rejected = true;
-                            advance_state = false;
-                        } else {
-                            self.outbound_mode = true;
-                            self.ivr_state = IvrState::Transferring;
-                            if let Some(number) = target {
-                                self.transfer_cancel = Some(b2bua::spawn_outbound(
+                let outbound_cfg = &self.runtime_cfg.outbound;
+                let registrar = self.runtime_cfg.registrar.as_ref();
+                let to_user = sip_handler::extract_user_from_to(self.to_uri.as_str());
+                let from_user = sip_handler::extract_user_from_to(self.from_uri.as_str());
+                if let Some(registrar) = registrar {
+                    if let (Some(to_user), Some(from_user)) =
+                        (to_user.as_deref(), from_user.as_deref())
+                    {
+                        let is_outbound_intent =
+                            registrar.user != to_user && registrar.user == from_user;
+                        if is_outbound_intent {
+                            let target = outbound_cfg.resolve_number(to_user);
+                            if outbound_cfg.domain.is_empty() || target.is_none() {
+                                warn!(
+                                    "[session {}] outbound rejected (missing config)",
+                                    self.call_id
+                                );
+                                let _ = self.session_out_tx.try_send((
+                                    self.call_id.clone(),
+                                    SessionOut::SipSendError {
+                                        code: 503,
+                                        reason: "Service Unavailable".to_string(),
+                                    },
+                                ));
+                                self.send_ingest("ended").await;
+                                self.invite_rejected = true;
+                                return false;
+                            } else if let Some(number) = target {
+                                self.outbound_mode = true;
+                                self.ivr_state = IvrState::Transferring;
+                                self.transfer_cancel = Some(b2bua::spawn_plain_outbound(
                                     self.call_id.clone(),
                                     self.from_uri.clone(),
                                     number,
@@ -1478,7 +1481,9 @@ mod tests {
     use crate::protocol::session::types::{
         CallId, IvrState, MediaConfig, Sdp, SessState, SessionControlIn, SessionOut,
     };
-    use crate::shared::config::SessionRuntimeConfig;
+    use crate::shared::config::{
+        OutboundConfig, RegistrarConfig, RegistrarTransport, SessionRuntimeConfig,
+    };
     use crate::shared::ports::app::app_event_channel;
     use crate::shared::ports::call_log_port::{CallLogPort, EndedCallLog};
     use crate::shared::ports::ingest::{IngestError, IngestFuture, IngestPayload, IngestPort};
@@ -1488,6 +1493,8 @@ mod tests {
     };
     use crate::shared::ports::storage::{StorageError, StoragePort};
     use serde_json::Value;
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
     use tokio::time::Duration;
@@ -1692,7 +1699,9 @@ mod tests {
             mpsc::channel(super::super::SESSION_CONTROL_CHANNEL_CAPACITY);
         let (media_tx, _media_rx) = mpsc::channel(super::super::SESSION_MEDIA_CHANNEL_CAPACITY);
         let base_cfg = crate::shared::config::Config::from_env().expect("config loads");
-        let runtime_cfg = Arc::new(SessionRuntimeConfig::from_env(&base_cfg));
+        let mut runtime_cfg = SessionRuntimeConfig::from_env(&base_cfg);
+        runtime_cfg.registrar = None;
+        let runtime_cfg = Arc::new(runtime_cfg);
 
         let session = SessionCoordinator {
             state_machine: SessionStateMachine::new(),
@@ -1785,6 +1794,51 @@ mod tests {
         (session, session_out_rx)
     }
 
+    fn test_registrar(user: &str) -> RegistrarConfig {
+        RegistrarConfig {
+            addr: "127.0.0.1:5060"
+                .parse::<SocketAddr>()
+                .expect("test registrar addr"),
+            domain: "example.com".to_string(),
+            user: user.to_string(),
+            contact_host: "127.0.0.1".to_string(),
+            contact_port: 5060,
+            expires: 3600,
+            transport: RegistrarTransport::Udp,
+            auth_username: user.to_string(),
+            auth_password: None,
+        }
+    }
+
+    fn set_runtime_cfg_for_invite_judgment(
+        session: &mut SessionCoordinator,
+        registrar_user: Option<&str>,
+        outbound_domain: &str,
+        dial_plan: &[(&str, &str)],
+    ) {
+        let mut runtime_cfg = (*session.runtime_cfg).clone();
+        runtime_cfg.registrar = registrar_user.map(test_registrar);
+        runtime_cfg.outbound = OutboundConfig {
+            domain: outbound_domain.to_string(),
+            default_number: None,
+            dial_plan: dial_plan
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect::<HashMap<_, _>>(),
+        };
+        session.runtime_cfg = Arc::new(runtime_cfg);
+    }
+
+    fn build_invite_event(call_id: &str) -> SessionControlIn {
+        SessionControlIn::SipInvite {
+            call_id: CallId::new(call_id.to_string()).expect("valid call id"),
+            from: "sip:from@example.com".to_string(),
+            to: "sip:to@example.com".to_string(),
+            offer: Sdp::pcmu("127.0.0.1", 10000),
+            session_timer: None,
+        }
+    }
+
     fn voicebot_destination() -> IvrDestinationRow {
         IvrDestinationRow {
             transition_id: Uuid::from_u128(0x10),
@@ -1852,6 +1906,210 @@ mod tests {
         assert_eq!(normalize_max_retries(-1), 2);
         assert_eq!(normalize_max_retries(0), 0);
         assert_eq!(normalize_max_retries(3), 3);
+    }
+
+    #[tokio::test]
+    async fn invite_with_non_matching_from_user_is_treated_as_inbound() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx) = build_test_session(routing_port);
+        set_runtime_cfg_for_invite_judgment(
+            &mut session,
+            Some("09012345678"),
+            "example.com",
+            &[("+819012345678", "09028894539")],
+        );
+        session.from_uri = "sip:+819012345678@carrier.example.com".to_string();
+        session.to_uri = "sip:+819012345678@carrier.example.com".to_string();
+
+        let advance = session
+            .handle_control_event(SessState::Idle, build_invite_event("tc-273-01"))
+            .await;
+
+        assert!(advance);
+        assert!(!session.outbound_mode);
+        assert!(!session.invite_rejected);
+
+        let mut saw_180 = false;
+        let mut saw_error = false;
+        while let Ok((_call_id, out)) = session_out_rx.try_recv() {
+            match out {
+                SessionOut::SipSend180 => saw_180 = true,
+                SessionOut::SipSendError { .. } => saw_error = true,
+                _ => {}
+            }
+        }
+        assert!(saw_180, "inbound invite should emit 180 Ringing");
+        assert!(
+            !saw_error,
+            "carrier inbound invite must not be rejected as outbound"
+        );
+    }
+
+    #[tokio::test]
+    async fn invite_from_registered_user_and_non_matching_to_is_outbound() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx) = build_test_session(routing_port);
+        set_runtime_cfg_for_invite_judgment(&mut session, Some("09012345678"), "example.com", &[]);
+        session.from_uri = "sip:09012345678@local".to_string();
+        session.to_uri = "sip:09028894539@domain".to_string();
+
+        let advance = session
+            .handle_control_event(SessState::Idle, build_invite_event("tc-273-02"))
+            .await;
+
+        assert!(advance);
+        assert!(session.outbound_mode);
+        assert_eq!(session.ivr_state, IvrState::Transferring);
+        assert!(session.transfer_cancel.is_some());
+
+        let mut saw_100 = false;
+        let mut saw_180 = false;
+        let mut saw_error = false;
+        while let Ok((_call_id, out)) = session_out_rx.try_recv() {
+            match out {
+                SessionOut::SipSend100 => saw_100 = true,
+                SessionOut::SipSend180 => saw_180 = true,
+                SessionOut::SipSendError { .. } => saw_error = true,
+                _ => {}
+            }
+        }
+        assert!(saw_100, "outbound invite should still emit 100 Trying");
+        assert!(
+            !saw_180,
+            "outbound invite must not emit inbound 180 Ringing"
+        );
+        assert!(!saw_error, "outbound invite should not be rejected");
+
+        if let Some(cancel) = session.transfer_cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
+
+    #[tokio::test]
+    async fn invite_returns_503_when_outbound_cfg_missing_target() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx) = build_test_session(routing_port);
+        set_runtime_cfg_for_invite_judgment(&mut session, Some("09012345678"), "", &[]);
+        session.from_uri = "sip:09012345678@local".to_string();
+        session.to_uri = "sip:09028894539@domain".to_string();
+
+        let advance = session
+            .handle_control_event(SessState::Idle, build_invite_event("tc-273-05"))
+            .await;
+
+        assert!(
+            !advance,
+            "503 branch currently sets advance_state=false in handler"
+        );
+        assert!(session.invite_rejected);
+        assert!(!session.outbound_mode);
+
+        let mut saw_503 = false;
+        let mut saw_180 = false;
+        while let Ok((_call_id, out)) = session_out_rx.try_recv() {
+            match out {
+                SessionOut::SipSendError { code: 503, .. } => saw_503 = true,
+                SessionOut::SipSend180 => saw_180 = true,
+                _ => {}
+            }
+        }
+        assert!(saw_503, "outbound config failure should emit 503");
+        assert!(!saw_180, "503 branch must not emit inbound 180 Ringing");
+    }
+
+    #[tokio::test]
+    async fn invite_to_registered_user_is_always_inbound() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx) = build_test_session(routing_port);
+        set_runtime_cfg_for_invite_judgment(&mut session, Some("09012345678"), "example.com", &[]);
+        session.from_uri = "sip:+819099998888@carrier.example.com".to_string();
+        session.to_uri = "sip:09012345678@domain".to_string();
+
+        let advance = session
+            .handle_control_event(SessState::Idle, build_invite_event("tc-273-03"))
+            .await;
+
+        assert!(advance);
+        assert!(!session.outbound_mode);
+        assert!(!session.invite_rejected);
+
+        let mut saw_180 = false;
+        let mut saw_error = false;
+        while let Ok((_call_id, out)) = session_out_rx.try_recv() {
+            match out {
+                SessionOut::SipSend180 => saw_180 = true,
+                SessionOut::SipSendError { .. } => saw_error = true,
+                _ => {}
+            }
+        }
+        assert!(saw_180, "registered To user should stay inbound");
+        assert!(!saw_error, "registered To user must not be rejected");
+    }
+
+    #[tokio::test]
+    async fn invite_is_inbound_when_registrar_is_not_configured() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx) = build_test_session(routing_port);
+        set_runtime_cfg_for_invite_judgment(
+            &mut session,
+            None,
+            "example.com",
+            &[("09028894539", "09028894539")],
+        );
+        session.from_uri = "sip:09012345678@local".to_string();
+        session.to_uri = "sip:09028894539@domain".to_string();
+
+        let advance = session
+            .handle_control_event(SessState::Idle, build_invite_event("tc-273-04"))
+            .await;
+
+        assert!(advance);
+        assert!(!session.outbound_mode);
+        assert!(!session.invite_rejected);
+
+        let mut saw_180 = false;
+        let mut saw_error = false;
+        while let Ok((_call_id, out)) = session_out_rx.try_recv() {
+            match out {
+                SessionOut::SipSend180 => saw_180 = true,
+                SessionOut::SipSendError { .. } => saw_error = true,
+                _ => {}
+            }
+        }
+        assert!(saw_180, "without registrar the call should remain inbound");
+        assert!(!saw_error, "registrar unset should not reject INVITE");
+    }
+
+    #[tokio::test]
+    async fn invite_with_malformed_to_is_treated_as_inbound_without_rejection() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx) = build_test_session(routing_port);
+        set_runtime_cfg_for_invite_judgment(&mut session, Some("09012345678"), "example.com", &[]);
+        session.from_uri = "sip:09012345678@local".to_string();
+        session.to_uri = "invalid to header".to_string();
+
+        let advance = session
+            .handle_control_event(SessState::Idle, build_invite_event("tc-273-06"))
+            .await;
+
+        assert!(advance);
+        assert!(!session.outbound_mode);
+        assert!(!session.invite_rejected);
+
+        let mut saw_180 = false;
+        let mut saw_error = false;
+        while let Ok((_call_id, out)) = session_out_rx.try_recv() {
+            match out {
+                SessionOut::SipSend180 => saw_180 = true,
+                SessionOut::SipSendError { .. } => saw_error = true,
+                _ => {}
+            }
+        }
+        assert!(saw_180, "malformed To should still be handled as inbound");
+        assert!(
+            !saw_error,
+            "malformed To must not trigger outbound rejection path"
+        );
     }
 
     #[tokio::test]

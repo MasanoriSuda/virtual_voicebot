@@ -12,6 +12,7 @@ use crate::protocol::sip::transaction::{
 };
 use crate::protocol::sip::transport::{SipTransportRequest, SipTransportTx};
 use crate::protocol::sip::types::{SipConfig, SipEvent};
+use crate::protocol::sip::utils::extract_user_from_to;
 use crate::protocol::transport::{SipInput, TransportPeer};
 use crate::shared::config;
 use crate::shared::entities::CallId;
@@ -32,7 +33,8 @@ pub struct SipCore {
     non_invites: HashMap<CallId, NonInviteServerTransaction>,
     register: Option<Arc<Mutex<RegisterClient>>>,
     register_notify: Option<Arc<Notify>>,
-    active_call_id: Option<CallId>,
+    registrar_user: Option<String>,
+    outbound_call_id: Option<CallId>,
 }
 
 struct InviteContext {
@@ -566,8 +568,9 @@ fn spawn_register_task(
 
 impl SipCore {
     pub fn new(cfg: SipConfig, transport_tx: SipTransportTx) -> Self {
-        let register = config::registrar_config()
-            .cloned()
+        let registrar_cfg = config::registrar_config().cloned();
+        let registrar_user = registrar_cfg.as_ref().map(|cfg| cfg.user.clone());
+        let register = registrar_cfg
             .map(RegisterClient::new)
             .map(|client| Arc::new(Mutex::new(client)));
         let register_notify = register.as_ref().map(|_| Arc::new(Notify::new()));
@@ -586,10 +589,24 @@ impl SipCore {
             non_invites: std::collections::HashMap::new(),
             register,
             register_notify,
-            active_call_id: None,
+            registrar_user,
+            outbound_call_id: None,
         };
         core.maybe_send_register();
         core
+    }
+
+    fn is_outbound_invite_intent(&self, to_header: &str, from_header: &str) -> bool {
+        let Some(registrar_user) = self.registrar_user.as_deref() else {
+            return false;
+        };
+        let Some(to_user) = extract_user_from_to(to_header) else {
+            return false;
+        };
+        let Some(from_user) = extract_user_from_to(from_header) else {
+            return false;
+        };
+        to_user != registrar_user && from_user == registrar_user
     }
 
     /// SIP ソケットで受けた datagram を処理し、必要ならレスポンス送信と session へのイベントを返す。
@@ -857,17 +874,21 @@ impl SipCore {
             return vec![];
         }
 
-        if let Some(active) = &self.active_call_id {
-            if active != &headers.call_id {
-                log::info!(
-                    "[sip] busy (active call_id={}), rejecting {}",
-                    active,
-                    headers.call_id
-                );
-                if let Some(resp) = response_simple_from_request(&req, 486, "Busy Here") {
-                    self.send_payload(peer, resp.to_bytes());
+        let is_outbound_invite =
+            self.is_outbound_invite_intent(headers.to.as_str(), headers.from.as_str());
+        if is_outbound_invite {
+            if let Some(active) = &self.outbound_call_id {
+                if active != &headers.call_id {
+                    log::info!(
+                        "[sip] outbound busy (active call_id={}), rejecting {}",
+                        active,
+                        headers.call_id
+                    );
+                    if let Some(resp) = response_simple_from_request(&req, 486, "Busy Here") {
+                        self.send_payload(peer, resp.to_bytes());
+                    }
+                    return vec![];
                 }
-                return vec![];
             }
         }
 
@@ -906,7 +927,9 @@ impl SipCore {
             local_cseq: 0,
             expires_at: None,
         };
-        self.active_call_id = Some(headers.call_id.clone());
+        if is_outbound_invite {
+            self.outbound_call_id = Some(headers.call_id.clone());
+        }
         self.invites.insert(headers.call_id.clone(), ctx);
 
         let offer = parse_offer_sdp(&req.body).unwrap_or_else(|| Sdp::pcmu("0.0.0.0", 0));
@@ -1097,6 +1120,9 @@ impl SipCore {
         }
 
         if notify_session {
+            if self.outbound_call_id.as_ref() == Some(&call_id) {
+                self.outbound_call_id = None;
+            }
             log::info!("[sip cancel] accepted call_id={}", call_id);
             vec![SipEvent::Cancel { call_id }]
         } else {
@@ -1681,8 +1707,8 @@ impl SipCore {
                 }
             }
             SipCommand::SendError { code, reason } => {
-                if self.active_call_id.as_ref() == Some(call_id) {
-                    self.active_call_id = None;
+                if self.outbound_call_id.as_ref() == Some(call_id) {
+                    self.outbound_call_id = None;
                 }
                 let mut stop_reliable = false;
                 let mut send_payload = None;
@@ -1703,8 +1729,8 @@ impl SipCore {
                 }
             }
             SipCommand::SendBye => {
-                if self.active_call_id.as_ref() == Some(call_id) {
-                    self.active_call_id = None;
+                if self.outbound_call_id.as_ref() == Some(call_id) {
+                    self.outbound_call_id = None;
                 }
                 let (peer, payload) = if let Some(ctx) = self.invites.get_mut(call_id) {
                     let peer = ctx.tx.peer;
@@ -1721,8 +1747,8 @@ impl SipCore {
                 self.invites.remove(call_id);
             }
             SipCommand::SendBye200 => {
-                if self.active_call_id.as_ref() == Some(call_id) {
-                    self.active_call_id = None;
+                if self.outbound_call_id.as_ref() == Some(call_id) {
+                    self.outbound_call_id = None;
                 }
                 if let Some(tx) = self.non_invites.get_mut(call_id) {
                     if let Some(req) = tx.last_request.clone() {
@@ -1803,6 +1829,8 @@ impl SipCore {
     fn prune_expired(&mut self) -> Vec<SipEvent> {
         let now = Instant::now();
         let mut events = Vec::new();
+        let outbound_call_id = self.outbound_call_id.clone();
+        let mut clear_outbound_call = false;
         self.non_invites.retain(|call_id, tx| {
             let alive = tx.state != NonInviteTxState::Terminated && tx.expires_at > now;
             if !alive {
@@ -1818,12 +1846,18 @@ impl SipCore {
             };
             let alive = expires_at > now;
             if !alive {
+                if outbound_call_id.as_ref() == Some(call_id) {
+                    clear_outbound_call = true;
+                }
                 events.push(SipEvent::TransactionTimeout {
                     call_id: call_id.clone(),
                 });
             }
             alive
         });
+        if clear_outbound_call {
+            self.outbound_call_id = None;
+        }
         events
     }
 }
@@ -1912,6 +1946,40 @@ mod tests {
     }
 
     #[test]
+    fn extract_user_from_to_extracts_user_from_sip_uri() {
+        assert_eq!(
+            extract_user_from_to("<sip:alice@example.com>;tag=123"),
+            Some("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_user_from_to_extracts_user_from_name_addr() {
+        assert_eq!(
+            extract_user_from_to("\"Alice\" <sip:alice@example.com>"),
+            Some("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_user_from_to_extracts_user_from_tel_uri() {
+        assert_eq!(
+            extract_user_from_to("<tel:+815012345678>"),
+            Some("+815012345678".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_user_from_to_returns_none_when_uri_has_no_user() {
+        assert_eq!(extract_user_from_to("<sip:example.com>"), None);
+    }
+
+    #[test]
+    fn extract_user_from_to_returns_none_for_invalid_header() {
+        assert_eq!(extract_user_from_to("invalid header"), None);
+    }
+
+    #[test]
     fn options_response_includes_allow_and_supported() {
         let (tx, mut rx) = mpsc::channel(16);
         let mut core = SipCore::new(
@@ -1965,7 +2033,7 @@ mod tests {
     }
 
     #[test]
-    fn invite_when_busy_returns_486() {
+    fn outbound_invite_when_busy_returns_486() {
         let (tx, mut rx) = mpsc::channel(16);
         let mut core = SipCore::new(
             SipConfig {
@@ -1975,11 +2043,12 @@ mod tests {
             },
             tx,
         );
+        core.registrar_user = Some("registered-user".to_string());
 
         let req1 = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
             .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
-            .header("From", "<sip:alice@example.com>;tag=alice")
-            .header("To", "<sip:bob@example.com>")
+            .header("From", "<sip:registered-user@example.com>;tag=alice")
+            .header("To", "<sip:09011112222@example.com>")
             .header("Call-ID", "call-1")
             .header("CSeq", "1 INVITE")
             .build();
@@ -1993,8 +2062,8 @@ mod tests {
 
         let req2 = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
             .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
-            .header("From", "<sip:carol@example.com>;tag=carol")
-            .header("To", "<sip:dave@example.com>")
+            .header("From", "<sip:registered-user@example.com>;tag=carol")
+            .header("To", "<sip:09033334444@example.com>")
             .header("Call-ID", "call-2")
             .header("CSeq", "1 INVITE")
             .build();
@@ -2013,6 +2082,113 @@ mod tests {
             _ => panic!("expected response"),
         };
         assert_eq!(resp.status_code, 486);
+    }
+
+    #[test]
+    fn inbound_invite_is_not_rejected_while_outbound_is_active() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut core = SipCore::new(
+            SipConfig {
+                advertised_ip: "127.0.0.1".to_string(),
+                sip_port: 5060,
+                advertised_rtp_port: 4000,
+            },
+            tx,
+        );
+        core.registrar_user = Some("registered-user".to_string());
+
+        let outbound = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:registered-user@example.com>;tag=alice")
+            .header("To", "<sip:09011112222@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let outbound_input = SipInput {
+            peer: dummy_peer(),
+            data: outbound.to_bytes(),
+        };
+        let outbound_events = core.handle_input(&outbound_input);
+        assert_eq!(outbound_events.len(), 1);
+        assert_eq!(
+            core.outbound_call_id.as_ref().map(|id| id.as_str()),
+            Some("call-1")
+        );
+
+        let inbound = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:carol@example.com>;tag=carol")
+            .header("To", "<sip:registered-user@example.com>")
+            .header("Call-ID", "call-2")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let inbound_input = SipInput {
+            peer: dummy_peer(),
+            data: inbound.to_bytes(),
+        };
+        let inbound_events = core.handle_input(&inbound_input);
+        assert_eq!(inbound_events.len(), 1);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "inbound invite should not trigger immediate busy response"
+        );
+    }
+
+    #[test]
+    fn external_invite_with_non_matching_to_is_not_rejected_as_busy() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut core = SipCore::new(
+            SipConfig {
+                advertised_ip: "127.0.0.1".to_string(),
+                sip_port: 5060,
+                advertised_rtp_port: 4000,
+            },
+            tx,
+        );
+        core.registrar_user = Some("09012345678".to_string());
+
+        let outbound = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:09012345678@example.com>;tag=alice")
+            .header("To", "<sip:09011112222@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let outbound_events = core.handle_input(&SipInput {
+            peer: dummy_peer(),
+            data: outbound.to_bytes(),
+        });
+        assert_eq!(outbound_events.len(), 1);
+        assert_eq!(
+            core.outbound_call_id.as_ref().map(|id| id.as_str()),
+            Some("call-1")
+        );
+
+        let inbound = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header(
+                "From",
+                "<sip:+819012345678@carrier.example.com>;tag=carrier",
+            )
+            .header("To", "<sip:+819012345678@carrier.example.com>")
+            .header("Call-ID", "call-2")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let inbound_events = core.handle_input(&SipInput {
+            peer: dummy_peer(),
+            data: inbound.to_bytes(),
+        });
+        assert_eq!(inbound_events.len(), 1);
+        assert_eq!(
+            core.outbound_call_id.as_ref().map(|id| id.as_str()),
+            Some("call-1")
+        );
+
+        assert!(
+            rx.try_recv().is_err(),
+            "carrier inbound invite should not be rejected by outbound busy lock"
+        );
     }
 
     #[test]
@@ -2102,6 +2278,56 @@ mod tests {
             _ => panic!("expected response"),
         };
         assert_eq!(resp.status_code, 200);
+    }
+
+    #[test]
+    fn cancel_clears_outbound_call_lock_for_matching_call() {
+        let (tx, _rx) = mpsc::channel(16);
+        let mut core = SipCore::new(
+            SipConfig {
+                advertised_ip: "127.0.0.1".to_string(),
+                sip_port: 5060,
+                advertised_rtp_port: 4000,
+            },
+            tx,
+        );
+        core.registrar_user = Some("registered-user".to_string());
+
+        let invite = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:registered-user@example.com>;tag=alice")
+            .header("To", "<sip:09011112222@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 INVITE")
+            .build();
+        let invite_input = SipInput {
+            peer: dummy_peer(),
+            data: invite.to_bytes(),
+        };
+        let invite_events = core.handle_input(&invite_input);
+        assert_eq!(invite_events.len(), 1);
+        assert_eq!(
+            core.outbound_call_id.as_ref().map(|id| id.as_str()),
+            Some("call-1")
+        );
+
+        let cancel = SipRequestBuilder::new(SipMethod::Cancel, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:09011112222@example.com>")
+            .header("Call-ID", "call-1")
+            .header("CSeq", "1 CANCEL")
+            .build();
+        let cancel_input = SipInput {
+            peer: dummy_peer(),
+            data: cancel.to_bytes(),
+        };
+        let cancel_events = core.handle_input(&cancel_input);
+        assert!(matches!(
+            cancel_events.as_slice(),
+            [SipEvent::Cancel { call_id }] if call_id.as_str() == "call-1"
+        ));
+        assert!(core.outbound_call_id.is_none());
     }
 
     #[test]
