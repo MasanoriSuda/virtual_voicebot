@@ -129,7 +129,7 @@ pub fn spawn_transfer(
     cancel_tx
 }
 
-pub fn spawn_outbound(
+pub fn spawn_plain_outbound(
     a_call_id: CallId,
     caller_uri: String,
     number: String,
@@ -173,6 +173,24 @@ pub fn spawn_outbound(
         }
     });
     cancel_tx
+}
+
+pub fn spawn_outbound(
+    a_call_id: CallId,
+    caller_uri: String,
+    number: String,
+    control_tx: mpsc::Sender<SessionControlIn>,
+    media_tx: mpsc::Sender<SessionMediaIn>,
+    runtime_cfg: Arc<SessionRuntimeConfig>,
+) -> tokio::sync::oneshot::Sender<()> {
+    spawn_plain_outbound(
+        a_call_id,
+        caller_uri,
+        number,
+        control_tx,
+        media_tx,
+        runtime_cfg,
+    )
 }
 
 async fn send_control_event_with_retry<F>(

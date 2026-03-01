@@ -110,18 +110,16 @@ impl SessionCoordinator {
                     return false;
                 }
 
-                if self.runtime_cfg.outbound.enabled {
-                    let outbound_cfg = &self.runtime_cfg.outbound;
-                    let registrar = self.runtime_cfg.registrar.as_ref();
-                    let user =
-                        sip_handler::extract_user_from_to(self.to_uri.as_str()).unwrap_or_default();
-                    let skip_outbound = registrar.map(|cfg| cfg.user == user).unwrap_or(false);
-                    if !skip_outbound {
-                        let target = outbound_cfg.resolve_number(user.as_str());
-                        if outbound_cfg.domain.is_empty() || registrar.is_none() || target.is_none()
-                        {
+                let outbound_cfg = &self.runtime_cfg.outbound;
+                let registrar = self.runtime_cfg.registrar.as_ref();
+                let to_user =
+                    sip_handler::extract_user_from_to(self.to_uri.as_str()).unwrap_or_default();
+                if let Some(registrar) = registrar {
+                    if registrar.user != to_user {
+                        let target = outbound_cfg.resolve_number(to_user.as_str());
+                        if outbound_cfg.domain.is_empty() || target.is_none() {
                             warn!(
-                                "[session {}] outbound disabled (missing config)",
+                                "[session {}] outbound rejected (missing config)",
                                 self.call_id
                             );
                             let _ = self.session_out_tx.try_send((
@@ -133,19 +131,17 @@ impl SessionCoordinator {
                             ));
                             self.invite_rejected = true;
                             advance_state = false;
-                        } else {
+                        } else if let Some(number) = target {
                             self.outbound_mode = true;
                             self.ivr_state = IvrState::Transferring;
-                            if let Some(number) = target {
-                                self.transfer_cancel = Some(b2bua::spawn_outbound(
-                                    self.call_id.clone(),
-                                    self.from_uri.clone(),
-                                    number,
-                                    self.control_tx.clone(),
-                                    self.media_tx.clone(),
-                                    self.runtime_cfg.clone(),
-                                ));
-                            }
+                            self.transfer_cancel = Some(b2bua::spawn_plain_outbound(
+                                self.call_id.clone(),
+                                self.from_uri.clone(),
+                                number,
+                                self.control_tx.clone(),
+                                self.media_tx.clone(),
+                                self.runtime_cfg.clone(),
+                            ));
                         }
                     }
                 }
@@ -1692,7 +1688,9 @@ mod tests {
             mpsc::channel(super::super::SESSION_CONTROL_CHANNEL_CAPACITY);
         let (media_tx, _media_rx) = mpsc::channel(super::super::SESSION_MEDIA_CHANNEL_CAPACITY);
         let base_cfg = crate::shared::config::Config::from_env().expect("config loads");
-        let runtime_cfg = Arc::new(SessionRuntimeConfig::from_env(&base_cfg));
+        let mut runtime_cfg = SessionRuntimeConfig::from_env(&base_cfg);
+        runtime_cfg.registrar = None;
+        let runtime_cfg = Arc::new(runtime_cfg);
 
         let session = SessionCoordinator {
             state_machine: SessionStateMachine::new(),
