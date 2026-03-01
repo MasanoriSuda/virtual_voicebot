@@ -112,41 +112,43 @@ impl SessionCoordinator {
 
                 let outbound_cfg = &self.runtime_cfg.outbound;
                 let registrar = self.runtime_cfg.registrar.as_ref();
-                let to_user =
-                    sip_handler::extract_user_from_to(self.to_uri.as_str()).unwrap_or_default();
-                let from_user =
-                    sip_handler::extract_user_from_to(self.from_uri.as_str()).unwrap_or_default();
+                let to_user = sip_handler::extract_user_from_to(self.to_uri.as_str());
+                let from_user = sip_handler::extract_user_from_to(self.from_uri.as_str());
                 if let Some(registrar) = registrar {
-                    let is_outbound_intent =
-                        registrar.user != to_user && registrar.user == from_user;
-                    if is_outbound_intent {
-                        let target = outbound_cfg.resolve_number(to_user.as_str());
-                        if outbound_cfg.domain.is_empty() || target.is_none() {
-                            warn!(
-                                "[session {}] outbound rejected (missing config)",
-                                self.call_id
-                            );
-                            self.send_ingest("ended").await;
-                            let _ = self.session_out_tx.try_send((
-                                self.call_id.clone(),
-                                SessionOut::SipSendError {
-                                    code: 503,
-                                    reason: "Service Unavailable".to_string(),
-                                },
-                            ));
-                            self.invite_rejected = true;
-                            return false;
-                        } else if let Some(number) = target {
-                            self.outbound_mode = true;
-                            self.ivr_state = IvrState::Transferring;
-                            self.transfer_cancel = Some(b2bua::spawn_plain_outbound(
-                                self.call_id.clone(),
-                                self.from_uri.clone(),
-                                number,
-                                self.control_tx.clone(),
-                                self.media_tx.clone(),
-                                self.runtime_cfg.clone(),
-                            ));
+                    if let (Some(to_user), Some(from_user)) =
+                        (to_user.as_deref(), from_user.as_deref())
+                    {
+                        let is_outbound_intent =
+                            registrar.user != to_user && registrar.user == from_user;
+                        if is_outbound_intent {
+                            let target = outbound_cfg.resolve_number(to_user);
+                            if outbound_cfg.domain.is_empty() || target.is_none() {
+                                warn!(
+                                    "[session {}] outbound rejected (missing config)",
+                                    self.call_id
+                                );
+                                self.send_ingest("ended").await;
+                                let _ = self.session_out_tx.try_send((
+                                    self.call_id.clone(),
+                                    SessionOut::SipSendError {
+                                        code: 503,
+                                        reason: "Service Unavailable".to_string(),
+                                    },
+                                ));
+                                self.invite_rejected = true;
+                                return false;
+                            } else if let Some(number) = target {
+                                self.outbound_mode = true;
+                                self.ivr_state = IvrState::Transferring;
+                                self.transfer_cancel = Some(b2bua::spawn_plain_outbound(
+                                    self.call_id.clone(),
+                                    self.from_uri.clone(),
+                                    number,
+                                    self.control_tx.clone(),
+                                    self.media_tx.clone(),
+                                    self.runtime_cfg.clone(),
+                                ));
+                            }
                         }
                     }
                 }
@@ -2076,6 +2078,38 @@ mod tests {
         }
         assert!(saw_180, "without registrar the call should remain inbound");
         assert!(!saw_error, "registrar unset should not reject INVITE");
+    }
+
+    #[tokio::test]
+    async fn invite_with_malformed_to_is_treated_as_inbound_without_rejection() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx) = build_test_session(routing_port);
+        set_runtime_cfg_for_invite_judgment(&mut session, Some("09012345678"), "example.com", &[]);
+        session.from_uri = "sip:09012345678@local".to_string();
+        session.to_uri = "invalid to header".to_string();
+
+        let advance = session
+            .handle_control_event(SessState::Idle, build_invite_event("tc-273-06"))
+            .await;
+
+        assert!(advance);
+        assert!(!session.outbound_mode);
+        assert!(!session.invite_rejected);
+
+        let mut saw_180 = false;
+        let mut saw_error = false;
+        while let Ok((_call_id, out)) = session_out_rx.try_recv() {
+            match out {
+                SessionOut::SipSend180 => saw_180 = true,
+                SessionOut::SipSendError { .. } => saw_error = true,
+                _ => {}
+            }
+        }
+        assert!(saw_180, "malformed To should still be handled as inbound");
+        assert!(
+            !saw_error,
+            "malformed To must not trigger outbound rejection path"
+        );
     }
 
     #[tokio::test]
