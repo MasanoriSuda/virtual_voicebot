@@ -127,7 +127,6 @@ impl SessionCoordinator {
                                     "[session {}] outbound rejected (missing config)",
                                     self.call_id
                                 );
-                                self.send_ingest("ended").await;
                                 let _ = self.session_out_tx.try_send((
                                     self.call_id.clone(),
                                     SessionOut::SipSendError {
@@ -135,6 +134,7 @@ impl SessionCoordinator {
                                         reason: "Service Unavailable".to_string(),
                                     },
                                 ));
+                                self.send_ingest("ended").await;
                                 self.invite_rejected = true;
                                 return false;
                             } else if let Some(number) = target {
