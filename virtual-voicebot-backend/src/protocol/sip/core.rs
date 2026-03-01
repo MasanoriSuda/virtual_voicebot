@@ -1970,6 +1970,40 @@ mod tests {
     }
 
     #[test]
+    fn extract_user_from_to_extracts_user_from_sip_uri() {
+        assert_eq!(
+            extract_user_from_to("<sip:alice@example.com>;tag=123"),
+            Some("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_user_from_to_extracts_user_from_name_addr() {
+        assert_eq!(
+            extract_user_from_to("\"Alice\" <sip:alice@example.com>"),
+            Some("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_user_from_to_extracts_user_from_tel_uri() {
+        assert_eq!(
+            extract_user_from_to("<tel:+815012345678>"),
+            Some("+815012345678".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_user_from_to_returns_none_when_uri_has_no_user() {
+        assert_eq!(extract_user_from_to("<sip:example.com>"), None);
+    }
+
+    #[test]
+    fn extract_user_from_to_returns_none_for_invalid_header() {
+        assert_eq!(extract_user_from_to("invalid header"), None);
+    }
+
+    #[test]
     fn options_response_includes_allow_and_supported() {
         let (tx, mut rx) = mpsc::channel(16);
         let mut core = SipCore::new(

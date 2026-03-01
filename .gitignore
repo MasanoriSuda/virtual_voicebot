@@ -1,5 +1,6 @@
 /virtual-voicebot-backend/target
 /virtual-voicebot-backend/storage/recordings
+/virtual-voicebot-backend/storage/notifications/*.jsonl
 /virtual-voicebot-frontend/storage/recordings
 /virtual-voicebot-frontend/storage/db
 /virtual-voicebot-backend/advenc_calendar
