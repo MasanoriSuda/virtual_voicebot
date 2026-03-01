@@ -59,6 +59,8 @@ function mapStoredCallToCall(callLog: StoredCallLog): Call {
     id: callLog.id,
     externalCallId: callLog.externalCallId,
     callerNumber: callLog.callerNumber,
+    direction: callLog.direction === "outbound" ? "outbound" : "inbound",
+    calleeNumber: callLog.calleeNumber ?? null,
     callerCategory: (callLog.callerCategory as Call["callerCategory"]) ?? "unknown",
     actionCode: (callLog.actionCode as Call["actionCode"]) ?? "IV",
     status: (callLog.status as Call["status"]) ?? "ended",
@@ -160,7 +162,7 @@ function toMockCallDetail(call: Call): CallDetail {
   return {
     ...call,
     from: call.callerNumber ?? "非通知",
-    to: view?.to ?? "未設定",
+    to: call.direction === "outbound" ? (call.calleeNumber ?? "未設定") : (view?.to ?? "未設定"),
     startTime: call.startedAt,
     duration: call.durationSec ?? 0,
     summary: view?.summary ?? "",
@@ -239,7 +241,7 @@ export async function getCallDetail(callId: string): Promise<CallDetail | null> 
   return {
     ...call,
     from: call.callerNumber ?? "非通知",
-    to: "未設定",
+    to: call.direction === "outbound" ? (call.calleeNumber ?? "未設定") : "未設定",
     startTime: call.startedAt,
     duration: call.durationSec ?? 0,
     summary,

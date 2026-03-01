@@ -20,6 +20,8 @@ export interface StoredCallLog {
   externalCallId: string
   sipCallId: string | null
   callerNumber: string | null
+  direction: string
+  calleeNumber: string | null
   callerCategory: string
   actionCode: string
   ivrFlowId: string | null
@@ -194,11 +196,14 @@ function asIsoDate(
 function normalizeCallLog(entityId: string, payload: unknown, nowIso: string): StoredCallLog {
   const input = isRecord(payload) ? payload : {}
   const id = asString(input, ["id"], entityId) ?? entityId
+  const direction = asString(input, ["direction"], "inbound")
   return {
     id,
     externalCallId: asString(input, ["externalCallId", "external_call_id"], id) ?? id,
     sipCallId: asString(input, ["sipCallId", "sip_call_id"], null),
     callerNumber: asString(input, ["callerNumber", "caller_number"], null),
+    direction: direction === "outbound" ? "outbound" : "inbound",
+    calleeNumber: asString(input, ["calleeNumber", "callee_number"], null),
     callerCategory: asString(input, ["callerCategory", "caller_category"], "unknown") ?? "unknown",
     actionCode: asString(input, ["actionCode", "action_code"], "IV") ?? "IV",
     ivrFlowId: asString(input, ["ivrFlowId", "ivr_flow_id"], null),

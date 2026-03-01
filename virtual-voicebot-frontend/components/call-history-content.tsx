@@ -189,14 +189,16 @@ export function CallHistoryContent({ initialCalls }: CallHistoryContentProps) {
 function toRecord(call: Call): CallRecord {
   const status = toStatus(call.status)
   const direction = toDirection(call)
+  const isOutbound = direction === "outbound"
 
   return {
     id: call.id,
     callId: call.externalCallId,
     actionCode: call.actionCode,
     from: call.callerNumber ?? "非通知",
-    fromName: categoryLabel(call.callerCategory),
-    to: "未設定",
+    fromName: isOutbound ? "-" : categoryLabel(call.callerCategory),
+    to: isOutbound ? (call.calleeNumber ?? "-") : "未設定",
+    calleeNumber: call.calleeNumber ?? null,
     startedAt: call.startedAt,
     endedAt: call.endedAt ?? null,
     status,
@@ -226,8 +228,7 @@ function toStatus(status: Call["status"]): CallRecord["status"] {
 
 function toDirection(call: Call): CallRecord["direction"] {
   if (call.status === "error" || call.endReason === "rejected") return "missed"
-  if (call.actionCode === "AR") return "outbound"
-  return "inbound"
+  return call.direction
 }
 
 function categoryLabel(category: Call["callerCategory"]): string {

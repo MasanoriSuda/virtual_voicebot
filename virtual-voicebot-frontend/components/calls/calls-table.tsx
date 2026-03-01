@@ -82,8 +82,12 @@ export function CallsTable({ calls, sortDirection, onSortToggle, onRowClick }: C
                     <p className="text-xs text-muted-foreground">{call.from}</p>
                   </div>
                 </TableCell>
-                <TableCell className="text-sm">{call.to}</TableCell>
-                <TableCell className="text-sm">{dispositionLabel(call.callDisposition)}</TableCell>
+                <TableCell className="text-sm">
+                  {call.direction === "outbound" ? (call.calleeNumber ?? "-") : call.to}
+                </TableCell>
+                <TableCell className="text-sm">
+                  {call.direction === "outbound" ? "-" : dispositionLabel(call.callDisposition)}
+                </TableCell>
                 <TableCell className="text-sm">{finalActionLabel(call.finalAction)}</TableCell>
                 <TableCell className="text-sm">{transferStatusLabel(call.transferStatus)}</TableCell>
                 <TableCell className="font-mono text-xs">
@@ -95,7 +99,7 @@ export function CallsTable({ calls, sortDirection, onSortToggle, onRowClick }: C
                   </Badge>
                 </TableCell>
                 <TableCell className="text-sm">
-                  {call.actionCode === "IV" ? (
+                  {call.direction !== "outbound" && call.actionCode === "IV" ? (
                     <Link
                       href={`/calls/${encodeURIComponent(call.id)}/ivr-trace`}
                       className="text-primary underline-offset-2 hover:underline"

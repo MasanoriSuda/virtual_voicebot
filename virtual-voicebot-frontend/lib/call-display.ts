@@ -4,12 +4,16 @@ export type DisplayStatus =
   | "通話中"
   | "常時着信拒否"
   | "不在着信"
+  | "応答なし"
   | "IVR離脱"
   | "留守電"
   | "通話終了"
 
 export function resolveDisplayStatus(call: Call): DisplayStatus {
   if (call.status === "ringing" || call.status === "in_call") return "通話中"
+  if (call.direction === "outbound") {
+    return call.transferAnsweredAt !== null ? "通話終了" : "応答なし"
+  }
   if (call.callDisposition === "denied") return "常時着信拒否"
   if (call.endReason === "cancelled" && call.answeredAt === null) return "不在着信"
 
@@ -43,6 +47,8 @@ export function displayStatusClass(status: DisplayStatus): string {
       return "bg-neutral-500/15 text-neutral-600 dark:text-neutral-300"
     case "不在着信":
       return "bg-rose-500/15 text-rose-600 dark:text-rose-300"
+    case "応答なし":
+      return "bg-orange-500/15 text-orange-600 dark:text-orange-300"
     case "IVR離脱":
       return "bg-amber-500/15 text-amber-600 dark:text-amber-300"
     case "留守電":

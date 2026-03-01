@@ -752,6 +752,13 @@ impl SessionCoordinator {
             .map(|s| s.elapsed().as_secs().min(i32::MAX as u64) as i32);
         let call_log_id = self.ensure_call_log_id();
         let caller_number = extract_e164_caller_number(self.from_uri.as_str());
+        let (direction, callee_number) = if self.outbound_mode {
+            let callee_number = extract_user_from_to(self.to_uri.as_str())
+                .and_then(|to_user| self.runtime_cfg.outbound.resolve_number(to_user.as_str()));
+            ("outbound".to_string(), callee_number)
+        } else {
+            ("inbound".to_string(), None)
+        };
         let action_code = self
             .initial_action_code
             .as_deref()
@@ -815,6 +822,8 @@ impl SessionCoordinator {
             external_call_id: call_log_id.to_string(),
             sip_call_id: self.call_id.to_string(),
             caller_number,
+            direction,
+            callee_number,
             caller_category: self.caller_category.clone(),
             action_code,
             ivr_flow_id: self.ivr_flow_id,
@@ -995,6 +1004,35 @@ mod tests {
                         "simulated transient failure".into(),
                     ));
                 }
+                Ok(())
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct CapturingCallLogState {
+        calls: Vec<EndedCallLog>,
+    }
+
+    struct CapturingCallLogPort {
+        state: Arc<Mutex<CapturingCallLogState>>,
+    }
+
+    impl CapturingCallLogPort {
+        fn new(state: Arc<Mutex<CapturingCallLogState>>) -> Self {
+            Self { state }
+        }
+    }
+
+    impl CallLogPort for CapturingCallLogPort {
+        fn persist_call_ended(
+            &self,
+            call_log: EndedCallLog,
+        ) -> crate::shared::ports::call_log_port::CallLogFuture<()> {
+            let state = self.state.clone();
+            Box::pin(async move {
+                let mut guard = state.lock().expect("state lock should be available");
+                guard.calls.push(call_log);
                 Ok(())
             })
         }
@@ -1438,6 +1476,43 @@ mod tests {
         let guard = state.lock().expect("state lock should be available");
         assert_eq!(guard.attempts, 2);
         assert_eq!(guard.ivr_event_counts, vec![1, 1]);
+    }
+
+    #[tokio::test]
+    async fn send_ingest_persists_inbound_direction_without_callee_number() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let state = Arc::new(Mutex::new(CapturingCallLogState::default()));
+        session.call_log_port = Arc::new(CapturingCallLogPort::new(state.clone()));
+        session.initial_action_code = Some("VR".to_string());
+        session.outbound_mode = false;
+        session.to_uri = "sip:09011112222@example.com".to_string();
+
+        session.send_ingest("ended").await;
+
+        let guard = state.lock().expect("state lock should be available");
+        assert_eq!(guard.calls.len(), 1);
+        assert_eq!(guard.calls[0].direction, "inbound");
+        assert_eq!(guard.calls[0].callee_number, None);
+    }
+
+    #[tokio::test]
+    async fn send_ingest_persists_outbound_direction_and_resolved_callee_number() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let state = Arc::new(Mutex::new(CapturingCallLogState::default()));
+        session.call_log_port = Arc::new(CapturingCallLogPort::new(state.clone()));
+        session.initial_action_code = Some("VR".to_string());
+        session.outbound_mode = true;
+        session.to_uri = "sip:09012345678@example.com".to_string();
+
+        session.send_ingest("ended").await;
+
+        let guard = state.lock().expect("state lock should be available");
+        assert_eq!(guard.calls.len(), 1);
+        assert_eq!(guard.calls[0].direction, "outbound");
+        assert_eq!(
+            guard.calls[0].callee_number,
+            Some("09012345678".to_string())
+        );
     }
 
     #[test]

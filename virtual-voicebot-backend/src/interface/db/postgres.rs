@@ -750,12 +750,12 @@ impl CallLogPort for PostgresAdapter {
             sqlx::query(
                 "INSERT INTO call_logs (
                     id, started_at, external_call_id, sip_call_id, caller_number, caller_category,
-                    action_code, ivr_flow_id, answered_at, ended_at, duration_sec, end_reason, status,
+                    direction, callee_number, action_code, ivr_flow_id, answered_at, ended_at, duration_sec, end_reason, status,
                     call_disposition, final_action, transfer_status,
                     transfer_started_at, transfer_answered_at, transfer_ended_at
                  ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                    $14, $15, $16, $17, $18, $19
+                    $14, $15, $16, $17, $18, $19, $20, $21
                  )",
             )
             .bind(call_log.id)
@@ -764,6 +764,8 @@ impl CallLogPort for PostgresAdapter {
             .bind(Some(call_log.sip_call_id.clone()))
             .bind(call_log.caller_number.clone())
             .bind(call_log.caller_category.clone())
+            .bind(call_log.direction.clone())
+            .bind(call_log.callee_number.clone())
             .bind(call_log.action_code.clone())
             .bind(call_log.ivr_flow_id)
             .bind(call_log.answered_at)
@@ -792,6 +794,8 @@ impl CallLogPort for PostgresAdapter {
                 "externalCallId": call_log.external_call_id.clone(),
                 "sipCallId": call_log.sip_call_id.clone(),
                 "callerNumber": call_log.caller_number.clone(),
+                "direction": call_log.direction.clone(),
+                "calleeNumber": call_log.callee_number.clone(),
                 "callerCategory": call_log.caller_category.clone(),
                 "actionCode": call_log.action_code.clone(),
                 "startedAt": call_log.started_at.to_rfc3339(),
