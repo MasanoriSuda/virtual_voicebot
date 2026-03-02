@@ -741,6 +741,8 @@ fn build_call_log_sync_payload(call_log: &EndedCallLog) -> Value {
         "id": call_log.id.to_string(),
         "externalCallId": call_log.external_call_id.clone(),
         "sipCallId": call_log.sip_call_id.clone(),
+        // Keep MVP traceability by mirroring session identifier as call_id.
+        "call_id": call_log.sip_call_id.clone(),
         "callerNumber": call_log.caller_number.clone(),
         "direction": call_log.direction.clone(),
         "calleeNumber": call_log.callee_number.clone(),
@@ -1267,6 +1269,7 @@ mod tests {
         let call_log = sample_ended_call_log();
         let payload = build_call_log_sync_payload(&call_log);
 
+        assert_eq!(payload["call_id"], "sip-1");
         assert_eq!(payload["direction"], "outbound");
         assert_eq!(payload["calleeNumber"], "09012345678");
     }
