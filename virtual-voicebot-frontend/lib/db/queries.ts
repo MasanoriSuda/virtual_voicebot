@@ -31,7 +31,7 @@ export function deriveDirection(callLog: StoredCallLog): CallDirection {
   if (callLog.status === "error" || callLog.endReason === "rejected") {
     return "missed"
   }
-  if (callLog.actionCode === "AR") {
+  if (callLog.direction === "outbound" || callLog.actionCode === "AR") {
     return "outbound"
   }
   return "inbound"
@@ -57,7 +57,12 @@ export async function queryCalls(filters: CallQueryFilters = {}): Promise<QueryC
         return false
       }
       if (keyword) {
-        const target = [callLog.externalCallId, callLog.sipCallId, callLog.callerNumber]
+        const target = [
+          callLog.externalCallId,
+          callLog.sipCallId,
+          callLog.callerNumber,
+          callLog.calleeNumber,
+        ]
           .filter(Boolean)
           .join(" ")
           .toLowerCase()

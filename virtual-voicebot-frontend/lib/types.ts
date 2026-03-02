@@ -27,6 +27,8 @@ export type FinalAction =
 
 export type TransferStatus = "no_transfer" | "none" | "trying" | "answered" | "failed"
 
+export type CallDirection = "inbound" | "outbound"
+
 export type IvrEventType =
   | "node_enter"
   | "dtmf_input"
@@ -57,6 +59,8 @@ export interface Call {
   id: string
   externalCallId: string
   callerNumber: string | null
+  direction: CallDirection
+  calleeNumber: string | null
   callerCategory: CallerCategory
   actionCode: ActionCode
   status: CallStatus
