@@ -7,6 +7,11 @@ import type {
   FinalAction,
   TransferStatus,
 } from "./types"
+import {
+  type DisplayStatus,
+  resolveDisplayDuration,
+  resolveDisplayStatus,
+} from "./call-display"
 
 export type CallDirection = "inbound" | "outbound" | "missed"
 
@@ -19,6 +24,7 @@ export type CallRecord = {
   from: string
   fromName: string
   to: string
+  calleeNumber: string | null
   startedAt: string
   endedAt: string | null
   status: CallRecordStatus
@@ -26,6 +32,8 @@ export type CallRecord = {
   finalAction: FinalAction | null
   transferStatus: TransferStatus
   durationSec: number
+  displayStatus: DisplayStatus
+  displayDurationSec: number
   summary: string
   recordingUrl: string | null
   direction: CallDirection
@@ -44,6 +52,8 @@ export const mockCalls: Call[] = [
     id: "1",
     externalCallId: "c_001",
     callerNumber: "+81-90-1234-5678",
+    direction: "inbound",
+    calleeNumber: null,
     callerCategory: "registered",
     actionCode: "VR",
     status: "ended",
@@ -63,6 +73,8 @@ export const mockCalls: Call[] = [
     id: "2",
     externalCallId: "c_002",
     callerNumber: "+81-80-2222-1111",
+    direction: "inbound",
+    calleeNumber: null,
     callerCategory: "registered",
     actionCode: "IV",
     status: "ended",
@@ -82,6 +94,8 @@ export const mockCalls: Call[] = [
     id: "3",
     externalCallId: "c_003",
     callerNumber: "+81-50-8888-1111",
+    direction: "inbound",
+    calleeNumber: null,
     callerCategory: "unknown",
     actionCode: "IV",
     status: "in_call",
@@ -101,6 +115,8 @@ export const mockCalls: Call[] = [
     id: "4",
     externalCallId: "c_004",
     callerNumber: "+81-70-3333-2222",
+    direction: "outbound",
+    calleeNumber: "+81-90-2222-3333",
     callerCategory: "registered",
     actionCode: "VR",
     status: "ended",
@@ -120,6 +136,8 @@ export const mockCalls: Call[] = [
     id: "5",
     externalCallId: "c_005",
     callerNumber: "+81-90-9999-0001",
+    direction: "inbound",
+    calleeNumber: null,
     callerCategory: "spam",
     actionCode: "RJ",
     status: "error",
@@ -139,6 +157,8 @@ export const mockCalls: Call[] = [
     id: "6",
     externalCallId: "c_006",
     callerNumber: "+81-3-4444-5555",
+    direction: "inbound",
+    calleeNumber: null,
     callerCategory: "registered",
     actionCode: "VR",
     status: "ended",
@@ -158,6 +178,8 @@ export const mockCalls: Call[] = [
     id: "7",
     externalCallId: "c_007",
     callerNumber: "+81-90-5555-1212",
+    direction: "inbound",
+    calleeNumber: null,
     callerCategory: "registered",
     actionCode: "VR",
     status: "ended",
@@ -177,6 +199,8 @@ export const mockCalls: Call[] = [
     id: "8",
     externalCallId: "c_008",
     callerNumber: "+81-90-7777-8888",
+    direction: "outbound",
+    calleeNumber: "+81-70-1111-2222",
     callerCategory: "registered",
     actionCode: "VR",
     status: "ended",
@@ -196,6 +220,8 @@ export const mockCalls: Call[] = [
     id: "9",
     externalCallId: "c_009",
     callerNumber: "+81-80-2323-4545",
+    direction: "inbound",
+    calleeNumber: null,
     callerCategory: "registered",
     actionCode: "IV",
     status: "ended",
@@ -215,6 +241,8 @@ export const mockCalls: Call[] = [
     id: "10",
     externalCallId: "c_010",
     callerNumber: "+81-90-1111-2222",
+    direction: "inbound",
+    calleeNumber: null,
     callerCategory: "registered",
     actionCode: "VR",
     status: "ringing",
@@ -307,13 +335,16 @@ export const mockCallPresentationById: Record<string, CallPresentation> = {
 
 export const mockCallRecords: CallRecord[] = mockCalls.map((call) => {
   const view = mockCallPresentationById[call.id]
+  const direction = toCallRecordDirection(call)
+  const isOutbound = direction === "outbound"
   return {
     id: call.id,
     callId: call.externalCallId,
     actionCode: call.actionCode,
     from: call.callerNumber ?? "非通知",
-    fromName: view?.fromName ?? categoryLabel(call.callerCategory),
-    to: view?.to ?? "未設定",
+    fromName: isOutbound ? "-" : (view?.fromName ?? categoryLabel(call.callerCategory)),
+    to: isOutbound ? (call.calleeNumber ?? "-") : (view?.to ?? "未設定"),
+    calleeNumber: call.calleeNumber ?? null,
     startedAt: call.startedAt,
     endedAt: call.endedAt,
     status: toCallRecordStatus(call.status),
@@ -321,9 +352,11 @@ export const mockCallRecords: CallRecord[] = mockCalls.map((call) => {
     finalAction: call.finalAction,
     transferStatus: call.transferStatus,
     durationSec: call.durationSec ?? 0,
+    displayStatus: resolveDisplayStatus(call),
+    displayDurationSec: resolveDisplayDuration(call),
     summary: view?.summary ?? "",
     recordingUrl: view?.recordingUrl ?? null,
-    direction: view?.direction ?? "inbound",
+    direction,
   }
 })
 
@@ -337,6 +370,13 @@ function toCallRecordStatus(status: CallStatus): CallRecordStatus {
     default:
       return "ended"
   }
+}
+
+function toCallRecordDirection(call: Call): CallDirection {
+  if (call.status === "error" || call.endReason === "rejected") {
+    return "missed"
+  }
+  return call.direction
 }
 
 function categoryLabel(category: CallerCategory): string {

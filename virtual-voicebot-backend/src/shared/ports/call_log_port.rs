@@ -26,6 +26,8 @@ pub struct EndedCallLog {
     pub external_call_id: String,
     pub sip_call_id: String,
     pub caller_number: Option<String>,
+    pub direction: String,
+    pub callee_number: Option<String>,
     pub caller_category: String,
     pub action_code: String,
     pub ivr_flow_id: Option<Uuid>,

@@ -1,0 +1,65 @@
+name: Backend Coverage
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - .github/workflows/backend-coverage.yml
+      - virtual-voicebot-backend/**
+  pull_request:
+    paths:
+      - .github/workflows/backend-coverage.yml
+      - virtual-voicebot-backend/**
+
+jobs:
+  backend-coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: virtual-voicebot-backend
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            virtual-voicebot-backend/target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('virtual-voicebot-backend/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-coverage-
+            ${{ runner.os }}-cargo-
+
+      - name: Show Rust version
+        run: rustc -V && cargo -V
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@03e268b84870ac3cfa58a44d9b504511b732a857
+
+      - name: Generate backend coverage
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./virtual-voicebot-backend/lcov.info
+          flags: backend
+          name: backend-rust-coverage
+          fail_ci_if_error: true

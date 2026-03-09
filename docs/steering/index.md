@@ -50,6 +50,9 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-213](STEER-213_fix-agent-doc-responsibility.md) | AI エージェントのドキュメント責務不整合の修正 | Approved | #213 | P0 | STEER-153 の変更によって生じた Claude Code のドキュメント責務に関する不整合を根本から修正する |
 | [STEER-226](STEER-226_frontend-backend-split-config.md) | Frontend/Backend 別マシン構成の環境変数対応 | Draft | #226 | P1 | `.env.example` を実態に合わせて更新し、Frontend と Backend が別マシンで動作する構成の環境変数を整備する |
 | [STEER-245](STEER-245_local-services-status-dashboard.md) | ローカルサービス死活監視ダッシュボード | Approved | #245 | P1 | Frontend のダッシュボードに ASR/LLM/TTS ローカルサービスの死活状態を表示する。Backend が probe を集約し、Frontend はウィジェットで可視化する |
+| [STEER-266](STEER-266_incoming-call-popup.md) | 着信ポップアップ通知 | Draft | #266 | P1 | 着信（直接転送・IVR 転送）を契機に Frontend 画面上でポップアップを表示する。独立 fast-path ファイルキュー + serversync 新規 Worker（1秒ポーリング）で既存 sync_outbox に影響なく実装する |
+| [STEER-267](STEER-267_ivr-vr-notify-fix.md) | DB IVR VR ルートの転送通知欠落バグ修正 | Approved | #267 | P1 | STEER-266 実装後に発覚した仕様漏れ。DB IVR の `"VR" =>` ルート（handlers/mod.rs L1304）に `notify_ivr_transfer_if_needed()` 呼び出しが欠落しており、IVR 転送時にポップアップが発火しない |
+| [STEER-275](STEER-275_outbound-call-history-display.md) | フロントエンド発着信履歴の発信時表示修正 | Draft | #275 | P1 | #272 発着信バックエンド実装後、発信通話が履歴画面で「着信」と表示される問題を修正。Backend API に direction / calleeNumber を追加し、Frontend の発信時表示列を正しく定義する |
 
 ---
 
@@ -89,3 +92,6 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-23 | 1.0 | 初版作成（既存横断ステアリング STEER-112〜STEER-213 を収録、STEER-226 追加） | Claude Code |
 | 2026-02-24 | 1.1 | STEER-245 追加（ローカルサービス死活監視ダッシュボード） | Claude Sonnet 4.6 |
 | 2026-02-25 | 1.2 | STEER-245 ステータス Draft → Approved | @MasanoriSuda |
+| 2026-02-28 | 1.3 | STEER-266 追加（着信ポップアップ通知） | Claude Sonnet 4.6 |
+| 2026-02-28 | 1.4 | STEER-267 追加（DB IVR VR ルート転送通知欠落バグ修正） | Claude Sonnet 4.6 |
+| 2026-03-02 | 1.5 | STEER-275 追加（フロントエンド発着信履歴の発信時表示修正） | Claude Sonnet 4.6 |

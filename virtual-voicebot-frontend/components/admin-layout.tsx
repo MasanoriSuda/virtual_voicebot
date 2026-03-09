@@ -5,6 +5,7 @@ import React from "react"
 import { useState } from "react"
 import { AdminSidebar } from "./admin-sidebar"
 import { AdminHeader } from "./admin-header"
+import { IncomingCallPopup } from "./IncomingCallPopup"
 import { cn } from "@/lib/utils"
 
 interface AdminLayoutProps {
@@ -22,6 +23,7 @@ export function AdminLayout({ children }: AdminLayoutProps) {
         <main className={cn("flex-1 overflow-auto")}>
           {children}
         </main>
+        <IncomingCallPopup />
       </div>
     </div>
   )

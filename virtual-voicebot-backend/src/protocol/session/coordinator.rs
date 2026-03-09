@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 // session.rs
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::{interval, Duration, Instant, MissedTickBehavior};
@@ -20,7 +22,7 @@ use crate::protocol::rtp::tx::RtpTxHandle;
 use crate::protocol::session::b2bua;
 use crate::protocol::session::capture::AudioCapture;
 use crate::protocol::session::timers::SessionTimers;
-use crate::protocol::sip::{parse_name_addr, parse_uri};
+use crate::protocol::sip::utils::extract_user_from_to;
 use crate::service::routing::normalize_phone_number_e164;
 use crate::shared::config::{self, SessionRuntimeConfig};
 use crate::shared::ports::app::{AppEventTx, AudioChunkTx};
@@ -34,6 +36,7 @@ use crate::shared::ports::storage::StoragePort;
 use crate::shared::utils::is_safe_announcement_url_path;
 use crate::shared::utils::{extract_url_path, map_audio_file_url_to_cache_path};
 use anyhow::Error;
+use serde_json::json;
 use uuid::Uuid;
 // log macros used in handler/service modules
 use services::playback_service::{PendingUtterance, PlaybackState};
@@ -153,6 +156,11 @@ pub struct SessionCoordinator {
     ingest_persisted: bool,
     session_expires: Option<Duration>,
     session_refresher: Option<SessionRefresher>,
+    notification_queue_file: PathBuf,
+    is_ivr_call: bool,
+    ivr_started_at: Option<Instant>,
+    dtmf_history: Vec<char>,
+    notification_sent: bool,
 }
 
 impl SessionCoordinator {
@@ -256,6 +264,11 @@ impl SessionCoordinator {
             ingest_persisted: false,
             session_expires: None,
             session_refresher: None,
+            notification_queue_file: PathBuf::from(config::notification_queue_file()),
+            is_ivr_call: false,
+            ivr_started_at: None,
+            dtmf_history: Vec::new(),
+            notification_sent: false,
         };
         tokio::spawn(async move {
             s.run(control_rx, media_rx).await;
@@ -452,6 +465,114 @@ impl SessionCoordinator {
         self.ivr_event_sequence = 0;
         self.ivr_events.clear();
         self.ingest_persisted = false;
+        self.is_ivr_call = false;
+        self.ivr_started_at = None;
+        self.dtmf_history.clear();
+        self.notification_sent = false;
+    }
+
+    pub(crate) fn refresh_is_ivr_call(&mut self) {
+        self.is_ivr_call = self.detect_is_ivr_call();
+    }
+
+    pub(crate) fn mark_ivr_started_if_needed(&mut self) {
+        if self.ivr_started_at.is_none() {
+            self.ivr_started_at = Some(Instant::now());
+        }
+    }
+
+    pub(crate) fn record_dtmf_history(&mut self, digit: char) {
+        self.dtmf_history.push(digit);
+    }
+
+    pub(crate) async fn notify_direct_incoming_if_needed(&mut self) {
+        if self.notification_sent || self.is_ivr_call {
+            return;
+        }
+
+        self.write_incoming_call_notification(json!({
+            "call_id": self.call_id.as_str(),
+            "callerNumber": self.current_caller_number(),
+            "trigger": "direct",
+            "receivedAt": Utc::now().to_rfc3339(),
+        }))
+        .await;
+    }
+
+    pub(crate) async fn notify_ivr_transfer_if_needed(&mut self) {
+        if self.notification_sent {
+            return;
+        }
+
+        let dwell_time_sec = self
+            .ivr_started_at
+            .map(|started| started.elapsed().as_secs())
+            .unwrap_or(0);
+        let dtmf_history: Vec<String> = self
+            .dtmf_history
+            .iter()
+            .map(|digit| digit.to_string())
+            .collect();
+
+        self.write_incoming_call_notification(json!({
+            "call_id": self.call_id.as_str(),
+            "callerNumber": self.current_caller_number(),
+            "trigger": "ivr_transfer",
+            "receivedAt": Utc::now().to_rfc3339(),
+            "ivrData": {
+                "dwellTimeSec": dwell_time_sec,
+                "dtmfHistory": dtmf_history,
+            },
+        }))
+        .await;
+    }
+
+    fn detect_is_ivr_call(&self) -> bool {
+        if self.outbound_mode || self.invite_rejected || self.no_response_mode {
+            return false;
+        }
+        if self.transfer_after_answer_pending
+            || self.announce_mode
+            || self.voicebot_direct_mode
+            || self.voicemail_mode
+        {
+            return false;
+        }
+        true
+    }
+
+    async fn write_incoming_call_notification(&mut self, payload: serde_json::Value) {
+        let line = match serde_json::to_string(&payload) {
+            Ok(serialized) => serialized,
+            Err(err) => {
+                log::warn!(
+                    "[session {}] failed to serialize incoming call notification: {}",
+                    self.call_id,
+                    err
+                );
+                return;
+            }
+        };
+
+        if let Err(err) =
+            append_json_line(self.notification_queue_file.as_path(), line.as_str()).await
+        {
+            log::warn!(
+                "[session {}] failed to append incoming call notification queue={} error={}",
+                self.call_id,
+                self.notification_queue_file.display(),
+                err
+            );
+            return;
+        }
+
+        self.notification_sent = true;
+    }
+
+    fn current_caller_number(&self) -> String {
+        let user =
+            extract_user_from_to(self.from_uri.as_str()).unwrap_or_else(|| "unknown".to_string());
+        normalize_caller_for_notification(user.as_str())
     }
 
     pub(crate) fn ensure_call_log_id(&mut self) -> Uuid {
@@ -631,6 +752,17 @@ impl SessionCoordinator {
             .map(|s| s.elapsed().as_secs().min(i32::MAX as u64) as i32);
         let call_log_id = self.ensure_call_log_id();
         let caller_number = extract_e164_caller_number(self.from_uri.as_str());
+        let (direction, callee_number) = if self.outbound_mode {
+            let callee_number = extract_user_from_to(self.to_uri.as_str()).map(|to_user| {
+                self.runtime_cfg
+                    .outbound
+                    .resolve_number(to_user.as_str())
+                    .unwrap_or(to_user)
+            });
+            ("outbound".to_string(), callee_number)
+        } else {
+            ("inbound".to_string(), None)
+        };
         let action_code = self
             .initial_action_code
             .as_deref()
@@ -694,6 +826,8 @@ impl SessionCoordinator {
             external_call_id: call_log_id.to_string(),
             sip_call_id: self.call_id.to_string(),
             caller_number,
+            direction,
+            callee_number,
             caller_category: self.caller_category.clone(),
             action_code,
             ivr_flow_id: self.ivr_flow_id,
@@ -764,33 +898,37 @@ fn extract_e164_caller_number(value: &str) -> Option<String> {
     normalize_phone_number_e164(candidate.as_str()).ok()
 }
 
-fn extract_user_from_to(value: &str) -> Option<String> {
-    if let Ok(name_addr) = parse_name_addr(value) {
-        if name_addr.uri.scheme.eq_ignore_ascii_case("tel") && !name_addr.uri.host.trim().is_empty()
-        {
-            return Some(name_addr.uri.host);
-        }
-        if let Some(user) = name_addr.uri.user {
-            return Some(user);
-        }
-    }
-
+fn normalize_caller_for_notification(value: &str) -> String {
     let trimmed = value.trim();
-    let addr = if let Some(start) = trimmed.find('<') {
-        if let Some(end) = trimmed[start + 1..].find('>') {
-            &trimmed[start + 1..start + 1 + end]
+    let normalized: String = trimmed
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '+')
+        .collect();
+    if normalized.is_empty() {
+        if trimmed.is_empty() {
+            "unknown".to_string()
         } else {
-            trimmed
+            trimmed.to_string()
         }
     } else {
-        trimmed
-    };
-    let addr = addr.split(';').next().unwrap_or(addr).trim();
-    let uri = parse_uri(addr).ok()?;
-    if uri.scheme.eq_ignore_ascii_case("tel") && !uri.host.trim().is_empty() {
-        return Some(uri.host);
+        normalized
     }
-    uri.user
+}
+
+async fn append_json_line(path: &Path, line: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    let mut payload = line.as_bytes().to_vec();
+    payload.push(b'\n');
+    file.write_all(payload.as_slice()).await?;
+    file.flush().await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -833,8 +971,18 @@ mod tests {
     impl CallLogPort for DummyCallLogPort {
         fn persist_call_ended(
             &self,
-            _call_log: EndedCallLog,
+            call_log: EndedCallLog,
         ) -> crate::shared::ports::call_log_port::CallLogFuture<()> {
+            assert!(
+                matches!(call_log.direction.as_str(), "inbound" | "outbound"),
+                "direction must be inbound/outbound"
+            );
+            if call_log.direction == "inbound" {
+                assert!(
+                    call_log.callee_number.is_none(),
+                    "inbound call log must not carry callee_number"
+                );
+            }
             Box::pin(async { Ok(()) })
         }
     }
@@ -843,6 +991,8 @@ mod tests {
     struct FailingThenSucceedingState {
         attempts: usize,
         ivr_event_counts: Vec<usize>,
+        directions: Vec<String>,
+        callee_numbers: Vec<Option<String>>,
     }
 
     struct FailingThenSucceedingCallLogPort {
@@ -865,11 +1015,42 @@ mod tests {
                 let mut guard = state.lock().expect("state lock should be available");
                 guard.attempts += 1;
                 guard.ivr_event_counts.push(call_log.ivr_events.len());
+                guard.directions.push(call_log.direction.clone());
+                guard.callee_numbers.push(call_log.callee_number.clone());
                 if guard.attempts == 1 {
                     return Err(CallLogPortError::WriteFailed(
                         "simulated transient failure".into(),
                     ));
                 }
+                Ok(())
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct CapturingCallLogState {
+        calls: Vec<EndedCallLog>,
+    }
+
+    struct CapturingCallLogPort {
+        state: Arc<Mutex<CapturingCallLogState>>,
+    }
+
+    impl CapturingCallLogPort {
+        fn new(state: Arc<Mutex<CapturingCallLogState>>) -> Self {
+            Self { state }
+        }
+    }
+
+    impl CallLogPort for CapturingCallLogPort {
+        fn persist_call_ended(
+            &self,
+            call_log: EndedCallLog,
+        ) -> crate::shared::ports::call_log_port::CallLogFuture<()> {
+            let state = self.state.clone();
+            Box::pin(async move {
+                let mut guard = state.lock().expect("state lock should be available");
+                guard.calls.push(call_log);
                 Ok(())
             })
         }
@@ -967,6 +1148,13 @@ mod tests {
             ingest_persisted: false,
             session_expires: None,
             session_refresher: None,
+            notification_queue_file: std::path::PathBuf::from(
+                "storage/notifications/pending.jsonl",
+            ),
+            is_ivr_call: false,
+            ivr_started_at: None,
+            dtmf_history: Vec::new(),
+            notification_sent: false,
         };
         (session, control_rx)
     }
@@ -996,6 +1184,19 @@ mod tests {
             .parent()
             .expect("recording directory should exist")
             .to_path_buf()
+    }
+
+    fn unique_notification_queue_file() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("vvb-notification-test-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("temp notification dir should be creatable");
+        dir.join("pending.jsonl")
+    }
+
+    fn cleanup_notification_queue_file(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
     }
 
     #[tokio::test]
@@ -1293,6 +1494,70 @@ mod tests {
         let guard = state.lock().expect("state lock should be available");
         assert_eq!(guard.attempts, 2);
         assert_eq!(guard.ivr_event_counts, vec![1, 1]);
+        assert_eq!(
+            guard.directions,
+            vec!["inbound".to_string(), "inbound".to_string()]
+        );
+        assert_eq!(guard.callee_numbers, vec![None, None]);
+    }
+
+    #[tokio::test]
+    async fn send_ingest_persists_inbound_direction_without_callee_number() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let state = Arc::new(Mutex::new(CapturingCallLogState::default()));
+        session.call_log_port = Arc::new(CapturingCallLogPort::new(state.clone()));
+        session.initial_action_code = Some("VR".to_string());
+        session.outbound_mode = false;
+        session.to_uri = "sip:09011112222@example.com".to_string();
+
+        session.send_ingest("ended").await;
+
+        let guard = state.lock().expect("state lock should be available");
+        assert_eq!(guard.calls.len(), 1);
+        assert_eq!(guard.calls[0].direction, "inbound");
+        assert_eq!(guard.calls[0].callee_number, None);
+    }
+
+    #[tokio::test]
+    async fn send_ingest_persists_outbound_direction_and_resolved_callee_number() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let state = Arc::new(Mutex::new(CapturingCallLogState::default()));
+        session.call_log_port = Arc::new(CapturingCallLogPort::new(state.clone()));
+        session.initial_action_code = Some("VR".to_string());
+        session.outbound_mode = true;
+        session.to_uri = "sip:09012345678@example.com".to_string();
+
+        session.send_ingest("ended").await;
+
+        let guard = state.lock().expect("state lock should be available");
+        assert_eq!(guard.calls.len(), 1);
+        assert_eq!(guard.calls[0].direction, "outbound");
+        assert_eq!(
+            guard.calls[0].callee_number,
+            Some("09012345678".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn send_ingest_persists_outbound_callee_number_from_to_user_when_resolve_fails() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let state = Arc::new(Mutex::new(CapturingCallLogState::default()));
+        session.call_log_port = Arc::new(CapturingCallLogPort::new(state.clone()));
+        session.initial_action_code = Some("VR".to_string());
+        session.outbound_mode = true;
+        session.to_uri = "sip:alice@example.com".to_string();
+
+        let mut runtime_cfg = (*session.runtime_cfg).clone();
+        runtime_cfg.outbound.default_number = None;
+        runtime_cfg.outbound.dial_plan.clear();
+        session.runtime_cfg = Arc::new(runtime_cfg);
+
+        session.send_ingest("ended").await;
+
+        let guard = state.lock().expect("state lock should be available");
+        assert_eq!(guard.calls.len(), 1);
+        assert_eq!(guard.calls[0].direction, "outbound");
+        assert_eq!(guard.calls[0].callee_number, Some("alice".to_string()));
     }
 
     #[test]
@@ -1311,5 +1576,84 @@ mod tests {
     fn extract_e164_caller_number_returns_none_for_invalid_input() {
         let caller = super::extract_e164_caller_number("sip:abc@example.com");
         assert_eq!(caller, None);
+    }
+
+    #[tokio::test]
+    async fn notify_direct_incoming_appends_single_notification() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let queue_file = unique_notification_queue_file();
+        session.notification_queue_file = queue_file.clone();
+        session.from_uri = "sip:+81-3-1234-5678@example.com".to_string();
+
+        session.notify_direct_incoming_if_needed().await;
+        session.notify_direct_incoming_if_needed().await;
+
+        let raw =
+            std::fs::read_to_string(&queue_file).expect("direct notification should be written");
+        let lines: Vec<&str> = raw.lines().filter(|line| !line.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 1, "direct notification should be idempotent");
+
+        let payload: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("notification line should be valid json");
+        assert_eq!(payload["call_id"], session.call_id.as_str());
+        assert_eq!(payload["trigger"], "direct");
+        assert_eq!(payload["callerNumber"], "+81312345678");
+        assert!(payload["receivedAt"].as_str().is_some());
+
+        cleanup_notification_queue_file(queue_file.as_path());
+    }
+
+    #[tokio::test]
+    async fn notify_direct_incoming_is_suppressed_for_ivr_call() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let queue_file = unique_notification_queue_file();
+        session.notification_queue_file = queue_file.clone();
+        session.is_ivr_call = true;
+
+        session.notify_direct_incoming_if_needed().await;
+
+        assert!(
+            !queue_file.exists(),
+            "direct notification should not be emitted for ivr calls"
+        );
+
+        cleanup_notification_queue_file(queue_file.as_path());
+    }
+
+    #[tokio::test]
+    async fn notify_ivr_transfer_includes_dwell_and_dtmf_history() {
+        let mut session = build_test_session(Arc::new(DummyStoragePort));
+        let queue_file = unique_notification_queue_file();
+        session.notification_queue_file = queue_file.clone();
+        session.from_uri = "sip:09012345678@example.com".to_string();
+        session.ivr_started_at = Some(Instant::now() - Duration::from_secs(2));
+        session.dtmf_history = vec!['9', '9', '3'];
+
+        session.notify_ivr_transfer_if_needed().await;
+
+        let raw = std::fs::read_to_string(&queue_file)
+            .expect("ivr transfer notification should be written");
+        let line = raw
+            .lines()
+            .find(|value| !value.trim().is_empty())
+            .expect("queue file should contain one line");
+        let payload: serde_json::Value =
+            serde_json::from_str(line).expect("notification line should be valid json");
+        assert_eq!(payload["call_id"], session.call_id.as_str());
+        assert_eq!(payload["trigger"], "ivr_transfer");
+        assert_eq!(payload["callerNumber"], "09012345678");
+        assert_eq!(
+            payload["ivrData"]["dtmfHistory"],
+            serde_json::json!(["9", "9", "3"])
+        );
+        let dwell_time_sec = payload["ivrData"]["dwellTimeSec"]
+            .as_u64()
+            .expect("dwellTimeSec should be u64");
+        assert!(
+            dwell_time_sec >= 2,
+            "dwellTimeSec should reflect elapsed ivr time"
+        );
+
+        cleanup_notification_queue_file(queue_file.as_path());
     }
 }
