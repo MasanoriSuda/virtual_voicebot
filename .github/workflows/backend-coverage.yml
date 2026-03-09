@@ -1,0 +1,66 @@
+name: Backend Coverage
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - feature/**
+    paths:
+      - .github/workflows/backend-coverage.yml
+      - virtual-voicebot-backend/**
+  pull_request:
+    paths:
+      - .github/workflows/backend-coverage.yml
+      - virtual-voicebot-backend/**
+
+jobs:
+  backend-coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: virtual-voicebot-backend
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            virtual-voicebot-backend/target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('virtual-voicebot-backend/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-coverage-
+            ${{ runner.os }}-cargo-
+
+      - name: Show Rust version
+        run: rustc -V && cargo -V
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate backend coverage
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./virtual-voicebot-backend/lcov.info
+          flags: backend
+          name: backend-rust-coverage
+          fail_ci_if_error: true
