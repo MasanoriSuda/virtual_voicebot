@@ -267,6 +267,15 @@ fn parse_min_se(value: &str) -> Option<u64> {
     value.trim().parse::<u64>().ok()
 }
 
+fn sync_local_cseq_with_request(ctx: &mut InviteContext, req: &SipRequest) {
+    let remote_cseq = req
+        .header_value("CSeq")
+        .and_then(|value| parse_cseq_header(value).ok())
+        .map(|cseq| cseq.num)
+        .unwrap_or(0);
+    ctx.local_cseq = ctx.local_cseq.max(remote_cseq);
+}
+
 const RSEQ_MIN: u32 = 1;
 const RSEQ_MAX: u32 = 0x7FFF_FFFF;
 
@@ -1265,6 +1274,8 @@ impl SipCore {
             local_cseq: 0,
             expires_at: None,
         };
+        let mut ctx = ctx;
+        sync_local_cseq_with_request(&mut ctx, &req);
         if is_outbound_invite {
             self.outbound_call_id = Some(headers.call_id.clone());
         }
@@ -1362,6 +1373,7 @@ impl SipCore {
             ctx.final_ok = None;
             ctx.final_ok_payload = None;
             ctx.pending_refresh = None;
+            sync_local_cseq_with_request(ctx, &req);
             if let Some(cfg) = &session_timer {
                 ctx.session_timer = Some(cfg.clone());
             }
@@ -1689,13 +1701,14 @@ impl SipCore {
             }
             let bytes = resp.to_bytes();
             tx.on_final_sent(bytes.clone());
-            tx.last_request = Some(req);
+            tx.last_request = Some(req.clone());
             self.send_payload(peer, bytes);
         }
 
         if let Some(cfg) = session_timer {
             if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
                 ctx.session_timer = Some(cfg.clone());
+                sync_local_cseq_with_request(ctx, &req);
             }
             vec![SipEvent::SessionRefresh {
                 call_id: headers.call_id,
@@ -2291,13 +2304,17 @@ mod tests {
         (core, rx)
     }
 
-    fn inbound_invite_request(call_id: &str, allow: Option<&str>) -> SipRequest {
+    fn inbound_invite_request_with_cseq(
+        call_id: &str,
+        allow: Option<&str>,
+        cseq: u32,
+    ) -> SipRequest {
         let mut builder = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
             .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
             .header("From", "<sip:alice@example.com>;tag=alice")
             .header("To", "<sip:bob@example.com>")
             .header("Call-ID", call_id)
-            .header("CSeq", "1 INVITE");
+            .header("CSeq", format!("{cseq} INVITE"));
         if let Some(allow) = allow {
             builder = builder.header("Allow", allow);
         }
@@ -2305,7 +2322,16 @@ mod tests {
     }
 
     fn send_inbound_invite(core: &mut SipCore, call_id: &str, allow: Option<&str>) -> CallId {
-        let req = inbound_invite_request(call_id, allow);
+        send_inbound_invite_with_cseq(core, call_id, allow, 1)
+    }
+
+    fn send_inbound_invite_with_cseq(
+        core: &mut SipCore,
+        call_id: &str,
+        allow: Option<&str>,
+        cseq: u32,
+    ) -> CallId {
+        let req = inbound_invite_request_with_cseq(call_id, allow, cseq);
         let input = SipInput {
             peer: dummy_peer(),
             data: req.to_bytes(),
@@ -2370,7 +2396,7 @@ mod tests {
     #[test]
     fn session_refresh_uses_reinvite_when_update_not_allowed() {
         let (mut core, mut rx) = test_core();
-        let call_id = send_inbound_invite(&mut core, "call-reinvite", None);
+        let call_id = send_inbound_invite_with_cseq(&mut core, "call-reinvite", None, 41);
 
         core.handle_sip_command(
             &call_id,
@@ -2385,6 +2411,7 @@ mod tests {
             SipMethod::Invite => {}
             other => panic!("expected INVITE, got {:?}", other),
         }
+        assert_eq!(req.header_value("CSeq"), Some("42 INVITE"));
         assert_eq!(
             req.header_value("Session-Expires"),
             Some("90;refresher=uas")
@@ -2403,8 +2430,12 @@ mod tests {
     #[test]
     fn session_refresh_uses_update_when_peer_supports_it() {
         let (mut core, mut rx) = test_core();
-        let call_id =
-            send_inbound_invite(&mut core, "call-update", Some("INVITE, ACK, UPDATE, BYE"));
+        let call_id = send_inbound_invite_with_cseq(
+            &mut core,
+            "call-update",
+            Some("INVITE, ACK, UPDATE, BYE"),
+            11,
+        );
 
         core.handle_sip_command(
             &call_id,
@@ -2419,6 +2450,7 @@ mod tests {
             SipMethod::Update => {}
             other => panic!("expected UPDATE, got {:?}", other),
         }
+        assert_eq!(req.header_value("CSeq"), Some("12 UPDATE"));
         assert_eq!(
             req.header_value("Session-Expires"),
             Some("120;refresher=uas")
@@ -2436,7 +2468,7 @@ mod tests {
     #[test]
     fn reinvite_refresh_2xx_sends_ack_and_emits_session_refresh() {
         let (mut core, mut rx) = test_core();
-        let call_id = send_inbound_invite(&mut core, "call-refresh-ok", None);
+        let call_id = send_inbound_invite_with_cseq(&mut core, "call-refresh-ok", None, 21);
 
         core.handle_sip_command(
             &call_id,
@@ -2477,13 +2509,13 @@ mod tests {
             SipMethod::Ack => {}
             other => panic!("expected ACK, got {:?}", other),
         }
-        assert_eq!(ack.header_value("CSeq"), Some("1 ACK"));
+        assert_eq!(ack.header_value("CSeq"), Some("22 ACK"));
     }
 
     #[test]
     fn reinvite_refresh_408_sends_ack_then_bye_and_emits_failure() {
         let (mut core, mut rx) = test_core();
-        let call_id = send_inbound_invite(&mut core, "call-refresh-408", None);
+        let call_id = send_inbound_invite_with_cseq(&mut core, "call-refresh-408", None, 31);
 
         core.handle_sip_command(
             &call_id,
@@ -2525,7 +2557,7 @@ mod tests {
     #[test]
     fn reinvite_refresh_other_failure_does_not_send_bye() {
         let (mut core, mut rx) = test_core();
-        let call_id = send_inbound_invite(&mut core, "call-refresh-500", None);
+        let call_id = send_inbound_invite_with_cseq(&mut core, "call-refresh-500", None, 51);
 
         core.handle_sip_command(
             &call_id,
