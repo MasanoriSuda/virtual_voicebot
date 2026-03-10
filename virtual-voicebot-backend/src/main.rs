@@ -72,6 +72,25 @@ fn sanitize_optional_url(url: Option<&str>) -> String {
         .unwrap_or_else(|| "none".to_string())
 }
 
+async fn forward_refresh_failure(session_registry: &SessionRegistry, call_id: &CallId) {
+    if let Some(sess_tx) = session_registry.get(call_id).await {
+        let _ = sess_tx
+            .control_tx
+            .send(SessionControlIn::SipSessionRefreshFailed {
+                call_id: call_id.clone(),
+            })
+            .await;
+    }
+}
+
+async fn forward_sip_command_events(session_registry: &SessionRegistry, events: Vec<SipEvent>) {
+    for event in events {
+        if let SipEvent::SessionRefreshFailed { call_id } = event {
+            forward_refresh_failure(session_registry, &call_id).await;
+        }
+    }
+}
+
 fn log_ai_config() {
     let ai = config::ai_config();
 
@@ -493,14 +512,7 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                         SipEvent::SessionRefreshFailed { call_id } => {
-                            if let Some(sess_tx) = session_registry.get(&call_id).await {
-                                let _ = sess_tx
-                                    .control_tx
-                                    .send(SessionControlIn::SipSessionRefreshFailed {
-                                        call_id: call_id.clone(),
-                                    })
-                                    .await;
-                            }
+                            forward_refresh_failure(&session_registry, &call_id).await;
                         }
                         SipEvent::TransactionTimeout { call_id } => {
                             log::warn!("[main] TransactionTimeout for call_id={}", call_id);
@@ -609,21 +621,14 @@ async fn main() -> anyhow::Result<()> {
                         sip_core.handle_sip_command(&call_id, SipCommand::Send200 { answer });
                     }
                     SessionOut::SipSendSessionRefresh { expires, local_sdp } => {
-                        for event in sip_core.handle_sip_command(
-                            &call_id,
-                            SipCommand::SendSessionRefresh { expires, local_sdp },
-                        ) {
-                            if let SipEvent::SessionRefreshFailed { call_id } = event {
-                                if let Some(sess_tx) = session_registry.get(&call_id).await {
-                                    let _ = sess_tx
-                                        .control_tx
-                                        .send(SessionControlIn::SipSessionRefreshFailed {
-                                            call_id: call_id.clone(),
-                                        })
-                                        .await;
-                                }
-                            }
-                        }
+                        forward_sip_command_events(
+                            &session_registry,
+                            sip_core.handle_sip_command(
+                                &call_id,
+                                SipCommand::SendSessionRefresh { expires, local_sdp },
+                            ),
+                        )
+                        .await;
                     }
                     SessionOut::SipSendError { code, reason } => {
                         sip_core.handle_sip_command(
@@ -648,7 +653,41 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_optional_url, sanitized_display_url_for_log};
+    use super::{
+        forward_refresh_failure, forward_sip_command_events, sanitize_optional_url,
+        sanitized_display_url_for_log,
+    };
+    use tokio::sync::mpsc;
+    use tokio::time::{timeout, Duration};
+    use virtual_voicebot_backend::protocol::session::types::CallId;
+    use virtual_voicebot_backend::protocol::session::{
+        SessionControlIn, SessionHandle, SessionMediaIn, SessionRegistry,
+    };
+    use virtual_voicebot_backend::protocol::sip::SipEvent;
+
+    async fn build_test_session_registry(
+        call_id: &str,
+    ) -> (
+        SessionRegistry,
+        CallId,
+        mpsc::Receiver<SessionControlIn>,
+        mpsc::Receiver<SessionMediaIn>,
+    ) {
+        let registry = SessionRegistry::new();
+        let call_id = CallId::new(call_id.to_string()).expect("valid test call id");
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (media_tx, media_rx) = mpsc::channel(1);
+        registry
+            .insert(
+                call_id.clone(),
+                SessionHandle {
+                    control_tx,
+                    media_tx,
+                },
+            )
+            .await;
+        (registry, call_id, control_rx, media_rx)
+    }
 
     #[test]
     fn sanitized_display_url_for_log_returns_none_for_empty_or_whitespace() {
@@ -702,5 +741,49 @@ mod tests {
         );
         assert_eq!(sanitize_optional_url(Some("   ")), "none");
         assert_eq!(sanitize_optional_url(None), "none");
+    }
+
+    #[tokio::test]
+    async fn forward_refresh_failure_routes_to_session_control() {
+        let (registry, call_id, mut control_rx, _media_rx) =
+            build_test_session_registry("call-refresh-forward").await;
+
+        forward_refresh_failure(&registry, &call_id).await;
+
+        let control = timeout(Duration::from_millis(50), control_rx.recv())
+            .await
+            .expect("refresh failure should be forwarded")
+            .expect("control event");
+        assert!(matches!(
+            control,
+            SessionControlIn::SipSessionRefreshFailed {
+                call_id: forwarded_call_id,
+            } if forwarded_call_id == call_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn forward_sip_command_events_routes_immediate_refresh_failure() {
+        let (registry, call_id, mut control_rx, _media_rx) =
+            build_test_session_registry("call-refresh-command").await;
+
+        forward_sip_command_events(
+            &registry,
+            vec![SipEvent::SessionRefreshFailed {
+                call_id: call_id.clone(),
+            }],
+        )
+        .await;
+
+        let control = timeout(Duration::from_millis(50), control_rx.recv())
+            .await
+            .expect("immediate refresh failure should be forwarded")
+            .expect("control event");
+        assert!(matches!(
+            control,
+            SessionControlIn::SipSessionRefreshFailed {
+                call_id: forwarded_call_id,
+            } if forwarded_call_id == call_id
+        ));
     }
 }

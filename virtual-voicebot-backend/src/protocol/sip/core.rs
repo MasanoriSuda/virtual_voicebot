@@ -1174,8 +1174,6 @@ impl SipCore {
                     }
                     Err(SessionRefreshBuildError::CseqOverflow) => {
                         ctx.pending_refresh = None;
-                        action.bye_payload =
-                            build_bye_request(ctx, &self.cfg).map(|payload| (ctx.tx.peer, payload));
                         action.events.push(SipEvent::SessionRefreshFailed {
                             call_id: call_id.clone(),
                         });
@@ -2190,19 +2188,13 @@ impl SipCore {
                                 method,
                                 call_id
                             );
-                            let bye = if let Some(ctx) = self.invites.get_mut(call_id) {
-                                build_bye_request(ctx, &self.cfg)
-                                    .map(|payload| (ctx.tx.peer, payload))
-                            } else {
-                                None
-                            };
-                            if let Some((peer, payload)) = bye {
-                                self.send_payload(peer, payload);
-                            }
                             if self.outbound_call_id.as_ref() == Some(call_id) {
                                 self.outbound_call_id = None;
                             }
                             self.invites.remove(call_id);
+                            events.push(SipEvent::SessionRefreshFailed {
+                                call_id: call_id.clone(),
+                            });
                         }
                     }
                 } else {
@@ -2590,6 +2582,32 @@ mod tests {
     }
 
     #[test]
+    fn session_refresh_build_cseq_overflow_emits_failure_without_bye() {
+        let (mut core, mut rx) = test_core();
+        let call_id =
+            send_inbound_invite_with_cseq(&mut core, "call-refresh-overflow", None, u32::MAX);
+
+        let events = core.handle_sip_command(
+            &call_id,
+            SipCommand::SendSessionRefresh {
+                expires: Duration::from_secs(90),
+                local_sdp: Some(Sdp::pcmu("127.0.0.1", 4000)),
+            },
+        );
+
+        assert!(matches!(
+            events.as_slice(),
+            [SipEvent::SessionRefreshFailed { call_id }]
+                if call_id.as_str() == "call-refresh-overflow"
+        ));
+        assert!(!core.invites.contains_key(&call_id));
+        assert!(
+            rx.try_recv().is_err(),
+            "CSeq overflow should not send refresh requests or BYE"
+        );
+    }
+
+    #[test]
     fn reinvite_refresh_2xx_sends_ack_and_emits_session_refresh() {
         let (mut core, mut rx) = test_core();
         let call_id = send_inbound_invite_with_cseq(&mut core, "call-refresh-ok", None, 21);
@@ -2689,6 +2707,59 @@ mod tests {
             SipMethod::Bye => {}
             other => panic!("expected BYE, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn reinvite_refresh_422_retry_cseq_overflow_emits_failure_without_bye() {
+        let (mut core, mut rx) = test_core();
+        let call_id = send_inbound_invite_with_cseq(
+            &mut core,
+            "call-refresh-422-overflow",
+            None,
+            u32::MAX - 1,
+        );
+
+        core.handle_sip_command(
+            &call_id,
+            SipCommand::SendSessionRefresh {
+                expires: Duration::from_secs(90),
+                local_sdp: Some(Sdp::pcmu("127.0.0.1", 4000)),
+            },
+        );
+        let (_peer, outbound_req) = parse_sent_request(&mut rx);
+        let outbound_cseq = outbound_req
+            .header_value("CSeq")
+            .expect("outbound CSeq")
+            .to_string();
+        let outbound_via = outbound_req
+            .header_value("Via")
+            .expect("outbound Via")
+            .to_string();
+
+        let resp = SipResponseBuilder::new(422, "Session Interval Too Small")
+            .header("Call-ID", "call-refresh-422-overflow")
+            .header("CSeq", outbound_cseq)
+            .header("Min-SE", "120")
+            .build();
+        let events = core.handle_response(resp, dummy_peer());
+
+        assert!(matches!(
+            events.as_slice(),
+            [SipEvent::SessionRefreshFailed { call_id }]
+                if call_id.as_str() == "call-refresh-422-overflow"
+        ));
+        assert!(!core.invites.contains_key(&call_id));
+
+        let (_peer, ack) = parse_sent_request(&mut rx);
+        match ack.method {
+            SipMethod::Ack => {}
+            other => panic!("expected ACK, got {:?}", other),
+        }
+        assert_eq!(ack.header_value("Via"), Some(outbound_via.as_str()));
+        assert!(
+            rx.try_recv().is_err(),
+            "422 retry CSeq overflow should not send BYE after ACK"
+        );
     }
 
     #[test]
