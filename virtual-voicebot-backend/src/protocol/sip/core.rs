@@ -41,6 +41,7 @@ struct InviteContext {
     tx: InviteServerTransaction,
     req: SipRequest,
     remote_target_uri: String,
+    remote_cseq: Option<u32>,
     reliable: Option<ReliableProvisional>,
     expected_rack: Option<RAckHeader>,
     last_rseq: Option<u32>,
@@ -227,11 +228,19 @@ fn header_has_token(value: Option<&str>, token: &str) -> bool {
         .any(|part| part.eq_ignore_ascii_case(token))
 }
 
+fn request_allows_update(req: &SipRequest) -> bool {
+    header_has_token(req.header_value("Allow"), "UPDATE")
+}
+
 fn response_header_value<'a>(resp: &'a SipResponse, name: &str) -> Option<&'a str> {
     resp.headers
         .iter()
         .find(|header| header.name.eq_ignore_ascii_case(name))
         .map(|header| header.value.as_str())
+}
+
+fn response_allows_update(resp: &SipResponse) -> bool {
+    header_has_token(response_header_value(resp, "Allow"), "UPDATE")
 }
 
 fn payload_header_value<'a>(payload: &'a [u8], name: &str) -> Option<&'a str> {
@@ -288,13 +297,14 @@ fn parse_min_se(value: &str) -> Option<u64> {
     value.trim().parse::<u64>().ok()
 }
 
-fn sync_local_cseq_with_request(ctx: &mut InviteContext, req: &SipRequest) {
-    let remote_cseq = req
+fn sync_remote_cseq_with_request(ctx: &mut InviteContext, req: &SipRequest) {
+    if let Some(remote_cseq) = req
         .header_value("CSeq")
         .and_then(|value| parse_cseq_header(value).ok())
         .map(|cseq| cseq.num)
-        .unwrap_or(0);
-    ctx.local_cseq = ctx.local_cseq.max(remote_cseq);
+    {
+        ctx.remote_cseq = Some(remote_cseq);
+    }
 }
 
 fn request_remote_target_uri(req: &SipRequest) -> String {
@@ -1085,6 +1095,7 @@ impl SipCore {
         match resp.status_code {
             200..=299 => {
                 ctx.tx.peer = response_peer;
+                ctx.allow_update = response_allows_update(resp);
                 if let Some(remote_target_uri) = response_remote_target_uri(resp) {
                     ctx.remote_target_uri = remote_target_uri;
                 }
@@ -1247,11 +1258,7 @@ impl SipCore {
                 .header_value("CSeq")
                 .and_then(|value| parse_cseq_header(value).ok())
                 .map(|cseq| cseq.num);
-            let prev_cseq = ctx
-                .req
-                .header_value("CSeq")
-                .and_then(|value| parse_cseq_header(value).ok())
-                .map(|cseq| cseq.num);
+            let prev_cseq = ctx.remote_cseq;
             if req_cseq.is_some() && prev_cseq.is_some() && req_cseq == prev_cseq {
                 let (action, final_ok, tx_peer) = (
                     ctx.tx.on_retransmit(),
@@ -1327,19 +1334,20 @@ impl SipCore {
             tx,
             req: req.clone(),
             remote_target_uri: request_remote_target_uri(&req),
+            remote_cseq: None,
             reliable: None,
             expected_rack: None,
             last_rseq: None,
             session_timer: session_timer.clone(),
             final_ok: None,
             final_ok_payload: None,
-            allow_update: header_has_token(req.header_value("Allow"), "UPDATE"),
+            allow_update: request_allows_update(&req),
             pending_refresh: None,
             local_cseq: 0,
             expires_at: None,
         };
         let mut ctx = ctx;
-        sync_local_cseq_with_request(&mut ctx, &req);
+        sync_remote_cseq_with_request(&mut ctx, &req);
         ctx.remote_target_uri = request_remote_target_uri(&req);
         if is_outbound_invite {
             self.outbound_call_id = Some(headers.call_id.clone());
@@ -1431,6 +1439,7 @@ impl SipCore {
         if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
             ctx.req = req.clone();
             ctx.remote_target_uri = request_remote_target_uri(&req);
+            ctx.allow_update = request_allows_update(&req);
             ctx.tx = InviteServerTransaction::new(peer);
             ctx.tx.invite_req = Some(req.clone());
             ctx.reliable = None;
@@ -1439,7 +1448,7 @@ impl SipCore {
             ctx.final_ok = None;
             ctx.final_ok_payload = None;
             ctx.pending_refresh = None;
-            sync_local_cseq_with_request(ctx, &req);
+            sync_remote_cseq_with_request(ctx, &req);
             if let Some(cfg) = &session_timer {
                 ctx.session_timer = Some(cfg.clone());
             }
@@ -1775,8 +1784,9 @@ impl SipCore {
             if let Some(ctx) = self.invites.get_mut(&headers.call_id) {
                 ctx.session_timer = Some(cfg.clone());
                 ctx.remote_target_uri = request_remote_target_uri(&req);
+                ctx.allow_update = request_allows_update(&req);
                 ctx.tx.peer = peer;
-                sync_local_cseq_with_request(ctx, &req);
+                sync_remote_cseq_with_request(ctx, &req);
             }
             vec![SipEvent::SessionRefresh {
                 call_id: headers.call_id,
@@ -2439,12 +2449,25 @@ mod tests {
         (sent.peer, req)
     }
 
+    fn parse_sent_response(
+        rx: &mut mpsc::Receiver<SipTransportRequest>,
+    ) -> (TransportPeer, SipResponse) {
+        let sent = rx.try_recv().expect("sent response");
+        let text = String::from_utf8(sent.payload).expect("utf8 response");
+        let resp = match parse_sip_message(&text).expect("parse response") {
+            SipMessage::Response(resp) => resp,
+            other => panic!("expected response, got {:?}", other),
+        };
+        (sent.peer, resp)
+    }
+
     fn dummy_invite_context() -> InviteContext {
         let req = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com").build();
         InviteContext {
             tx: InviteServerTransaction::new(dummy_peer()),
             req,
             remote_target_uri: "sip:test@example.com".to_string(),
+            remote_cseq: None,
             reliable: None,
             expected_rack: None,
             last_rseq: None,
@@ -2495,7 +2518,7 @@ mod tests {
             SipMethod::Invite => {}
             other => panic!("expected INVITE, got {:?}", other),
         }
-        assert_eq!(req.header_value("CSeq"), Some("42 INVITE"));
+        assert_eq!(req.header_value("CSeq"), Some("1 INVITE"));
         assert_eq!(
             req.header_value("Session-Expires"),
             Some("90;refresher=uas")
@@ -2534,7 +2557,7 @@ mod tests {
             SipMethod::Update => {}
             other => panic!("expected UPDATE, got {:?}", other),
         }
-        assert_eq!(req.header_value("CSeq"), Some("12 UPDATE"));
+        assert_eq!(req.header_value("CSeq"), Some("1 UPDATE"));
         assert_eq!(
             req.header_value("Session-Expires"),
             Some("120;refresher=uas")
@@ -2547,6 +2570,76 @@ mod tests {
             .and_then(|ctx| ctx.pending_refresh.as_ref())
             .expect("pending refresh");
         assert_eq!(pending.method, SessionRefreshMethod::Update);
+    }
+
+    #[test]
+    fn session_refresh_falls_back_to_reinvite_after_response_drops_update_support() {
+        let (mut core, mut rx) = test_core();
+        let call_id = send_inbound_invite_with_cseq(
+            &mut core,
+            "call-update-fallback",
+            Some("INVITE, ACK, UPDATE, BYE"),
+            11,
+        );
+
+        core.handle_sip_command(
+            &call_id,
+            SipCommand::SendSessionRefresh {
+                expires: Duration::from_secs(120),
+                local_sdp: Some(Sdp::pcmu("127.0.0.1", 4000)),
+            },
+        );
+
+        let (_peer, first_req) = parse_sent_request(&mut rx);
+        match first_req.method {
+            SipMethod::Update => {}
+            other => panic!("expected UPDATE, got {:?}", other),
+        }
+
+        let resp = SipResponseBuilder::new(200, "OK")
+            .header("Call-ID", "call-update-fallback")
+            .header(
+                "CSeq",
+                first_req
+                    .header_value("CSeq")
+                    .expect("outbound update CSeq"),
+            )
+            .header("Contact", "<sip:target-no-update@example.net>")
+            .header("Allow", "INVITE, ACK, BYE")
+            .header("Session-Expires", "180;refresher=uas")
+            .build();
+        let events = core.handle_response(resp, refreshed_peer());
+
+        assert!(matches!(
+            events.as_slice(),
+            [SipEvent::SessionRefresh { call_id, timer }]
+            if call_id.as_str() == "call-update-fallback"
+                && timer.expires == Duration::from_secs(180)
+                && timer.refresher == SessionRefresher::Uas
+        ));
+        let ctx = core.invites.get(&call_id).expect("invite context");
+        assert!(
+            !ctx.allow_update,
+            "Allow response without UPDATE should disable UPDATE refresh"
+        );
+        assert_eq!(ctx.remote_target_uri, "sip:target-no-update@example.net");
+
+        core.handle_sip_command(
+            &call_id,
+            SipCommand::SendSessionRefresh {
+                expires: Duration::from_secs(90),
+                local_sdp: Some(Sdp::pcmu("127.0.0.1", 4000)),
+            },
+        );
+
+        let (peer, second_req) = parse_sent_request(&mut rx);
+        assert_eq!(peer, refreshed_peer());
+        match second_req.method {
+            SipMethod::Invite => {}
+            other => panic!("expected INVITE fallback, got {:?}", other),
+        }
+        assert_eq!(second_req.uri, "sip:target-no-update@example.net");
+        assert_eq!(second_req.header_value("CSeq"), Some("2 INVITE"));
     }
 
     #[test]
@@ -2584,8 +2677,11 @@ mod tests {
     #[test]
     fn session_refresh_build_cseq_overflow_emits_failure_without_bye() {
         let (mut core, mut rx) = test_core();
-        let call_id =
-            send_inbound_invite_with_cseq(&mut core, "call-refresh-overflow", None, u32::MAX);
+        let call_id = send_inbound_invite_with_cseq(&mut core, "call-refresh-overflow", None, 41);
+        core.invites
+            .get_mut(&call_id)
+            .expect("invite context")
+            .local_cseq = u32::MAX;
 
         let events = core.handle_sip_command(
             &call_id,
@@ -2605,6 +2701,100 @@ mod tests {
             rx.try_recv().is_err(),
             "CSeq overflow should not send refresh requests or BYE"
         );
+    }
+
+    #[test]
+    fn inbound_reinvite_does_not_advance_local_cseq() {
+        let (mut core, mut rx) = test_core();
+        let call_id = send_inbound_invite_with_cseq(&mut core, "call-remote-reinvite", None, 41);
+
+        let reinvite = SipRequestBuilder::new(SipMethod::Invite, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>;tag=rustbot")
+            .header("Call-ID", "call-remote-reinvite")
+            .header("CSeq", "99 INVITE")
+            .build();
+        let events = core.handle_input(&SipInput {
+            peer: dummy_peer(),
+            data: reinvite.to_bytes(),
+        });
+
+        assert!(matches!(
+            events.as_slice(),
+            [SipEvent::ReInvite { call_id, .. }] if call_id.as_str() == "call-remote-reinvite"
+        ));
+        assert_eq!(
+            core.invites
+                .get(&call_id)
+                .expect("invite context")
+                .remote_cseq,
+            Some(99)
+        );
+
+        core.handle_sip_command(
+            &call_id,
+            SipCommand::SendSessionRefresh {
+                expires: Duration::from_secs(90),
+                local_sdp: Some(Sdp::pcmu("127.0.0.1", 4000)),
+            },
+        );
+
+        let (_peer, req) = parse_sent_request(&mut rx);
+        assert_eq!(req.header_value("CSeq"), Some("1 INVITE"));
+    }
+
+    #[test]
+    fn inbound_update_does_not_advance_local_cseq() {
+        let (mut core, mut rx) = test_core();
+        let call_id = send_inbound_invite_with_cseq(
+            &mut core,
+            "call-remote-update",
+            Some("INVITE, ACK, UPDATE, BYE"),
+            11,
+        );
+
+        let update = SipRequestBuilder::new(SipMethod::Update, "sip:test@example.com")
+            .header("Via", "SIP/2.0/UDP 127.0.0.1:5060")
+            .header("From", "<sip:alice@example.com>;tag=alice")
+            .header("To", "<sip:bob@example.com>;tag=rustbot")
+            .header("Call-ID", "call-remote-update")
+            .header("CSeq", "77 UPDATE")
+            .header("Allow", "INVITE, ACK, UPDATE, BYE")
+            .header("Contact", "<sip:alice-refresh@example.com>")
+            .header("Session-Expires", "180;refresher=uas")
+            .build();
+        let events = core.handle_input(&SipInput {
+            peer: dummy_peer(),
+            data: update.to_bytes(),
+        });
+
+        assert!(matches!(
+            events.as_slice(),
+            [SipEvent::SessionRefresh { call_id, timer }]
+                if call_id.as_str() == "call-remote-update"
+                    && timer.expires == Duration::from_secs(180)
+        ));
+        let (_peer, resp) = parse_sent_response(&mut rx);
+        assert_eq!(resp.status_code, 200);
+        assert_eq!(
+            core.invites
+                .get(&call_id)
+                .expect("invite context")
+                .remote_cseq,
+            Some(77)
+        );
+
+        core.handle_sip_command(
+            &call_id,
+            SipCommand::SendSessionRefresh {
+                expires: Duration::from_secs(120),
+                local_sdp: None,
+            },
+        );
+
+        let (_peer, req) = parse_sent_request(&mut rx);
+        assert_eq!(req.header_value("CSeq"), Some("1 UPDATE"));
     }
 
     #[test]
@@ -2654,7 +2844,7 @@ mod tests {
             other => panic!("expected ACK, got {:?}", other),
         }
         assert_eq!(ack.uri, "sip:target-refresh@example.net");
-        assert_eq!(ack.header_value("CSeq"), Some("22 ACK"));
+        assert_eq!(ack.header_value("CSeq"), Some("1 ACK"));
 
         core.handle_sip_command(&call_id, SipCommand::SendBye);
         let (bye_peer, bye) = parse_sent_request(&mut rx);
@@ -2712,12 +2902,12 @@ mod tests {
     #[test]
     fn reinvite_refresh_422_retry_cseq_overflow_emits_failure_without_bye() {
         let (mut core, mut rx) = test_core();
-        let call_id = send_inbound_invite_with_cseq(
-            &mut core,
-            "call-refresh-422-overflow",
-            None,
-            u32::MAX - 1,
-        );
+        let call_id =
+            send_inbound_invite_with_cseq(&mut core, "call-refresh-422-overflow", None, 41);
+        core.invites
+            .get_mut(&call_id)
+            .expect("invite context")
+            .local_cseq = u32::MAX - 1;
 
         core.handle_sip_command(
             &call_id,
