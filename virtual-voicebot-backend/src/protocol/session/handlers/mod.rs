@@ -684,13 +684,22 @@ impl SessionCoordinator {
                 if let (Some(expires), Some(SessionRefresher::Uas)) =
                     (self.session_expires, self.session_refresher)
                 {
-                    let _ = self.session_out_tx.try_send((
-                        self.call_id.clone(),
-                        SessionOut::SipSendSessionRefresh {
-                            expires,
-                            local_sdp: self.local_sdp.clone(),
-                        },
-                    ));
+                    if let Err(err) = self
+                        .session_out_tx
+                        .send((
+                            self.call_id.clone(),
+                            SessionOut::SipSendSessionRefresh {
+                                expires,
+                                local_sdp: self.local_sdp.clone(),
+                            },
+                        ))
+                        .await
+                    {
+                        warn!(
+                            "[session {}] failed to emit session refresh request: {:?}",
+                            self.call_id, err
+                        );
+                    }
                 }
             }
             (_, SessionControlIn::SessionTimerFired) => {
@@ -1719,7 +1728,19 @@ mod tests {
         AppEventRx,
         mpsc::Receiver<SessionControlIn>,
     ) {
-        let (session_out_tx, session_out_rx) = mpsc::channel(32);
+        build_test_session_with_session_out_capacity(routing_port, 32)
+    }
+
+    fn build_test_session_with_session_out_capacity(
+        routing_port: Arc<dyn RoutingPort>,
+        session_out_capacity: usize,
+    ) -> (
+        SessionCoordinator,
+        mpsc::Receiver<(CallId, SessionOut)>,
+        AppEventRx,
+        mpsc::Receiver<SessionControlIn>,
+    ) {
+        let (session_out_tx, session_out_rx) = mpsc::channel(session_out_capacity);
         let (app_tx, app_rx) = app_event_channel(16);
         let (control_tx, control_rx) =
             mpsc::channel(super::super::SESSION_CONTROL_CHANNEL_CAPACITY);
@@ -2491,6 +2512,55 @@ mod tests {
         assert!(advance);
         let (_call_id, out) = session_out_rx.try_recv().expect("session refresh output");
         match out {
+            SessionOut::SipSendSessionRefresh { expires, local_sdp } => {
+                assert_eq!(expires, Duration::from_secs(90));
+                assert!(matches!(
+                    local_sdp,
+                    Some(sdp) if sdp.ip == "127.0.0.1" && sdp.port == 10000
+                ));
+            }
+            other => panic!("expected SipSendSessionRefresh, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn session_refresh_due_waits_for_session_out_capacity_instead_of_dropping() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx, _app_rx, _control_rx) =
+            build_test_session_with_session_out_capacity(routing_port, 1);
+        session.local_sdp = Some(Sdp::pcmu("127.0.0.1", 10000));
+        session.session_expires = Some(Duration::from_secs(90));
+        session.session_refresher = Some(SessionRefresher::Uas);
+
+        session
+            .session_out_tx
+            .send((session.call_id.clone(), SessionOut::RtpStopTx))
+            .await
+            .expect("prefill session output channel");
+
+        let drain_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let first = session_out_rx.recv().await.expect("prefill output");
+            let second = timeout(Duration::from_millis(100), session_out_rx.recv())
+                .await
+                .expect("session refresh output should arrive after capacity is freed")
+                .expect("session refresh output");
+            (first, second)
+        });
+
+        let advance = timeout(
+            Duration::from_millis(200),
+            session
+                .handle_control_event(SessState::Established, SessionControlIn::SessionRefreshDue),
+        )
+        .await
+        .expect("session refresh send should wait for channel capacity");
+
+        assert!(advance);
+
+        let (first, second) = drain_task.await.expect("drain task should complete");
+        assert!(matches!(first.1, SessionOut::RtpStopTx));
+        match second.1 {
             SessionOut::SipSendSessionRefresh { expires, local_sdp } => {
                 assert_eq!(expires, Duration::from_secs(90));
                 assert!(matches!(

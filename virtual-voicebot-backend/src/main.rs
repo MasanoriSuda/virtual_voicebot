@@ -609,10 +609,21 @@ async fn main() -> anyhow::Result<()> {
                         sip_core.handle_sip_command(&call_id, SipCommand::Send200 { answer });
                     }
                     SessionOut::SipSendSessionRefresh { expires, local_sdp } => {
-                        sip_core.handle_sip_command(
+                        for event in sip_core.handle_sip_command(
                             &call_id,
                             SipCommand::SendSessionRefresh { expires, local_sdp },
-                        );
+                        ) {
+                            if let SipEvent::SessionRefreshFailed { call_id } = event {
+                                if let Some(sess_tx) = session_registry.get(&call_id).await {
+                                    let _ = sess_tx
+                                        .control_tx
+                                        .send(SessionControlIn::SipSessionRefreshFailed {
+                                            call_id: call_id.clone(),
+                                        })
+                                        .await;
+                                }
+                            }
+                        }
                     }
                     SessionOut::SipSendError { code, reason } => {
                         sip_core.handle_sip_command(

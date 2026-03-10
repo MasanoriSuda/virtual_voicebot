@@ -287,6 +287,7 @@ pub(crate) fn next_session_state(current: SessState, event: &SessionControlIn) -
         | SessionControlIn::BLegBye
         | SessionControlIn::AppHangup
         | SessionControlIn::SessionTimerFired
+        | SessionControlIn::SipSessionRefreshFailed { .. }
         | SessionControlIn::Abort(_) => SessState::Terminated,
         SessionControlIn::RingDurationElapsed => current,
         SessionControlIn::SipInvite { .. } => match current {
