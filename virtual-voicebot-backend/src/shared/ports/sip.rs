@@ -71,6 +71,10 @@ pub enum SipEvent {
         call_id: CallId,
         timer: SessionTimerInfo,
     },
+    /// outbound session refresh が失敗し、通話終了へ移行するときの通知
+    SessionRefreshFailed {
+        call_id: CallId,
+    },
     Unknown,
 }
 
@@ -85,8 +89,11 @@ pub enum SipCommand {
     Send183 { answer: Sdp },
     /// SIP final (200 + SDP)
     Send200 { answer: Sdp },
-    /// SIP UPDATE によるセッションリフレッシュ
-    SendUpdate { expires: Duration },
+    /// SIP UPDATE / re-INVITE によるセッションリフレッシュ
+    SendSessionRefresh {
+        expires: Duration,
+        local_sdp: Option<Sdp>,
+    },
     /// SIP エラー応答（INVITE の最終応答）
     SendError { code: u16, reason: String },
     /// SIP BYE送信（UAC側として終話）

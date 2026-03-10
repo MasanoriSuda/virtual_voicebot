@@ -75,4 +75,20 @@ mod tests {
         let commands = sm.process_event(SessionEvent::from(&event));
         assert_eq!(commands, vec![SessionCommand::Transition(SessState::Early)]);
     }
+
+    #[test]
+    fn process_event_terminates_on_sip_session_refresh_failed() {
+        let mut sm = SessionStateMachine::new();
+        sm.apply_commands(&[SessionCommand::Transition(SessState::Established)]);
+
+        let event = SessionControlIn::SipSessionRefreshFailed {
+            call_id: CallId::new("call".to_string()).expect("valid test call id"),
+        };
+
+        let commands = sm.process_event(SessionEvent::from(&event));
+        assert_eq!(
+            commands,
+            vec![SessionCommand::Transition(SessState::Terminated)]
+        );
+    }
 }
