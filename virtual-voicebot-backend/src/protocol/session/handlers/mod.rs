@@ -13,7 +13,6 @@ use crate::protocol::rtp::codec::mulaw_to_linear16;
 use crate::protocol::session::b2bua;
 use crate::protocol::session::types::{
     IvrState, SessState, SessionControlIn, SessionMediaIn, SessionOut, SessionRefresher,
-    SessionTimerInfo,
 };
 use crate::service::routing::{ActionConfig, ActionExecutor, RuleEvaluator};
 use crate::shared::ports::app::{AppEvent, EndReason, RtpAudioChunk};
@@ -639,6 +638,28 @@ impl SessionCoordinator {
             (_, SessionControlIn::SipSessionExpires { timer }) => {
                 self.update_session_expires(timer);
             }
+            (_, SessionControlIn::SipSessionRefreshFailed { call_id: _ }) => {
+                warn!(
+                    "[session {}] session refresh failed after BYE, cleaning up session",
+                    self.call_id
+                );
+                self.stop_ring_delay();
+                self.cancel_transfer();
+                self.shutdown_b_leg(true).await;
+                self.cancel_playback();
+                self.stop_keepalive_timer();
+                self.stop_session_timer();
+                self.stop_ivr_timeout();
+                self.mark_transfer_ended();
+                self.stop_recorders();
+                self.send_ingest("ended").await;
+                self.rtp.stop(self.call_id.as_str());
+                let _ = self
+                    .session_out_tx
+                    .send((self.call_id.clone(), SessionOut::RtpStopTx))
+                    .await;
+                self.send_call_ended(EndReason::Timeout);
+            }
             (_, SessionControlIn::IvrTimeout) => {
                 if self.ivr_state == IvrState::IvrMenuWaiting {
                     if self.ivr_keypad_node_id.is_some() {
@@ -663,13 +684,13 @@ impl SessionCoordinator {
                 if let (Some(expires), Some(SessionRefresher::Uas)) =
                     (self.session_expires, self.session_refresher)
                 {
-                    let _ = self
-                        .session_out_tx
-                        .try_send((self.call_id.clone(), SessionOut::SipSendUpdate { expires }));
-                    self.update_session_expires(SessionTimerInfo {
-                        expires,
-                        refresher: SessionRefresher::Uas,
-                    });
+                    let _ = self.session_out_tx.try_send((
+                        self.call_id.clone(),
+                        SessionOut::SipSendSessionRefresh {
+                            expires,
+                            local_sdp: self.local_sdp.clone(),
+                        },
+                    ));
                 }
             }
             (_, SessionControlIn::SessionTimerFired) => {
@@ -1484,7 +1505,7 @@ mod tests {
     use crate::shared::config::{
         OutboundConfig, RegistrarConfig, RegistrarTransport, SessionRuntimeConfig,
     };
-    use crate::shared::ports::app::app_event_channel;
+    use crate::shared::ports::app::{app_event_channel, AppEvent, AppEventRx, EndReason};
     use crate::shared::ports::call_log_port::{CallLogPort, EndedCallLog};
     use crate::shared::ports::ingest::{IngestError, IngestFuture, IngestPayload, IngestPort};
     use crate::shared::ports::routing_port::{
@@ -1497,7 +1518,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
-    use tokio::time::Duration;
+    use tokio::time::{timeout, Duration};
 
     struct DummyIngestPort;
 
@@ -1690,12 +1711,17 @@ mod tests {
         }
     }
 
-    fn build_test_session(
+    fn build_test_session_with_observers(
         routing_port: Arc<dyn RoutingPort>,
-    ) -> (SessionCoordinator, mpsc::Receiver<(CallId, SessionOut)>) {
+    ) -> (
+        SessionCoordinator,
+        mpsc::Receiver<(CallId, SessionOut)>,
+        AppEventRx,
+        mpsc::Receiver<SessionControlIn>,
+    ) {
         let (session_out_tx, session_out_rx) = mpsc::channel(32);
-        let (app_tx, _app_rx) = app_event_channel(16);
-        let (control_tx, _control_rx) =
+        let (app_tx, app_rx) = app_event_channel(16);
+        let (control_tx, control_rx) =
             mpsc::channel(super::super::SESSION_CONTROL_CHANNEL_CAPACITY);
         let (media_tx, _media_rx) = mpsc::channel(super::super::SESSION_MEDIA_CHANNEL_CAPACITY);
         let base_cfg = crate::shared::config::Config::from_env().expect("config loads");
@@ -1791,6 +1817,14 @@ mod tests {
             dtmf_history: Vec::new(),
             notification_sent: false,
         };
+        (session, session_out_rx, app_rx, control_rx)
+    }
+
+    fn build_test_session(
+        routing_port: Arc<dyn RoutingPort>,
+    ) -> (SessionCoordinator, mpsc::Receiver<(CallId, SessionOut)>) {
+        let (session, session_out_rx, _app_rx, _control_rx) =
+            build_test_session_with_observers(routing_port);
         (session, session_out_rx)
     }
 
@@ -2440,5 +2474,83 @@ mod tests {
             "interrupt-first should clear queued chunks from old generation"
         );
         assert!(session.playback.is_some());
+    }
+
+    #[tokio::test]
+    async fn session_refresh_due_emits_session_refresh_request_with_local_sdp() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx) = build_test_session(routing_port);
+        session.local_sdp = Some(Sdp::pcmu("127.0.0.1", 10000));
+        session.session_expires = Some(Duration::from_secs(90));
+        session.session_refresher = Some(SessionRefresher::Uas);
+
+        let advance = session
+            .handle_control_event(SessState::Established, SessionControlIn::SessionRefreshDue)
+            .await;
+
+        assert!(advance);
+        let (_call_id, out) = session_out_rx.try_recv().expect("session refresh output");
+        match out {
+            SessionOut::SipSendSessionRefresh { expires, local_sdp } => {
+                assert_eq!(expires, Duration::from_secs(90));
+                assert!(matches!(
+                    local_sdp,
+                    Some(sdp) if sdp.ip == "127.0.0.1" && sdp.port == 10000
+                ));
+            }
+            other => panic!("expected SipSendSessionRefresh, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn sip_session_refresh_failed_stops_timers_and_emits_timeout_end() {
+        let routing_port = Arc::new(NoopRoutingPort::new());
+        let (mut session, mut session_out_rx, app_rx, mut control_rx) =
+            build_test_session_with_observers(routing_port);
+        session.started_at = Some(tokio::time::Instant::now());
+        session
+            .timers
+            .start_keepalive(session.control_tx.clone(), Duration::from_millis(100));
+        session.timers.start_session_timer(
+            session.control_tx.clone(),
+            Duration::from_millis(120),
+            Some(Duration::from_millis(80)),
+        );
+
+        let call_id = session.call_id.clone();
+        let advance = session
+            .handle_control_event(
+                SessState::Established,
+                SessionControlIn::SipSessionRefreshFailed {
+                    call_id: call_id.clone(),
+                },
+            )
+            .await;
+
+        assert!(advance);
+
+        let (emitted_call_id, out) = session_out_rx.recv().await.expect("session output");
+        assert_eq!(emitted_call_id, call_id);
+        assert!(matches!(out, SessionOut::RtpStopTx));
+
+        let app_event = timeout(Duration::from_millis(50), app_rx.recv())
+            .await
+            .expect("call ended should be emitted")
+            .expect("app event");
+        assert!(matches!(
+            app_event,
+            AppEvent::CallEnded {
+                call_id: ended_call_id,
+                reason: EndReason::Timeout,
+                ..
+            } if ended_call_id == call_id
+        ));
+
+        assert!(
+            timeout(Duration::from_millis(180), control_rx.recv())
+                .await
+                .is_err(),
+            "keepalive/session/refresh timers should be stopped after refresh failure"
+        );
     }
 }

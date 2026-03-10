@@ -110,6 +110,10 @@ pub enum SessionControlIn {
     SipSessionExpires {
         timer: SessionTimerInfo,
     },
+    /// outbound session refresh が失敗し、SIP core 側で BYE を送信済み
+    SipSessionRefreshFailed {
+        call_id: CallId,
+    },
     Abort(SessionError),
 }
 
@@ -194,9 +198,10 @@ pub enum SessionOut {
     SipSend200 {
         answer: Sdp,
     },
-    /// SIP UPDATE によるセッションリフレッシュ
-    SipSendUpdate {
+    /// SIP UPDATE / re-INVITE によるセッションリフレッシュ
+    SipSendSessionRefresh {
         expires: Duration,
+        local_sdp: Option<Sdp>,
     },
     /// SIP エラー応答（INVITE の最終応答）
     SipSendError {

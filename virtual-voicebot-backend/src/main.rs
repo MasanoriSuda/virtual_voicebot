@@ -492,6 +492,16 @@ async fn main() -> anyhow::Result<()> {
                                     .await;
                             }
                         }
+                        SipEvent::SessionRefreshFailed { call_id } => {
+                            if let Some(sess_tx) = session_registry.get(&call_id).await {
+                                let _ = sess_tx
+                                    .control_tx
+                                    .send(SessionControlIn::SipSessionRefreshFailed {
+                                        call_id: call_id.clone(),
+                                    })
+                                    .await;
+                            }
+                        }
                         SipEvent::TransactionTimeout { call_id } => {
                             log::warn!("[main] TransactionTimeout for call_id={}", call_id);
                             if let Some(sess_tx) = session_registry.get(&call_id).await {
@@ -598,8 +608,11 @@ async fn main() -> anyhow::Result<()> {
                     SessionOut::SipSend200 { answer } => {
                         sip_core.handle_sip_command(&call_id, SipCommand::Send200 { answer });
                     }
-                    SessionOut::SipSendUpdate { expires } => {
-                        sip_core.handle_sip_command(&call_id, SipCommand::SendUpdate { expires });
+                    SessionOut::SipSendSessionRefresh { expires, local_sdp } => {
+                        sip_core.handle_sip_command(
+                            &call_id,
+                            SipCommand::SendSessionRefresh { expires, local_sdp },
+                        );
                     }
                     SessionOut::SipSendError { code, reason } => {
                         sip_core.handle_sip_command(
