@@ -41,6 +41,7 @@ STEER-{イシュー番号}_{slug}.md
 | [STEER-132](STEER-132_call-action-ui.md) | 着信時アクション決定 UI | Approved | #132 | P1 | 番号グループ × ルール評価による着信アクション設定、Allow(VR/IV/VM) / Deny(BZ/NR/AN)、JSON ストア永続化 |
 | [STEER-134](STEER-134_ivr-flow-ui.md) | IVR フロー管理 UI | Approved | #134 | P1 | DTMF メニュー定義（アナウンス→入力待ち→ルーティング）、3層ネスト、例外系（無効入力/タイムアウト/fallback）、JSON ストア永続化 |
 | [STEER-270](STEER-270_call-history-status-label.md) | 発着信履歴ステータス・通話時間の表示改善 | Draft | #270 | P1 | ステータスを5分類（常時着信拒否/不在着信/IVR離脱/留守電/通話終了）に分類、着信拒否・VR不在着信時の通話時間を 0秒表示 |
+| [STEER-282](STEER-282_flutter-frontend-parity.md) | Flutter によるフロントエンド相当の制御実装 | Draft | #282 | P2 | Flutter でモバイル/デスクトップ向けに現行フロントエンド相当の制御 UI を提供する（Issue 本文空のため Open Questions 主体） |
 
 ---
 
@@ -91,3 +92,5 @@ STEER-{イシュー番号}_{slug}.md
 | 2026-02-08 | 1.9 | STEER-134 追加（IVR フロー管理 UI） | Claude Code |
 | 2026-02-08 | 2.0 | STEER-134 承認（Approved） | Claude Code |
 | 2026-03-01 | 2.1 | STEER-270 追加（発着信履歴ステータス・通話時間の表示改善） | Claude Code |
+| 2026-04-18 | 2.2 | STEER-282 追加（Flutter によるフロントエンド相当の制御実装、Draft） | Claude Code |
+| 2026-04-18 | 2.3 | STEER-282 レビュー指摘対応（SoT/認証 PRECOND 追加、IT 追記、スコープ明記） | Claude Code |

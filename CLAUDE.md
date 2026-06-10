@@ -1,8 +1,9 @@
-<!-- SOURCE_OF_TRUTH: Claude Code共通指示 -->
-# CLAUDE.md
+<!-- SOURCE_OF_TRUTH: Codex単独運用共通指示 -->
+# CLAUDE.md（Codex 単独運用互換ファイル）
 
-## 役割（Claude Code）
-- あなた（Claude Code）は、このリポジトリでは **ドキュメント/仕様担当**です。
+## 役割（Codex）
+- 本ファイルは歴史的なファイル名を維持しているが、現在の正は **Codex 単独運用の共通指示**です。
+- Codex は、このリポジトリでは **ドキュメント/仕様/実装/テスト担当**です。
 - 取り扱う成果物：
   - プロセス定義：virtual-voicebot-backend/docs/process/** , virtual-voicebot-frontend/docs/process/**
   - 要件仕様：docs/requirements/** , virtual-voicebot-backend/docs/requirements/** , virtual-voicebot-frontend/docs/requirements/**
@@ -14,27 +15,26 @@
     - 配置先: Backend → `virtual-voicebot-backend/docs/steering/`
     - 配置先: Frontend → `virtual-voicebot-frontend/docs/steering/`
     - 配置先: 横断（Frontend-Backend 連携）→ `docs/steering/`
-  - README/CONTRIBUTING/規約ドキュメント（本体作成のみ）
-- **プロダクションコードの実装・修正はしないでください。**
-  - コード変更が必要な依頼の場合は、(1)仕様案 (2)受入条件 (3)未確定点/質問 を出し、
-    「実装はCodex担当へ引き継いでください」と明記してください。
+  - README/CONTRIBUTING/規約ドキュメント
+  - プロダクションコード、テスト、設定ファイル
+- プロダクションコードの実装・修正は [virtual-voicebot-backend/AGENTS.md](virtual-voicebot-backend/AGENTS.md) の実装規約に従う。
 
-### Claude Code の禁止事項
+### Codex の禁止事項
 
-- **プロダクションコードの実装・修正は行わない**
 - **Status を勝手に変更しない**（Status 更新は人間が判断）
 - **ストーリー（§2）変更は必ず Issue で合意を得てから行う**
+- **意味が変わる docs 編集は `DOCS_OK` なしで行わない**（軽微修正を除く）
 
-### 責務の境界（Codex との分担）
+### 責務の境界（Codex 単独運用）
 
-| 成果物 | Claude Code | Codex | 条件 |
-|--------|-------------|-------|------|
-| ステアリング（新規Draft作成） | ✓ 担当 | ❌ 禁止 | - |
-| ステアリング（Review時修正） | ✓ 担当 | ❌ 禁止 | - |
-| ステアリング（段取り更新） | - | ✓ 担当 | Status: Approved以降 |
-| 本体仕様書（RD/BD/DD/UT等） | ✓ 担当 | △ 可 | **DOCS_OK 必須** |
-| README/CONTRIBUTING/規約 | ✓ 担当 | △ 可 | **DOCS_OK 必須** |
-| プロダクションコード | - | ✓ 担当 | - |
+| 成果物 | Codex | オーナー | 条件 |
+|--------|--------|----------|------|
+| ステアリング（新規Draft作成） | ✓ 担当 | Status 判断 | Issue 参照必須 |
+| ステアリング（Review時修正） | ✓ 担当 | 方針承認 | `DOCS_OK` 必須 |
+| ステアリング（段取り更新） | ✓ 担当 | 必要時確認 | Status: Approved以降 |
+| 本体仕様書（RD/BD/DD/UT等） | ✓ 担当 | 方針承認 | **DOCS_OK 必須** |
+| README/CONTRIBUTING/規約 | ✓ 担当 | 方針承認 | **DOCS_OK 必須** |
+| プロダクションコード | ✓ 担当 | レビュー/承認 | Issue 参照必須 |
 
 ## 開発アプローチ
 
@@ -46,13 +46,13 @@
 
 ## AI エージェントの責務分担
 
-| 観点 | Claude Code | Codex | CodeRabbit |
-|------|-------------|-------|------------|
-| **主担当** | 仕様/ドキュメント整合性 | 実装/テスト | コードレビュー |
-| **レビュー対象** | docs 矛盾、V字トレース、運用観点 | 依存方向、非同期境界、timeout/backpressure | コード品質、セキュリティ、パフォーマンス |
-| **出力** | RD/BD/DD/ステアリング、質問リスト | 最小差分コード修正案 | PR コメント、改善提案 |
-| **コード変更** | ❌ しない | ✓ する | ❌ しない（指摘のみ） |
-| **詳細定義** | 本ファイル (CLAUDE.md) | [virtual-voicebot-backend/AGENTS.md](virtual-voicebot-backend/AGENTS.md) | GitHub App 設定 |
+| 観点 | Codex | CodeRabbit | オーナー |
+|------|--------|------------|----------|
+| **主担当** | 仕様/ドキュメント整合性、実装/テスト | コードレビュー | Status 判断、方針承認 |
+| **レビュー対象** | docs 矛盾、V字トレース、依存方向、非同期境界、timeout/backpressure | コード品質、セキュリティ、パフォーマンス | 要件・運用判断 |
+| **出力** | RD/BD/DD/ステアリング、質問リスト、最小差分コード修正 | PR コメント、改善提案 | 承認/差し戻し |
+| **コード変更** | ✓ する | ❌ しない（指摘のみ） | 必要時のみ |
+| **詳細定義** | 本ファイル (CLAUDE.md), [virtual-voicebot-backend/AGENTS.md](virtual-voicebot-backend/AGENTS.md) | GitHub App 設定 | Issue/PR コメント |
 
 ## 合意（チケット）ゲート
 - **合意（チケット参照）が確認できない限り、作業を開始しないでください。**
@@ -75,7 +75,7 @@
 4. リスク/ロールバック観点（必要に応じて）
 
 ## 追加：レビュー任務（必須）
-Claude Codeは VSCodeワークスペース全体のレビューを行う（ただし実装はしない）。
+Codex は VSCode ワークスペース全体のレビューを行い、Issue 参照と必要な `DOCS_OK` が確認できる範囲で修正する。
 
 ### レビュー観点
 - docs（design/contract/recording）とコードの矛盾がないか
@@ -92,7 +92,7 @@ Claude Codeは VSCodeワークスペース全体のレビューを行う（た�
 ## レビュー結果の記録（必須）
 - レビュー結果は必ず PR 本文に要約（重大/中/軽 + 根拠）として残す。
 - レビュー全文は `docs/reviews/YYYY-MM-DD_issue-<n>.md` に保存する（または保存案を提示する）。
-- 同じ指摘が2回以上出た場合は、再発防止として `CLAUDE.md` / `AGENTS.md` / `CONVENTIONS.md` のいずれかにルールとして追記提案する。
+- 同じ指摘が2回以上出た場合は、再発防止として `CLAUDE.md` / `AGENTS.md` / `CONVENTIONS.md` のいずれかにルールとして追記提案する。追記は `DOCS_OK` の範囲で行う。
 
 ## ステアリング運用
 
@@ -111,7 +111,7 @@ Claude Codeは VSCodeワークスペース全体のレビューを行う（た�
 2. ステアリングファイル作成（Draft）
 3. レビュー（Review）
 4. 承認（Approved）
-5. 実装（Codexへ引き継ぎ）
+5. 実装（Codex が継続して担当）
 6. コードレビュー（CodeRabbit が自動実施）
 7. マージ（Merged）→ 本体仕様書へ反映
 

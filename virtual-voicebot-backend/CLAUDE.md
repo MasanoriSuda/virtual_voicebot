@@ -1,13 +1,13 @@
-<!-- SOURCE_OF_TRUTH: Claude Code Backend開発ガイド -->
-# CLAUDE.md (Backend)
+<!-- SOURCE_OF_TRUTH: Codex Backend開発ガイド -->
+# CLAUDE.md (Backend / Codex 単独運用互換ファイル)
 
-> AI/Claude Code 向けバックエンド開発ガイド
+> AI/Codex 向けバックエンド開発ガイド
 
 ## 概要
 
-本ファイルは `virtual-voicebot-backend` の開発を進める上で AI（Claude Code / Codex）が遵守すべきルールを定義する。
+本ファイルは `virtual-voicebot-backend` の開発を進める上で Codex が遵守すべきルールを定義する。
 
-**上位ドキュメント**: [/CLAUDE.md](../CLAUDE.md)（リポジトリ共通）、[AGENTS.md](AGENTS.md)（Backend 実装詳細）
+**上位ドキュメント**: [/CLAUDE.md](../CLAUDE.md)（Codex 単独運用共通）、[AGENTS.md](AGENTS.md)（Backend 実装詳細）
 
 ---
 
@@ -91,7 +91,7 @@ V字モデル・品質ゲート・トレーサビリティを定義する。
 2. **ステアリング作成**: [TEMPLATE.md](docs/steering/TEMPLATE.md) をコピーして差分仕様を記述
 3. **レビュー**: アーキテクト・POが確認
 4. **承認**: 実装GOの判断
-5. **実装**: Codexへ引き継ぎ（ステアリングをコンテキストとして渡す）
+5. **実装**: Codex がステアリングをコンテキストとして実施
 6. **マージ**: 差分を本体仕様書（RD/DD/UT等）へ反映
 
 ### 3.2 ドキュメント駆動の原則
@@ -154,7 +154,7 @@ cargo test
 
 | ドキュメント | 内容 |
 |-------------|------|
-| [AGENTS.md](AGENTS.md) | AI/Codex 向け実装詳細 |
+| [AGENTS.md](AGENTS.md) | AI/Codex 向けバックエンド実装詳細 |
 | [DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md) | 開発ガイドライン |
 
 ### 6.3 旧仕様ドキュメント（移行予定）

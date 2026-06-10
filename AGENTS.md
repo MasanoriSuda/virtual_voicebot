@@ -5,7 +5,7 @@
 本ファイルはリポジトリ全体に適用される**共通ルール**を定義します。
 
 - **Backend 固有の詳細**（依存方向、並行処理、テスト方針等）は [virtual-voicebot-backend/AGENTS.md](virtual-voicebot-backend/AGENTS.md) を参照してください。
-- **Claude Code の責務**（ドキュメント/仕様担当）は [CLAUDE.md](CLAUDE.md) を参照してください。
+- **Codex 単独運用の責務**（ドキュメント/仕様/実装担当）は [CLAUDE.md](CLAUDE.md) を参照してください。
 
 ---
 
@@ -52,16 +52,16 @@ docs 修正は原則、**全文再生成ではなく最小差分（patch）で�
 ## ドキュメント更新の扱い（必須）
 
 ### 原則
-- 仕様/責務/フロー変更を伴う場合は、原則 Claude Code が docs を更新する。
-- Codex は docs（docs/**, *.md）を **原則編集禁止**。
+- 仕様/責務/フロー変更を伴う場合も、Issue 参照と必要な `DOCS_OK` が確認できれば Codex が docs を更新する。
+- Codex は docs（docs/**, *.md）を編集できる。ただし、意味が変わる編集は本節の `DOCS_OK` ルールに従う。
 
 ### ステアリングファイルの扱い（必須）
 
-- **新規作成・Review 対応**: Claude Code が担当。Codex は一切編集しない。
-- **Approved 以降の段取り更新**（§3.5 のみ）: Codex が実装完了記録として更新可能。
+- **新規作成・Review 対応**: Codex が担当可能。Issue 参照と必要な `DOCS_OK` を確認して最小差分で編集する。
+- **Approved 以降の段取り更新**（§3.5）: Codex が実装完了記録として更新可能。
 - **禁止事項**:
-  - Codex による新規ステアリングの作成（Draft 作成は Claude Code の専任）
-  - Codex による §5 差分仕様・§6 受入条件・§2 ストーリーの変更
+  - Codex による Issue 参照なしの新規ステアリング作成
+  - Codex による `DOCS_OK` なしの §5 差分仕様・§6 受入条件・§2 ストーリーの変更
   - Status の勝手な変更（Status 更新は人間が判断）
   - `docs/STEER-*.md`（root 直下）への配置（正規3箇所のみ使用）
 
@@ -121,7 +121,7 @@ DOCS_OK_SCOPE: #<issue number>
 上記例外に該当しない docs 更新が必要な場合は、編集せずに
 1) 変更案（diffまたは箇条書き）
 2) Yes/Noで答えられる質問
-を提示して停止し、Claude Code（またはオーナー）に引き継ぐ。
+を提示して停止し、オーナー確認または追加の `DOCS_OK` を待つ。
 
 ### 想定外変更検知時の運用（停止条件の明確化）
 
@@ -133,8 +133,8 @@ DOCS_OK_SCOPE: #<issue number>
 
 **注意:**
 - `docs/steering/STEER-*.md` が未追跡ファイルとして検知された場合、Status を確認すること。
-- `Status: Draft` のステアリングは編集禁止（§1.3.1 参照）。調査・報告のみ可能。
-- `Status: Review` または `Status: Approved` のステアリングのみ修正可能。
+- `Status: Draft` / `Status: Review` / `Status: Approved` のステアリングは、Issue 参照と必要な `DOCS_OK` の範囲で修正可能。
+- 未追跡ステアリングが今回の Issue / `DOCS_OK` 範囲外の場合は編集せず、調査・報告のみ行う。
 
 ---
 
@@ -142,21 +142,21 @@ DOCS_OK_SCOPE: #<issue number>
 
 ### ステアリング Review 時のレビュー手順
 
-1. **Claude Code が修正**: ステアリング §5 等をレビュー指摘に基づき修正
+1. **Codex が修正**: ステアリング §5 等をレビュー指摘に基づき修正
 2. **PR 作成**: 修正内容を PR にして以下をチェック
 3. **レビュー依頼**: オーナーに依頼
 
 **レビュー要件（共通）:**
-- 単なる形式チェックではなく、[CLAUDE.md](CLAUDE.md) に定義された観点から実質的レビューを行う
+- 単なる形式チェックではなく、[CLAUDE.md](CLAUDE.md) に定義された Codex 単独運用の観点から実質的レビューを行う
 - 指摘がある場合は、重大/中/軽に分類して根拠（該当 docs 章/行）とともに提示
 - 「オーナーが承認済み」であっても、仕様観点から独立したレビューを実施
 - レビュー結果は PR コメントまたは `docs/reviews/` に記録
 
 **レビュー判定と続行条件（必須）:**
 - レビュー結果は `OK` / `NG` を明示する。
-- `OK` の場合、修正者（Claude Code）は当該作業を続行してよい。
+- `OK` の場合、修正者（Codex）は当該作業を続行してよい。
 - `NG` の場合、オーナーの修正方針承認を得るまで修正を行わない。
-- オーナー承認後、Claude Code は承認内容に沿って最小差分で修正する。
+- オーナー承認後、Codex は承認内容に沿って最小差分で修正する。
 
 **PR テンプレート要件（推奨）:**
 
@@ -165,7 +165,7 @@ DOCS_OK_SCOPE: #<issue number>
 ```markdown
 ## Review Checklist (for STEER edits)
 
-- [ ] Claude Code / Owner reviewed
+- [ ] Codex / Owner reviewed
 - [ ] DOCS_OK included (required for SoT docs edits)
 - [ ] ストーリー（§2）を変更していない
 - [ ] 差分は最小限（全文再生成していない）
@@ -174,7 +174,7 @@ DOCS_OK_SCOPE: #<issue number>
 **CODEOWNERS 活用（推奨）:**
 
 ```text
-# ステアリングファイルは Claude Code またはオーナーの承認必須
+# ステアリングファイルは Codex またはオーナーのレビュー必須
 docs/steering/** @owner-username
 virtual-voicebot-backend/docs/steering/** @owner-username
 virtual-voicebot-frontend/docs/steering/** @owner-username
@@ -188,8 +188,8 @@ virtual-voicebot-frontend/docs/steering/** @owner-username
 
 | 担当 | レビュー観点 | 詳細定義 |
 |------|-------------|---------|
-| **Claude Code** | 仕様/ドキュメント整合性 | [CLAUDE.md](CLAUDE.md) |
-| **Codex** | 実装/テスト観点 | [virtual-voicebot-backend/AGENTS.md](virtual-voicebot-backend/AGENTS.md) |
+| **Codex** | 仕様/ドキュメント整合性、実装/テスト観点 | [CLAUDE.md](CLAUDE.md), [virtual-voicebot-backend/AGENTS.md](virtual-voicebot-backend/AGENTS.md) |
+| **CodeRabbit** | PR コードレビュー | GitHub App 設定 |
 
 ### レビュー出力フォーマット（必須）
 

@@ -249,8 +249,8 @@ pub enum AsrError {
 | [BD-003](docs/design/basic/BD-003_clean-architecture.md) | クリーンアーキテクチャ設計原則（正式版） |
 | [STEER-085](docs/steering/STEER-085_clean-architecture.md) | クリーンアーキテクチャ移行ステアリング |
 | [STEER-108](docs/steering/STEER-108_sip-core-engine-refactor.md) | 3層アーキテクチャへのリファクタリング |
-| [CLAUDE.md](../CLAUDE.md) | Claude Code の役割定義 |
-| [AGENTS.md](AGENTS.md) | Codex の役割定義 |
+| [CLAUDE.md](../CLAUDE.md) | Codex 単独運用の共通指示 |
+| [AGENTS.md](AGENTS.md) | Backend 実装規約 |
 
 ---
 
@@ -260,4 +260,4 @@ pub enum AsrError {
 |------|---------|--------|
 | 2026-01-31 | 初版作成 | @MasanoriSuda + Claude Code |
 | 2026-02-06 | 3層アーキテクチャに対応（STEER-108） | Claude Code |
-
+| 2026-06-11 | Codex 単独運用に合わせて参照表記を更新（Refs #283） | Codex |
