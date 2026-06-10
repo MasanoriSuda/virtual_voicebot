@@ -148,6 +148,7 @@ struct WhisperStreamEventResponse {
 pub mod asr;
 pub mod intent;
 pub mod llm;
+pub mod post_call_review;
 pub mod ser;
 pub mod tts;
 pub mod weather;

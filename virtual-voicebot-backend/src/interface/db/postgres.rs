@@ -3,10 +3,11 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::shared::config;
 use crate::shared::ports::announcement_port::{
     Announcement, AnnouncementError, AnnouncementFuture, AnnouncementPort, UpsertAnnouncement,
 };
@@ -33,7 +34,7 @@ use crate::shared::ports::settings_port::{
     SettingsError, SettingsFuture, SettingsPort, SystemSettings,
 };
 use crate::shared::ports::sync_outbox_port::{
-    NewOutboxEntry, PendingOutboxEntry, SyncOutboxFuture, SyncOutboxPort,
+    NewOutboxEntry, PendingOutboxEntry, RecordingReviewUpdate, SyncOutboxFuture, SyncOutboxPort,
 };
 
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -763,6 +764,48 @@ fn build_call_log_sync_payload(call_log: &EndedCallLog) -> Value {
     })
 }
 
+fn build_recording_sync_payload(row: &PgRow) -> Result<Value, sqlx::Error> {
+    let id: Uuid = row.try_get("id")?;
+    let call_log_id: Uuid = row.try_get("call_log_id")?;
+    let recording_type: String = row.try_get("recording_type")?;
+    let sequence_number: i16 = row.try_get("sequence_number")?;
+    let file_path: String = row.try_get("file_path")?;
+    let s3_url: Option<String> = row.try_get("s3_url")?;
+    let upload_status: String = row.try_get("upload_status")?;
+    let duration_sec: Option<i32> = row.try_get("duration_sec")?;
+    let format: String = row.try_get("format")?;
+    let file_size_bytes: Option<i64> = row.try_get("file_size_bytes")?;
+    let started_at: DateTime<Utc> = row.try_get("started_at")?;
+    let ended_at: Option<DateTime<Utc>> = row.try_get("ended_at")?;
+    let summary_text: Option<String> = row.try_get("summary_text")?;
+    let transcript_json: Option<Value> = row.try_get("transcript_json")?;
+    let review_json: Option<Value> = row.try_get("review_json")?;
+    let review_status: String = row.try_get("review_status")?;
+    let review_error: Option<String> = row.try_get("review_error")?;
+    let reviewed_at: Option<DateTime<Utc>> = row.try_get("reviewed_at")?;
+
+    Ok(json!({
+        "id": id.to_string(),
+        "callLogId": call_log_id.to_string(),
+        "recordingType": recording_type,
+        "sequenceNumber": sequence_number,
+        "filePath": file_path,
+        "s3Url": s3_url,
+        "uploadStatus": upload_status,
+        "durationSec": duration_sec,
+        "format": format,
+        "fileSizeBytes": file_size_bytes,
+        "startedAt": started_at.to_rfc3339(),
+        "endedAt": ended_at.as_ref().map(DateTime::to_rfc3339),
+        "summaryText": summary_text,
+        "transcriptJson": transcript_json,
+        "reviewJson": review_json,
+        "reviewStatus": review_status,
+        "reviewError": review_error,
+        "reviewedAt": reviewed_at.as_ref().map(DateTime::to_rfc3339),
+    }))
+}
+
 impl PhoneLookupPort for PostgresAdapter {
     fn lookup_phone(&self, phone_number: String) -> PhoneLookupFuture {
         let pool = self.pool.clone();
@@ -867,11 +910,17 @@ impl CallLogPort for PostgresAdapter {
             }
 
             if let Some(recording) = call_log.recording {
+                let initial_review_status = if config::post_call_review_config().enabled {
+                    "pending"
+                } else {
+                    "skipped"
+                };
                 sqlx::query(
                     "INSERT INTO recordings (
                         id, call_log_id, recording_type, sequence_number, file_path, s3_url,
-                        upload_status, duration_sec, format, file_size_bytes, started_at, ended_at
-                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                        upload_status, duration_sec, format, file_size_bytes, started_at, ended_at,
+                        review_status
+                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
                 )
                 .bind(recording.id)
                 .bind(call_log.id)
@@ -885,6 +934,7 @@ impl CallLogPort for PostgresAdapter {
                 .bind(recording.file_size_bytes)
                 .bind(recording.started_at)
                 .bind(recording.ended_at)
+                .bind(initial_review_status)
                 .execute(&mut *tx)
                 .await
                 .map_err(map_call_log_write_err)?;
@@ -907,6 +957,10 @@ impl CallLogPort for PostgresAdapter {
                     "fileSizeBytes": recording.file_size_bytes,
                     "startedAt": recording.started_at.to_rfc3339(),
                     "endedAt": recording.ended_at.as_ref().map(DateTime::to_rfc3339),
+                    "reviewStatus": initial_review_status,
+                    "reviewError": Value::Null,
+                    "reviewJson": Value::Null,
+                    "reviewedAt": Value::Null,
                 }))
                 .execute(&mut *tx)
                 .await
@@ -1112,6 +1166,56 @@ impl SyncOutboxPort for PostgresAdapter {
                 return Err(map_sync_outbox_write_err(sqlx::Error::RowNotFound));
             }
 
+            Ok(())
+        })
+    }
+
+    fn update_recording_review(&self, update: RecordingReviewUpdate) -> SyncOutboxFuture<()> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let mut tx = pool.begin().await.map_err(map_sync_outbox_write_err)?;
+            let row = sqlx::query(
+                "UPDATE recordings
+                 SET summary_text = $2,
+                     transcript_json = $3,
+                     review_json = $4,
+                     review_status = $5,
+                     review_error = $6,
+                     reviewed_at = $7
+                 WHERE id = $1
+                 RETURNING id, call_log_id, recording_type, sequence_number, file_path, s3_url,
+                           upload_status, duration_sec, format, file_size_bytes, started_at, ended_at,
+                           summary_text, transcript_json, review_json, review_status, review_error,
+                           reviewed_at",
+            )
+            .bind(update.recording_id)
+            .bind(update.summary_text)
+            .bind(update.transcript_json)
+            .bind(update.review_json)
+            .bind(update.review_status)
+            .bind(update.review_error)
+            .bind(update.reviewed_at)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_sync_outbox_write_err)?;
+
+            let Some(row) = row else {
+                return Err(map_sync_outbox_write_err(sqlx::Error::RowNotFound));
+            };
+            let payload = build_recording_sync_payload(&row).map_err(map_sync_outbox_write_err)?;
+
+            sqlx::query(
+                "INSERT INTO sync_outbox (entity_type, entity_id, payload)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind("recording")
+            .bind(update.recording_id)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sync_outbox_write_err)?;
+
+            tx.commit().await.map_err(map_sync_outbox_write_err)?;
             Ok(())
         })
     }

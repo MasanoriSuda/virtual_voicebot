@@ -58,6 +58,10 @@ export interface StoredRecording {
   updatedAt: string
   summaryText: string | null
   transcriptJson: unknown | null
+  reviewStatus: string | null
+  reviewJson: unknown | null
+  reviewError: string | null
+  reviewedAt: string | null
 }
 
 export interface StoredIvrSessionEvent {
@@ -258,6 +262,10 @@ function normalizeRecording(entityId: string, payload: unknown, nowIso: string):
     updatedAt: nowIso,
     summaryText: asString(input, ["summaryText", "summary_text", "summary"], null),
     transcriptJson: input["transcriptJson"] ?? input["transcript_json"] ?? input["transcript"] ?? null,
+    reviewStatus: asString(input, ["reviewStatus", "review_status"], null),
+    reviewJson: input["reviewJson"] ?? input["review_json"] ?? input["review"] ?? null,
+    reviewError: asString(input, ["reviewError", "review_error"], null),
+    reviewedAt: asString(input, ["reviewedAt", "reviewed_at"], null),
   }
 }
 
@@ -385,6 +393,10 @@ export async function markRecordingUploaded(params: {
       updatedAt: nowIso,
       summaryText: current?.summaryText ?? null,
       transcriptJson: current?.transcriptJson ?? null,
+      reviewStatus: current?.reviewStatus ?? null,
+      reviewJson: current?.reviewJson ?? null,
+      reviewError: current?.reviewError ?? null,
+      reviewedAt: current?.reviewedAt ?? null,
     }
     db.updatedAt = nowIso
 

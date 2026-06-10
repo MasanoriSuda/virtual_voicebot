@@ -11,8 +11,11 @@ use uuid::Uuid;
 use crate::interface::sync::recording_uploader::{
     RecordingUploadError, RecordingUploadRequest, RecordingUploader,
 };
-use crate::shared::config::SyncConfig;
-use crate::shared::ports::sync_outbox_port::{PendingOutboxEntry, SyncOutboxPort};
+use crate::service::ai::post_call_review::{generate_post_call_review, PostCallReviewOutput};
+use crate::shared::config::{post_call_review_config, SyncConfig};
+use crate::shared::ports::sync_outbox_port::{
+    PendingOutboxEntry, RecordingReviewUpdate, SyncOutboxPort,
+};
 
 #[derive(Debug, Error)]
 pub enum SyncWorkerError {
@@ -147,9 +150,77 @@ impl OutboxWorker {
             .await
             .map_err(|e| SyncWorkerError::OutboxFailed(e.to_string()))?;
 
+        if let Err(error) = self.run_post_call_review(&payload).await {
+            log::warn!(
+                "[serversync] post-call review failed call_log_id={} recording_id={}: {}",
+                payload.call_log_id,
+                payload.recording_id,
+                error
+            );
+        }
+
         cleanup_recording_dir(&payload.recording_dir, &payload.call_id).await?;
         Ok(())
     }
+
+    async fn run_post_call_review(
+        &self,
+        payload: &RecordingFilePayload,
+    ) -> Result<(), SyncWorkerError> {
+        let review_cfg = post_call_review_config();
+        if !review_cfg.enabled || !review_cfg.auto_run {
+            return Ok(());
+        }
+
+        let review_result = generate_post_call_review(
+            &payload.call_log_id.to_string(),
+            payload.audio_path.as_path(),
+        )
+        .await;
+
+        let update = match review_result {
+            Ok(output) => build_completed_review_update(payload.recording_id, output),
+            Err(error) => build_failed_review_update(payload.recording_id, error.to_string()),
+        };
+
+        self.outbox_repo
+            .update_recording_review(update)
+            .await
+            .map_err(|e| SyncWorkerError::OutboxFailed(e.to_string()))?;
+        Ok(())
+    }
+}
+
+fn build_completed_review_update(
+    recording_id: Uuid,
+    output: PostCallReviewOutput,
+) -> RecordingReviewUpdate {
+    RecordingReviewUpdate {
+        recording_id,
+        summary_text: output.summary_text,
+        transcript_json: output.transcript_json,
+        review_json: output.review_json,
+        review_status: "completed".to_string(),
+        review_error: None,
+        reviewed_at: Some(Utc::now()),
+    }
+}
+
+fn build_failed_review_update(recording_id: Uuid, error: String) -> RecordingReviewUpdate {
+    RecordingReviewUpdate {
+        recording_id,
+        summary_text: None,
+        transcript_json: None,
+        review_json: None,
+        review_status: "failed".to_string(),
+        review_error: Some(sanitize_review_error(&error)),
+        reviewed_at: Some(Utc::now()),
+    }
+}
+
+fn sanitize_review_error(error: &str) -> String {
+    let collapsed = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.chars().take(240).collect()
 }
 
 #[derive(Clone, Debug)]

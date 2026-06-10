@@ -256,7 +256,7 @@ export interface SystemSettings {
 
 export interface Utterance {
   seq: number
-  speaker: "caller" | "bot" | "system"
+  speaker: "caller" | "bot" | "system" | "unknown"
   text: string
   timestamp: string
   isFinal: boolean
@@ -268,7 +268,7 @@ export type WebSocketMessage =
   | {
       type: "utterance.partial"
       seq: number
-      speaker: "caller" | "bot" | "system"
+      speaker: "caller" | "bot" | "system" | "unknown"
       text: string
       timestamp: string
       startSec?: number
@@ -277,7 +277,7 @@ export type WebSocketMessage =
   | {
       type: "utterance.final"
       seq: number
-      speaker: "caller" | "bot" | "system"
+      speaker: "caller" | "bot" | "system" | "unknown"
       text: string
       timestamp: string
       startSec?: number
@@ -288,6 +288,38 @@ export type WebSocketMessage =
       summary: string
     }
 
+export type CallReviewStatus = "pending" | "processing" | "completed" | "failed" | "skipped"
+
+export interface CallReviewEvidence {
+  label: string
+  speaker: "caller" | "bot" | "system" | "unknown"
+  startSec: number | null
+  endSec: number | null
+  text: string
+}
+
+export interface CallReview {
+  version: number
+  summary: string
+  customerIntent: string
+  responseEvaluation: {
+    status: "good" | "needs_attention" | "poor" | "unknown"
+    notes: string
+  }
+  unresolvedItems: string[]
+  nextActions: Array<{
+    type: "follow_up" | "confirm" | "escalate" | "none" | "other"
+    priority: "low" | "medium" | "high"
+    label: string
+  }>
+  riskSignals: Array<{
+    type: "complaint_risk" | "confusion" | "urgent" | "other"
+    severity: "low" | "medium" | "high"
+    label: string
+  }>
+  evidence: CallReviewEvidence[]
+}
+
 export interface CallDetail extends Call {
   from: string
   to: string
@@ -296,6 +328,8 @@ export interface CallDetail extends Call {
   summary: string
   recordingUrl?: string
   utterances: Utterance[]
+  reviewStatus?: CallReviewStatus
+  review?: CallReview | null
 }
 
 export interface PhoneNumber {

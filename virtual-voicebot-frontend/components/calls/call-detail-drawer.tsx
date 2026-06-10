@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { AudioPlayer } from "@/components/calls/audio-player"
+import { CallReviewTab } from "@/components/calls/call-review-tab"
 import { displayStatusClass } from "@/lib/call-display"
 import type { CallRecord } from "@/lib/mock-data"
 import type { CallDetail, Utterance } from "@/lib/types"
@@ -111,10 +112,11 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
         </SheetHeader>
 
         <Tabs defaultValue="recording" className="mt-6">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="recording">録音</TabsTrigger>
             <TabsTrigger value="transcript">文字起こし</TabsTrigger>
             <TabsTrigger value="summary">要約</TabsTrigger>
+            <TabsTrigger value="review">レビュー</TabsTrigger>
           </TabsList>
 
           <TabsContent value="recording" className="mt-6">
@@ -167,6 +169,14 @@ export function CallDetailDrawer({ call, open, onOpenChange }: CallDetailDrawerP
               {isLoading ? "要約データを読み込み中です" : summary}
             </div>
           </TabsContent>
+
+          <TabsContent value="review" className="mt-6">
+            <CallReviewTab
+              reviewStatus={callDetail?.reviewStatus}
+              review={callDetail?.review}
+              isLoading={isLoading}
+            />
+          </TabsContent>
         </Tabs>
       </SheetContent>
     </Sheet>
@@ -190,6 +200,8 @@ function speakerLabel(speaker: Utterance["speaker"]): string {
       return "Bot"
     case "caller":
       return "Caller"
+    case "unknown":
+      return "Unknown"
     default:
       return "System"
   }

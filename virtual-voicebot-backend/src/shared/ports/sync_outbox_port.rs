@@ -22,6 +22,17 @@ pub struct PendingOutboxEntry {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug)]
+pub struct RecordingReviewUpdate {
+    pub recording_id: Uuid,
+    pub summary_text: Option<String>,
+    pub transcript_json: Option<Value>,
+    pub review_json: Option<Value>,
+    pub review_status: String,
+    pub review_error: Option<String>,
+    pub reviewed_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Error)]
 pub enum SyncOutboxError {
     #[error("write failed: {0}")]
@@ -38,4 +49,5 @@ pub trait SyncOutboxPort: Send + Sync {
     fn mark_processed(&self, id: i64, processed_at: DateTime<Utc>) -> SyncOutboxFuture<()>;
     fn mark_recording_uploaded(&self, recording_id: Uuid, file_url: String)
         -> SyncOutboxFuture<()>;
+    fn update_recording_review(&self, update: RecordingReviewUpdate) -> SyncOutboxFuture<()>;
 }

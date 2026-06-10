@@ -1,4 +1,4 @@
-import type { Call, CallDetail, IvrSessionEvent, Utterance } from "./types"
+import type { Call, CallDetail, CallReview, CallReviewStatus, IvrSessionEvent, Utterance } from "./types"
 import { mockCallPresentationById, mockCalls } from "./mock-data"
 import { queryCallByAnyId, queryCalls, queryIvrSessionEvents, type CallDirection } from "./db/queries"
 import type { StoredCallLog, StoredIvrSessionEvent, StoredRecording } from "./db/sync"
@@ -111,8 +111,8 @@ function buildRecordingUrl(callLogId: string, recording: StoredRecording | null)
   return null
 }
 
-function toSpeaker(value: unknown): "caller" | "bot" | "system" {
-  if (value === "caller" || value === "bot" || value === "system") {
+function toSpeaker(value: unknown): Utterance["speaker"] {
+  if (value === "caller" || value === "bot" || value === "system" || value === "unknown") {
     return value
   }
   return "system"
@@ -156,6 +156,134 @@ function toUtterances(raw: unknown): Utterance[] {
     acc.push(utterance)
     return acc
   }, [])
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function normalizeReviewStatus(value: string | null | undefined): CallReviewStatus | undefined {
+  switch (value) {
+    case "pending":
+    case "processing":
+    case "completed":
+    case "failed":
+    case "skipped":
+      return value
+    default:
+      return undefined
+  }
+}
+
+function toCallReview(raw: unknown): CallReview | null {
+  if (!isRecord(raw)) {
+    return null
+  }
+  const summary = typeof raw.summary === "string" ? raw.summary : ""
+  if (!summary.trim()) {
+    return null
+  }
+  const responseEvaluation = isRecord(raw.responseEvaluation) ? raw.responseEvaluation : {}
+  return {
+    version: typeof raw.version === "number" ? raw.version : 1,
+    summary,
+    customerIntent: typeof raw.customerIntent === "string" ? raw.customerIntent : "",
+    responseEvaluation: {
+      status: toReviewEvaluationStatus(responseEvaluation.status),
+      notes: typeof responseEvaluation.notes === "string" ? responseEvaluation.notes : "",
+    },
+    unresolvedItems: toStringArray(raw.unresolvedItems),
+    nextActions: toReviewNextActions(raw.nextActions),
+    riskSignals: toReviewRiskSignals(raw.riskSignals),
+    evidence: toReviewEvidence(raw.evidence),
+  }
+}
+
+function toReviewEvaluationStatus(value: unknown): CallReview["responseEvaluation"]["status"] {
+  return value === "good" || value === "needs_attention" || value === "poor" || value === "unknown"
+    ? value
+    : "unknown"
+}
+
+function toStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : []
+}
+
+function toReviewNextActions(value: unknown): CallReview["nextActions"] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.label !== "string" || item.label.trim() === "") {
+      return []
+    }
+    return [
+      {
+        type:
+          item.type === "follow_up" ||
+          item.type === "confirm" ||
+          item.type === "escalate" ||
+          item.type === "none" ||
+          item.type === "other"
+            ? item.type
+            : "other",
+        priority:
+          item.priority === "low" || item.priority === "medium" || item.priority === "high"
+            ? item.priority
+            : "medium",
+        label: item.label,
+      },
+    ]
+  })
+}
+
+function toReviewRiskSignals(value: unknown): CallReview["riskSignals"] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.label !== "string" || item.label.trim() === "") {
+      return []
+    }
+    return [
+      {
+        type:
+          item.type === "complaint_risk" ||
+          item.type === "confusion" ||
+          item.type === "urgent" ||
+          item.type === "other"
+            ? item.type
+            : "other",
+        severity:
+          item.severity === "low" || item.severity === "medium" || item.severity === "high"
+            ? item.severity
+            : "low",
+        label: item.label,
+      },
+    ]
+  })
+}
+
+function toReviewEvidence(value: unknown): CallReview["evidence"] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.text !== "string" || item.text.trim() === "") {
+      return []
+    }
+    return [
+      {
+        label: typeof item.label === "string" ? item.label : "根拠",
+        speaker: toSpeaker(item.speaker),
+        startSec: typeof item.startSec === "number" ? item.startSec : null,
+        endSec: typeof item.endSec === "number" ? item.endSec : null,
+        text: item.text,
+      },
+    ]
+  })
 }
 
 function toMockCallDetail(call: Call): CallDetail {
@@ -238,6 +366,8 @@ export async function getCallDetail(callId: string): Promise<CallDetail | null> 
   const utterances = toUtterances(row.recording?.transcriptJson)
   const summary = row.recording?.summaryText ?? ""
   const recordingUrl = buildRecordingUrl(call.id, row.recording)
+  const reviewStatus = normalizeReviewStatus(row.recording?.reviewStatus)
+  const review = toCallReview(row.recording?.reviewJson)
 
   return {
     ...call,
@@ -248,6 +378,8 @@ export async function getCallDetail(callId: string): Promise<CallDetail | null> 
     summary,
     recordingUrl: recordingUrl ?? undefined,
     utterances,
+    reviewStatus,
+    review,
   }
 }
 

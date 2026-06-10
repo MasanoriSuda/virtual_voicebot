@@ -1071,6 +1071,42 @@ pub fn logging_config() -> &'static LoggingConfig {
 }
 
 #[derive(Clone, Debug)]
+pub struct PostCallReviewConfig {
+    pub enabled: bool,
+    pub auto_run: bool,
+    pub amivoice_api_key: Option<String>,
+    pub amivoice_base_url: String,
+    pub amivoice_engine: String,
+    pub amivoice_timeout: Duration,
+    pub llm_model: String,
+    pub timeout: Duration,
+}
+
+impl PostCallReviewConfig {
+    fn from_env() -> Self {
+        Self {
+            enabled: env_bool("POST_CALL_REVIEW_ENABLED", false),
+            auto_run: env_bool("POST_CALL_REVIEW_AUTO_RUN", true),
+            amivoice_api_key: env_non_empty("AMIVOICE_API_KEY"),
+            amivoice_base_url: env_non_empty("AMIVOICE_BASE_URL")
+                .unwrap_or_else(|| "https://acp-api.amivoice.com/v1".to_string()),
+            amivoice_engine: env_non_empty("AMIVOICE_ENGINE")
+                .unwrap_or_else(|| "-a-general".to_string()),
+            amivoice_timeout: env_duration_ms("AMIVOICE_TIMEOUT_MS", 30_000),
+            llm_model: env_non_empty("POST_CALL_REVIEW_LLM_MODEL")
+                .unwrap_or_else(|| "gpt-4o-mini".to_string()),
+            timeout: env_duration_ms("POST_CALL_REVIEW_TIMEOUT_MS", 60_000),
+        }
+    }
+}
+
+static POST_CALL_REVIEW_CONFIG: OnceLock<PostCallReviewConfig> = OnceLock::new();
+
+pub fn post_call_review_config() -> &'static PostCallReviewConfig {
+    POST_CALL_REVIEW_CONFIG.get_or_init(PostCallReviewConfig::from_env)
+}
+
+#[derive(Clone, Debug)]
 pub struct AiConfig {
     pub openai_api_key: Option<String>,
     pub openai_base_url: String,
